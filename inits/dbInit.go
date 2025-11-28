@@ -1,0 +1,52 @@
+package inits
+
+import (
+	"time"
+
+	"schedule_server/global"
+
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+)
+
+// DBInit 初始化 MySQL 数据库连接（必须在 ConfigInit 和 LogInit 之后调用）
+func DBInit() {
+	cfg := global.AppConfig.Database
+
+	db, err := gorm.Open(mysql.Open(cfg.DSN()), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Info),
+	})
+	if err != nil {
+		global.Log.Fatalf("连接数据库失败: %v", err)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		global.Log.Fatalf("获取 sql.DB 失败: %v", err)
+	}
+
+	// 连接池配置
+	sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
+	sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
+
+	// 解析 conn_max_lifetime
+	if lifetime, err := time.ParseDuration(cfg.ConnMaxLifetime); err == nil {
+		sqlDB.SetConnMaxLifetime(lifetime)
+	} else {
+		sqlDB.SetConnMaxLifetime(time.Hour) // 默认 1 小时
+	}
+
+	global.DB = db
+	global.Log.Info("数据库连接成功")
+}
+
+// AutoMigrate 自动化迁移表
+func AutoMigrate() {
+	err := global.DB.AutoMigrate()
+
+	if err != nil {
+		global.Log.Panicf("数据库迁移失败: %s", err)
+		return
+	}
+}
