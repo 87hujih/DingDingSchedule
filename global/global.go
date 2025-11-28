@@ -14,4 +14,5 @@ var (
 	DB *gorm.DB
 	// Log 日志对象
 	Log *zap.SugaredLogger
+	//
 )
