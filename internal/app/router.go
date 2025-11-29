@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http"
+	"schedule_server/internal/router"
 
 	"schedule_server/global"
 	"schedule_server/internal/handler"
@@ -35,11 +36,5 @@ func setupRouter() *gin.Engine {
 
 // registerRoutes 注册所有业务路由
 func registerRoutes(r *gin.Engine, h *handler.Handler) {
-	// TODO: 在此注册具体路由
-	// api := r.Group("/api/v1")
-	// {
-	//     api.GET("/users", h.UserHandler.List)
-	//     api.POST("/users", h.UserHandler.Create)
-	// }
-	_ = h // 暂时忽略未使用警告
+	router.UserRouter(r, h)
 }

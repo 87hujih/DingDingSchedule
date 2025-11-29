@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>实验室出勤全景视图</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 自定义滚动条样式 */
+        .custom-scroll::-webkit-scrollbar { width: 6px; }
+        .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+        .custom-scroll::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 3px; }
+        /* 选中状态的动画效果 */
+        .cell-selected {
+            ring-width: 4px;
+            --tw-ring-color: rgb(59 130 246); /* blue-500 */
+            border-color: transparent;
+            z-index: 10;
+            transform: scale(1.05);
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+        }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800 h-screen overflow-hidden font-sans">
+
+<header class="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shadow-sm z-20 relative">
+    <div class="flex items-center gap-3">
+        <div class="bg-blue-600 text-white p-2 rounded-lg font-bold">Lab</div>
+        <h1 class="text-lg font-bold text-slate-700">实验室出勤监控看板 <span class="text-slate-400 font-normal ml-2">第 12 周</span></h1>
+    </div>
+    <div class="flex gap-4 text-xs font-medium text-slate-600">
+        <div class="flex items-center gap-1"><span class="w-3 h-3 bg-emerald-500 rounded sm"></span> 高出勤 (>80%)</div>
+        <div class="flex items-center gap-1"><span class="w-3 h-3 bg-yellow-400 rounded sm"></span> 一般 (50-80%)</div>
+        <div class="flex items-center gap-1"><span class="w-3 h-3 bg-rose-500 rounded sm"></span> 差 (<50%)</div>
+        <div class="flex items-center gap-1"><span class="w-3 h-3 bg-slate-200 rounded sm"></span> 无数据/休息</div>
+    </div>
+</header>
+
+<main class="flex h-[calc(100vh-64px)] p-6 gap-6">
+
+    <div class="flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
+        <div class="grid grid-cols-8 gap-1 p-4 pb-2 border-b border-slate-100 bg-slate-50 font-medium text-slate-500 text-sm text-center">
+            <div class="text-xs self-end pb-1">时间</div>
+            <div>Mon<br><span class="text-xs font-normal">周一</span></div>
+            <div>Tue<br><span class="text-xs font-normal">周二</span></div>
+            <div>Wed<br><span class="text-xs font-normal">周三</span></div>
+            <div>Thu<br><span class="text-xs font-normal">周四</span></div>
+            <div>Fri<br><span class="text-xs font-normal">周五</span></div>
+            <div class="text-slate-400">Sat<br><span class="text-xs font-normal">周六</span></div>
+            <div class="text-slate-400">Sun<br><span class="text-xs font-normal">周日</span></div>
+        </div>
+
+        <div class="flex-1 overflow-y-auto custom-scroll p-4">
+            <div class="grid grid-cols-8 gap-2 gap-y-3" id="heatmap-grid">
+            </div>
+        </div>
+    </div>
+
+    <div class="w-96 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col overflow-hidden transition-all duration-300">
+
+        <div class="p-6 border-b border-slate-100 bg-gradient-to-br from-slate-50 to-white">
+            <div class="flex justify-between items-start mb-1">
+                <h2 class="text-lg font-bold text-slate-800">状态透视</h2>
+                <span id="detail-time" class="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs font-bold">请选择时段</span>
+            </div>
+
+            <div class="mt-4 flex items-baseline gap-2">
+                <span id="present-count" class="text-4xl font-extrabold text-slate-800">--</span>
+                <span class="text-sm text-slate-500">/ <span id="total-count">--</span> 人实到</span>
+            </div>
+            <div class="w-full bg-slate-200 rounded-full h-2.5 mt-3 overflow-hidden">
+                <div id="progress-bar" class="bg-slate-400 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
+            </div>
+        </div>
+
+        <div class="flex-1 overflow-y-auto custom-scroll p-5 space-y-6" id="detail-list">
+            <div class="text-center text-slate-400 mt-10">
+                <p>👈 点击左侧热力图查看详情</p>
+            </div>
+        </div>
+    </div>
+
+</main>
+
+<script>
+    // 配置数据
+    const times = ["08:00", "09:00", "10:00", "11:00", "14:00", "15:00", "16:00", "17:00", "19:00", "20:00"];
+    const days = 7;
+
+    // 模拟用户数据生成器
+    function generateMockData(day, timeIndex) {
+        // 随机生成一些状态数量
+        const total = 20;
+        const absent = Math.floor(Math.random() * 5); // 0-4人缺勤
+        const inClass = Math.floor(Math.random() * 8);
+        const onLeave = Math.floor(Math.random() * 2);
+        const present = total - absent - inClass - onLeave;
+
+        // 简单的颜色判断逻辑
+        let colorClass = "bg-emerald-500"; // Green
+        let rate = present / (total - inClass - onLeave);
+        if (rate < 0.5) colorClass = "bg-rose-500"; // Red
+        else if (rate < 0.8) colorClass = "bg-yellow-400"; // Yellow
+
+        // 周末置灰
+        if (day > 5) colorClass = "bg-slate-200";
+
+        return {
+            id: `${day}-${timeIndex}`,
+            day: day,
+            time: times[timeIndex],
+            colorClass: colorClass,
+            stats: { total, present, absent, inClass, onLeave },
+            rate: Math.round(rate * 100)
+        };
+    }
+
+    // 初始化热力图
+    const gridContainer = document.getElementById('heatmap-grid');
+    const dataMap = new Map();
+
+    times.forEach((time, tIndex) => {
+        // 时间标签
+        const timeLabel = document.createElement('div');
+        timeLabel.className = "text-xs text-slate-400 font-mono flex items-center justify-center";
+        timeLabel.innerText = time;
+        gridContainer.appendChild(timeLabel);
+
+        // 生成7天的格子
+        for (let d = 1; d <= 7; d++) {
+            const data = generateMockData(d, tIndex);
+            dataMap.set(data.id, data);
+
+            const cell = document.createElement('div');
+            // 基础样式
+            cell.className = `h-10 rounded-md cursor-pointer transition-all duration-200 hover:opacity-80 active:scale-95 flex items-center justify-center text-white text-xs font-bold ${data.colorClass}`;
+            cell.dataset.id = data.id;
+
+            // 如果不是灰色（有数据），显示百分比
+            if (!data.colorClass.includes('slate-200')) {
+                cell.innerText = `${data.rate}%`;
+            }
+
+            // 点击事件
+            cell.onclick = () => selectCell(cell, data);
+            gridContainer.appendChild(cell);
+        }
+    });
+
+    // 选中格子的逻辑
+    let currentSelected = null;
+
+    function selectCell(domElement, data) {
+        // 样式切换
+        if (currentSelected) currentSelected.classList.remove('cell-selected', 'ring-4');
+        domElement.classList.add('cell-selected', 'ring-4');
+        currentSelected = domElement;
+
+        // 更新右侧头部
+        const dayNames = ["", "周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+        document.getElementById('detail-time').innerText = `${dayNames[data.day]} ${data.time}`;
+        document.getElementById('present-count').innerText = data.stats.present;
+        document.getElementById('total-count').innerText = data.stats.total;
+
+        // 更新进度条颜色和宽度
+        const bar = document.getElementById('progress-bar');
+        let barColor = "bg-emerald-500";
+        if(data.colorClass.includes("yellow")) barColor = "bg-yellow-400";
+        if(data.colorClass.includes("rose")) barColor = "bg-rose-500";
+        if(data.colorClass.includes("slate")) barColor = "bg-slate-400";
+
+        bar.className = `h-full rounded-full transition-all duration-500 ${barColor}`;
+        bar.style.width = `${(data.stats.present / data.stats.total) * 100}%`;
+
+        // 更新右侧列表内容
+        renderDetailList(data.stats);
+    }
+
+    // 渲染详情列表
+    function renderDetailList(stats) {
+        const container = document.getElementById('detail-list');
+        container.innerHTML = ''; // 清空
+
+        // 1. 缺勤 (Absent)
+        if (stats.absent > 0) {
+            container.innerHTML += `
+                    <div>
+                        <h4 class="text-xs font-bold text-rose-500 uppercase tracking-wider mb-3 flex items-center">
+                            <span class="w-2 h-2 rounded-full bg-rose-500 mr-2"></span> 缺勤 (Absent) &bull; ${stats.absent}人
+                        </h4>
+                        <div class="space-y-2">
+                            ${Array(stats.absent).fill(0).map((_, i) => `
+                            <div class="flex items-center bg-rose-50 p-2.5 rounded-lg border border-rose-100">
+                                <div class="w-8 h-8 rounded-full bg-white border border-rose-200 flex items-center justify-center text-rose-600 text-xs font-bold mr-3 shadow-sm">张</div>
+                                <div>
+                                    <div class="text-sm font-bold text-slate-700">张同学 ${i+1}</div>
+                                    <div class="text-xs text-rose-500 font-medium">无假条 / 未打卡</div>
+                                </div>
+                            </div>`).join('')}
+                        </div>
+                    </div>`;
+        }
+
+        // 2. 在岗 (Present)
+        if (stats.present > 0) {
+            container.innerHTML += `
+                    <div>
+                        <h4 class="text-xs font-bold text-emerald-600 uppercase tracking-wider mb-3 flex items-center">
+                            <span class="w-2 h-2 rounded-full bg-emerald-500 mr-2"></span> 在岗 (Present) &bull; ${stats.present}人
+                        </h4>
+                        <div class="space-y-2">
+                            ${Array(stats.present).fill(0).map((_, i) => `
+                            <div class="flex items-center bg-white p-2.5 rounded-lg border border-slate-100 shadow-sm">
+                                <div class="w-8 h-8 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-xs font-bold mr-3">李</div>
+                                <div class="flex-1">
+                                    <div class="text-sm font-bold text-slate-700">李同学 ${i+1}</div>
+                                    <div class="text-xs text-slate-400">已学习 ${Math.floor(Math.random()*120 + 10)} 分钟</div>
+                                </div>
+                                <div class="w-2 h-2 bg-emerald-400 rounded-full"></div>
+                            </div>`).join('')}
+                        </div>
+                    </div>`;
+        }
+
+        // 3. 上课 (In Class)
+        if (stats.inClass > 0) {
+            container.innerHTML += `
+                    <div>
+                        <h4 class="text-xs font-bold text-yellow-600 uppercase tracking-wider mb-3 flex items-center">
+                            <span class="w-2 h-2 rounded-full bg-yellow-400 mr-2"></span> 上课 (In Class) &bull; ${stats.inClass}人
+                        </h4>
+                        <div class="flex flex-wrap gap-2">
+                             ${Array(stats.inClass).fill(0).map((_, i) => `
+                             <span class="bg-yellow-50 text-yellow-700 border border-yellow-200 px-3 py-1 rounded-full text-xs font-medium">
+                                王同学${i+1}
+                             </span>`).join('')}
+                        </div>
+                        <div class="mt-2 text-xs text-slate-400 pl-1">课程：高等数学 @3-201</div>
+                    </div>`;
+        }
+
+        // 4. 请假 (On Leave)
+        if (stats.onLeave > 0) {
+            container.innerHTML += `
+                    <div>
+                        <h4 class="text-xs font-bold text-blue-500 uppercase tracking-wider mb-3 flex items-center">
+                            <span class="w-2 h-2 rounded-full bg-blue-500 mr-2"></span> 请假 (On Leave) &bull; ${stats.onLeave}人
+                        </h4>
+                        <div class="flex items-center bg-slate-50 p-2 rounded-lg border border-slate-200 opacity-70">
+                            <div class="text-xs text-slate-500">赵同学 (病假), 孙同学 (事假)</div>
+                        </div>
+                    </div>`;
+        }
+    }
+</script>
+</body>
+</html>

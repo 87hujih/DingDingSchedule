@@ -10,6 +10,6 @@ type Service struct {
 // NewService 创建服务层实例
 func NewService(repo *repository.Repository) *Service {
 	return &Service{
-		UserSrv: NewUserService(repo),
+		UserSrv: NewUserService(repo.UserRepo),
 	}
 }

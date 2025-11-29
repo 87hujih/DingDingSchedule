@@ -2,14 +2,14 @@ package handler
 
 import "schedule_server/internal/service"
 
-// Handler API处理器集合
+// Handler API 处理器集合
 type Handler struct {
 	UserHdl *UserHandler
 }
 
-// NewHandler 创建API处理器集合
-func NewHandler(srv *service.Service) *Handler {
+// NewHandler 创建 API 处理器集合
+func NewHandler(svc *service.Service) *Handler {
 	return &Handler{
-		UserHdl: NewUserHandler(srv),
+		UserHdl: NewUserHandler(svc.UserSrv),
 	}
 }
