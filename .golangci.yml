@@ -1,0 +1,107 @@
+# 运行设置
+run:
+  # 设置超时时间，防止大项目检查超时
+  timeout: 5m
+  # 是否在检查失败时返回非 0 状态码（CI 环境必须为 true）
+  issues-exit-code: 1
+  # 包含测试文件
+  tests: true
+  # 跳过目录
+  skip-dirs:
+    - vendor
+    - .git
+
+# 输出设置
+output:
+  # 输出格式：colored-line-number, line-number, json, tab, checkstyle, code-climate
+  format: colored-line-number
+  # 打印有问题的行
+  print-issued-lines: true
+  # 打印 linter 名称
+  print-linter-name: true
+
+# Linter 启用/禁用配置
+linters:
+  # 为了完全控制，先禁用所有 linter，然后手动启用需要的
+  disable-all: true
+  enable:
+    # --- 基础 & 核心 ---
+    - govet       # 官方静态分析工具，检查潜在 bug
+    - staticcheck # 这是一个超集，包含了大量的静态分析检查，强烈推荐
+    - errcheck    # 检查是否忽略了 error 返回值 (Go 开发的大忌)
+    - gosimple    # 检查代码是否可以简化
+    - ineffassign # 检查无效的赋值（赋值了但没使用）
+    - typecheck   # 像编译器一样解析和类型检查 Go 代码
+
+    # --- 代码风格 & 格式 ---
+    - revive      # 替代 golint 的工具，速度更快，配置更灵活
+    - goimports   # 自动修复 import 顺序，并做 gofmt 格式化
+    - goconst     # 查找代码中重复出现的字符串，建议抽取为常量
+    - misspell    # 检查拼写错误（比如把 false 写成了 flase）
+
+    # --- 复杂度 & 性能 ---
+    - gocyclo     # 检查函数圈复杂度（防止函数写得过于复杂、if/else 嵌套太深）
+    - bodyclose   # 检查 HTTP body 是否被正确关闭 (防止内存泄露)
+    - noctx       # 检查是否在应该使用 Context 的地方没有使用（如 http request）
+
+    # --- 其它实用 ---
+    - dogsled     # 检查是否有太多的空白标识符赋值 (如 _, _, _, _ = func())
+    - funlen      # 检查函数长度（太长了就该拆分了）
+
+# 具体 Linter 的详细设置
+linters-settings:
+  # 检查函数长度
+  funlen:
+    lines: 80        # 函数最大行数 (严格标准，可根据团队习惯调整为 100-120)
+    statements: 50   # 函数最大语句数
+
+  # 检查圈复杂度
+  gocyclo:
+    min-complexity: 15 # 超过 15 个判断分支就报错 (建议保持在 10-20 之间)
+
+  # 代码常量检查
+  goconst:
+    min-len: 3           # 字符串最小长度
+    min-occurrences: 3   # 出现 3 次以上建议转为常量
+
+  # 错误检查
+  errcheck:
+    check-type-assertions: true # 检查类型断言的错误
+    check-blank: true           # 检查使用 _ 忽略错误的情况
+
+  # Import 格式化
+  goimports:
+    # 将你的项目本地包分许，放在标准库和第三方库之后
+    # 【注意】这里请替换为你自己的 module 名称，例如 github.com/my-company/my-project
+    local-prefixes: github.com/your-username/your-project
+
+  # 代码风格检查
+  revive:
+    severity: warning
+    rules:
+      - name: exported
+        arguments:
+          - disableStuttering  # 允许包名和结构体名重复，例如 user.User
+      - name: package-comments # 强制包注释
+        disabled: true         # 个人项目如果觉得写包注释太累，可以设为 true 禁用
+
+# 问题过滤（排除误报）
+issues:
+  # 不要在以下情况报错
+  exclude-rules:
+    # 测试文件中，忽略一些严格检查
+    - path: _test\.go
+      linters:
+        - goconst
+        - funlen
+        - gocyclo
+        - errcheck
+    # 允许在 main 函数中使用 fmt.Println 等（生产环境通常建议用 log 库）
+    - path: main\.go
+      text: "SA1019" # staticcheck 的某个特定规则 ID
+      linters:
+        - forbidigo
+
+  # 一个文件最多报告多少个问题（0 表示不限制）
+  max-issues-per-linter: 0
+  max-same-issues: 0

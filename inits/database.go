@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"schedule_server/global"
+	"schedule_server/internal/model"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -43,7 +44,12 @@ func DBInit() {
 
 // AutoMigrate 自动化迁移表
 func AutoMigrate() {
-	if err := global.DB.AutoMigrate(); err != nil {
+	if err := global.DB.AutoMigrate(
+		&model.User{},
+		&model.UserType{},
+		&model.Department{},
+		&model.UserDepartment{},
+	); err != nil {
 		global.Log.Panicf("数据库迁移失败: %s", err)
 	}
 }

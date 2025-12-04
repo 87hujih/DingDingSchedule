@@ -43,6 +43,11 @@ type Responder interface {
 	GetData() interface{}
 }
 
+// Transform 包中添加
+func Transform[F any, T any](t Transformer[F, T], from F) T {
+	return t.Transform(from)
+}
+
 // ===================== Result 泛型包装器 =====================
 
 // Result 泛型结果包装器，用于 Service 层统一返回

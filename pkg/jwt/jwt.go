@@ -21,6 +21,7 @@ type Claims struct {
 	UserID     uint   `json:"user_id"`
 	DingUserID string `json:"ding_user_id"`
 	Name       string `json:"name"`
+	Role       int    `json:"role"` // 用户角色
 	jwt.RegisteredClaims
 }
 
@@ -42,12 +43,13 @@ func NewManager(cfg Config) *Manager {
 }
 
 // GenerateToken 签发Token
-func (m *Manager) GenerateToken(userID uint, dingUserID, name string) (string, error) {
+func (m *Manager) GenerateToken(userID uint, dingUserID, name string, role int) (string, error) {
 	now := time.Now()
 	claims := Claims{
 		UserID:     userID,
 		DingUserID: dingUserID,
 		Name:       name,
+		Role:       role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    m.cfg.Issuer,
 			Subject:   dingUserID,

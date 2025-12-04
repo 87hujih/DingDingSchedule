@@ -1,11 +1,9 @@
 package app
 
 import (
-	"net/http"
-	"schedule_server/internal/router"
-
 	"schedule_server/global"
 	"schedule_server/internal/handler"
+	"schedule_server/internal/middleware"
 	"schedule_server/internal/repository"
 	"schedule_server/internal/service"
 
@@ -16,25 +14,34 @@ import (
 func setupRouter() *gin.Engine {
 	gin.SetMode(global.AppConfig.Server.Mode)
 
-	r := gin.Default()
+	// 初始化中间件
+	middleware.Init(global.AppConfig.JWT)
 
-	// 健康检查
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
-
-	// 依赖注入：Repository → Service → Handler
+	// 依赖注入
 	repo := repository.NewRepository(global.DB)
-	svc := service.NewService(repo)
+	svc := service.NewService(repo, global.DingTalk, global.AppConfig.JWT)
 	h := handler.NewHandler(svc)
 
-	// 注册业务路由
+	// 注册路由
+	r := gin.Default()
 	registerRoutes(r, h)
 
 	return r
 }
 
-// registerRoutes 注册所有业务路由
+// registerRoutes 注册所有路由
 func registerRoutes(r *gin.Engine, h *handler.Handler) {
-	router.UserRouter(r, h)
+	// 健康检查
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+
+	// 公开路由（无需鉴权）
+	public := r.Group("/api")
+	registerAuthRoutes(public, h)
+
+	// 需要鉴权的路由
+	protected := r.Group("/api", middleware.JWTAuth())
+	registerUserRoutes(protected, h)
+	registerAdminRoutes(protected, h)
 }

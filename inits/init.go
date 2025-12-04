@@ -13,4 +13,10 @@ func Init() {
 
 	// 初始化表
 	AutoMigrate()
+
+	// 初始化钉钉客户端
+	DingTalkInit()
+
+	// 初始化部门（从钉钉同步到数据库）
+	InitDepartments()
 }

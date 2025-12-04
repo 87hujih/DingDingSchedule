@@ -1,0 +1,187 @@
+package dingtalk
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"sync"
+	"time"
+)
+
+const (
+	// 钉钉获取 AccessToken 的接口
+	tokenURL = "https://api.dingtalk.com/v1.0/oauth2/accessToken"
+	// 提前刷新时间（Token 过期前 5 分钟刷新）
+	refreshAdvance = 5 * time.Minute
+)
+
+var (
+	ErrEmptyCredentials = errors.New("钉钉: appKey 或 appSecret 为空")
+	ErrTokenFetch       = errors.New("钉钉: 获取 AccessToken 失败")
+)
+
+// tokenResponse 钉钉获取 Token 的响应结构
+type tokenResponse struct {
+	AccessToken string `json:"accessToken"`
+	ExpireIn    int64  `json:"expireIn"` // 过期时间，单位秒
+}
+
+// Client 钉钉客户端，自动管理 AccessToken
+type Client struct {
+	appKey    string
+	appSecret string
+
+	mu          sync.RWMutex
+	accessToken string
+	expireAt    time.Time // Token 过期时间
+
+	httpClient *http.Client
+}
+
+// NewClient 创建钉钉客户端
+func NewClient(appKey, appSecret string) (*Client, error) {
+	if appKey == "" || appSecret == "" {
+		return nil, ErrEmptyCredentials
+	}
+	return &Client{
+		appKey:    appKey,
+		appSecret: appSecret,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}, nil
+}
+
+// GetAccessToken 获取有效的 AccessToken（自动刷新）
+func (c *Client) GetAccessToken(ctx context.Context) (string, error) {
+	// 先尝试读取缓存的 Token
+	c.mu.RLock()
+	token := c.accessToken
+	expireAt := c.expireAt
+	c.mu.RUnlock()
+
+	// 如果 Token 有效且未过期（提前 5 分钟刷新）
+	if token != "" && time.Now().Add(refreshAdvance).Before(expireAt) {
+		return token, nil
+	}
+
+	// 需要刷新 Token
+	return c.refreshToken(ctx)
+}
+
+// refreshToken 从钉钉服务器获取新的 AccessToken
+func (c *Client) refreshToken(ctx context.Context) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 双重检查：可能其他 goroutine 已经刷新过了
+	if c.accessToken != "" && time.Now().Add(refreshAdvance).Before(c.expireAt) {
+		return c.accessToken, nil
+	}
+
+	// 构造请求体
+	reqBody := map[string]string{
+		"appKey":    c.appKey,
+		"appSecret": c.appSecret,
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("钉钉: 序列化请求体失败: %w", err)
+	}
+
+	// 创建请求
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("钉钉: 创建请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// 发送请求
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("钉钉: 发送请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("钉钉: 读取响应失败: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("%w: 状态码=%d, 响应=%s", ErrTokenFetch, resp.StatusCode, string(respBody))
+	}
+
+	// 解析响应
+	var tokenResp tokenResponse
+	if err := json.Unmarshal(respBody, &tokenResp); err != nil {
+		return "", fmt.Errorf("钉钉: 解析响应失败: %w", err)
+	}
+
+	if tokenResp.AccessToken == "" {
+		return "", fmt.Errorf("%w: 响应中 Token 为空, 响应=%s", ErrTokenFetch, string(respBody))
+	}
+
+	// 更新缓存
+	c.accessToken = tokenResp.AccessToken
+	c.expireAt = time.Now().Add(time.Duration(tokenResp.ExpireIn) * time.Second)
+
+	return c.accessToken, nil
+}
+
+// Request 发送带 AccessToken 的钉钉 API 请求
+func (c *Client) Request(ctx context.Context, method, url string, body any) ([]byte, error) {
+	token, err := c.GetAccessToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("钉钉: 获取 AccessToken 失败: %w", err)
+	}
+
+	var bodyReader io.Reader
+	if body != nil {
+		bodyBytes, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("钉钉: 序列化请求体失败: %w", err)
+		}
+		bodyReader = bytes.NewReader(bodyBytes)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("钉钉: 创建请求失败: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-acs-dingtalk-access-token", token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("钉钉: 发送请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("钉钉: 读取响应失败: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("钉钉: API 调用失败: 状态码=%d, 响应=%s", resp.StatusCode, string(respBody))
+	}
+
+	return respBody, nil
+}
+
+// Get 发送 GET 请求
+func (c *Client) Get(ctx context.Context, url string) ([]byte, error) {
+	return c.Request(ctx, http.MethodGet, url, nil)
+}
+
+// Post 发送 POST 请求
+func (c *Client) Post(ctx context.Context, url string, body any) ([]byte, error) {
+	return c.Request(ctx, http.MethodPost, url, body)
+}

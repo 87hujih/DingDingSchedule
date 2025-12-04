@@ -24,6 +24,7 @@ const (
 	CtxKeyUserID     = "user_id"
 	CtxKeyDingUserID = "ding_user_id"
 	CtxKeyUserName   = "user_name"
+	CtxKeyUserRole   = "user_role"
 )
 
 // 包级变量，存储已初始化的 JWT Manager
@@ -81,7 +82,48 @@ func JWTAuth() gin.HandlerFunc {
 		c.Set(CtxKeyUserID, claims.UserID)
 		c.Set(CtxKeyDingUserID, claims.DingUserID)
 		c.Set(CtxKeyUserName, claims.Name)
+		c.Set(CtxKeyUserRole, claims.Role)
 
 		c.Next()
 	}
+}
+
+// RequireRole 要求指定角色及以上权限的中间件
+// minRole: 最小角色等级（0=普通成员, 1=小组长, 2=实验室管理员, 3=超级管理员）
+func RequireRole(minRole int) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		roleVal, exists := c.Get(CtxKeyUserRole)
+		if !exists {
+			response.New(c).Code(response.CodeUnauthorized).Message("未获取到用户角色").Abort()
+			return
+		}
+
+		role, ok := roleVal.(int)
+		if !ok {
+			response.New(c).Code(response.CodeUnauthorized).Message("用户角色类型错误").Abort()
+			return
+		}
+
+		if role < minRole {
+			response.New(c).Code(response.CodeForbidden).Message("权限不足").Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// RequireGroupLead 要求小组长及以上权限
+func RequireGroupLead() gin.HandlerFunc {
+	return RequireRole(1)
+}
+
+// RequireLabAdmin 要求实验室管理员及以上权限
+func RequireLabAdmin() gin.HandlerFunc {
+	return RequireRole(2)
+}
+
+// RequireSuperAdmin 要求超级管理员权限
+func RequireSuperAdmin() gin.HandlerFunc {
+	return RequireRole(3)
 }

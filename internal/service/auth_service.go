@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"schedule_server/config"
+	"schedule_server/internal/dto"
 	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
 	"schedule_server/pkg/dingtalk"
@@ -18,23 +19,6 @@ var (
 	ErrAuthCodeRequired = errors.New("auth: 免登码不能为空")
 	ErrLoginFailed      = errors.New("auth: 登录失败")
 )
-
-// LoginResult 登录结果
-type LoginResult struct {
-	Token     string     `json:"token"`
-	ExpiresIn int64      `json:"expires_in"` // 过期时间（秒）
-	User      *LoginUser `json:"user"`
-}
-
-// LoginUser 登录用户信息
-type LoginUser struct {
-	ID         uint    `json:"id"`
-	DingUserID string  `json:"ding_user_id"`
-	Name       string  `json:"name"`
-	Avatar     string  `json:"avatar"`
-	Phone      string  `json:"phone"`
-	DeptIDs    []int64 `json:"dept_ids"`
-}
 
 // AuthService 认证服务
 type AuthService struct {
@@ -70,24 +54,18 @@ func NewAuthService(
 }
 
 // Login 钉钉免登码登录
-func (s *AuthService) Login(ctx context.Context, authCode string) (*LoginResult, error) {
+func (s *AuthService) Login(ctx context.Context, authCode string) (*dto.LoginResponse, error) {
 	if authCode == "" {
 		return nil, ErrAuthCodeRequired
 	}
 
-	// 1. 通过免登码获取用户基本信息
-	userInfo, err := s.dingClient.GetUserByAuthCode(ctx, authCode)
-	if err != nil {
-		return nil, fmt.Errorf("%w: 获取用户信息失败: %v", ErrLoginFailed, err)
-	}
-
-	// 2. 通过unionID获取用户ID
-	userID, err := s.dingClient.GetUserIDByUnionID(ctx, userInfo.UnionID)
+	// 1. 通过免登码直接获取用户ID
+	userID, err := s.dingClient.GetUserByAuthCode(ctx, authCode)
 	if err != nil {
 		return nil, fmt.Errorf("%w: 获取用户ID失败: %v", ErrLoginFailed, err)
 	}
 
-	// 3. 获取用户详细信息（包含部门列表）
+	// 2. 获取用户详细信息（包含部门列表）
 	userDetail, err := s.dingClient.GetUserDetail(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("%w: 获取用户详情失败: %v", ErrLoginFailed, err)
@@ -99,7 +77,7 @@ func (s *AuthService) Login(ctx context.Context, authCode string) (*LoginResult,
 		Name:       userDetail.Name,
 		Phone:      userDetail.Mobile,
 		Avatar:     userDetail.Avatar,
-		Status:     1, // 默认参与考勤
+		Status:     1,
 	}
 
 	if err := s.userRepo.Upsert(ctx, user); err != nil {
@@ -111,21 +89,23 @@ func (s *AuthService) Login(ctx context.Context, authCode string) (*LoginResult,
 		return nil, fmt.Errorf("%w: 同步部门失败: %v", ErrLoginFailed, err)
 	}
 
-	// 6. 签发JWT
-	token, err := s.jwtMgr.GenerateToken(user.ID, user.DingUserID, user.Name)
+	// 6. 签发JWT（包含用户角色信息）
+	token, err := s.jwtMgr.GenerateToken(user.ID, user.DingUserID, user.Name, user.Role)
 	if err != nil {
 		return nil, fmt.Errorf("%w: 签发Token失败: %v", ErrLoginFailed, err)
 	}
 
-	return &LoginResult{
+	return &dto.LoginResponse{
 		Token:     token,
 		ExpiresIn: int64(s.jwtExpire.Seconds()),
-		User: &LoginUser{
+		User: &dto.LoginUser{
 			ID:         user.ID,
 			DingUserID: user.DingUserID,
 			Name:       user.Name,
 			Avatar:     user.Avatar,
 			Phone:      user.Phone,
+			Role:       user.Role,
+			RoleName:   user.RoleName(),
 			DeptIDs:    userDetail.DeptIDList,
 		},
 	}, nil

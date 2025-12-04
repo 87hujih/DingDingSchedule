@@ -12,6 +12,7 @@ const (
 	CodeSuccess = 0 // 成功
 
 	// 钉钉身份 10xxx
+	CodeUnauthorized        = 10000 // 未登录/Token无效
 	CodeDingUserNotFound    = 10001 // 钉钉用户不存在
 	CodeDingUserUnbind      = 10002 // 用户未绑定
 	CodeDingAuthCodeInvalid = 10003 // 钉钉授权码无效
@@ -61,6 +62,7 @@ var codeMessages = map[int]string{
 	CodeSuccess: "success",
 
 	// 钉钉身份
+	CodeUnauthorized:        "未登录或Token无效",
 	CodeDingUserNotFound:    "钉钉用户不存在",
 	CodeDingUserUnbind:      "用户未绑定",
 	CodeDingAuthCodeInvalid: "钉钉授权码无效",

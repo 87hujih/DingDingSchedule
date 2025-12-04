@@ -20,18 +20,21 @@ func TestManager_GenerateAndParse(t *testing.T) {
 		userID     uint
 		dingUserID string
 		userName   string
+		role       int
 	}{
 		{
 			name:       "normal user",
 			userID:     1,
 			dingUserID: "ding123456",
 			userName:   "张三",
+			role:       0,
 		},
 		{
-			name:       "user with special chars",
+			name:       "admin user",
 			userID:     999,
 			dingUserID: "ding-abc_123",
 			userName:   "李四",
+			role:       3,
 		},
 	}
 
@@ -40,7 +43,7 @@ func TestManager_GenerateAndParse(t *testing.T) {
 			t.Parallel()
 
 			// 签发Token
-			token, err := mgr.GenerateToken(tc.userID, tc.dingUserID, tc.userName)
+			token, err := mgr.GenerateToken(tc.userID, tc.dingUserID, tc.userName, tc.role)
 			if err != nil {
 				t.Fatalf("GenerateToken failed: %v", err)
 			}
@@ -63,6 +66,9 @@ func TestManager_GenerateAndParse(t *testing.T) {
 			}
 			if claims.Name != tc.userName {
 				t.Errorf("Name mismatch: got %s, want %s", claims.Name, tc.userName)
+			}
+			if claims.Role != tc.role {
+				t.Errorf("Role mismatch: got %d, want %d", claims.Role, tc.role)
 			}
 			if claims.Issuer != cfg.Issuer {
 				t.Errorf("Issuer mismatch: got %s, want %s", claims.Issuer, cfg.Issuer)
@@ -129,7 +135,7 @@ func TestManager_ExpiredToken(t *testing.T) {
 	}
 	mgr := NewManager(cfg)
 
-	token, err := mgr.GenerateToken(1, "ding123", "test")
+	token, err := mgr.GenerateToken(1, "ding123", "test", 0)
 	if err != nil {
 		t.Fatalf("GenerateToken failed: %v", err)
 	}

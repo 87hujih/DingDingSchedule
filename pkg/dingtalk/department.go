@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 const (
@@ -91,6 +92,9 @@ func (c *Client) FetchAllDepartments(ctx context.Context) ([]Department, error) 
 
 // fetchDeptRecursive 递归获取部门
 func (c *Client) fetchDeptRecursive(ctx context.Context, parentID int64, result *[]Department) error {
+	// 限流：每次请求间隔60ms，确保不超过15次/秒（钉钉限制20次/秒）
+	time.Sleep(60 * time.Millisecond)
+
 	depts, err := c.GetSubDepartments(ctx, parentID)
 	if err != nil {
 		return fmt.Errorf("获取部门(parentID=%d)子部门失败: %w", parentID, err)

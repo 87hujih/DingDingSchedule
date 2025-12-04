@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	// 新版API：通过免登码获取用户信息
-	getUserByCodeURL = "https://api.dingtalk.com/v1.0/contact/users/me"
-	// 旧版API：获取用户详情
+	// 通过免登码获取用户信息（直接返回userid）
+	getUserByCodeURL = "https://oapi.dingtalk.com/user/getuserinfo"
+	// 获取用户详情
 	getUserDetailURL = "https://oapi.dingtalk.com/topapi/v2/user/get"
 )
 
@@ -21,15 +21,6 @@ var (
 	ErrUserNotFound    = errors.New("dingtalk: 用户不存在")
 	ErrAuthCodeInvalid = errors.New("dingtalk: 免登码无效")
 )
-
-// UserInfo 用户基本信息（免登码获取）
-type UserInfo struct {
-	Nick      string `json:"nick"`
-	UnionID   string `json:"unionId"`
-	OpenID    string `json:"openId"`
-	AvatarURL string `json:"avatarUrl"`
-	Mobile    string `json:"mobile"`
-}
 
 // UserDetail 用户详细信息（管理后台API获取）
 type UserDetail struct {
@@ -52,34 +43,47 @@ type userDetailResponse struct {
 	Result  UserDetail `json:"result"`
 }
 
+// authCodeResponse 免登码获取用户信息响应
+type authCodeResponse struct {
+	ErrCode  int    `json:"errcode"`
+	ErrMsg   string `json:"errmsg"`
+	UserID   string `json:"userid"`
+	DeviceID string `json:"deviceId"`
+}
+
 // GetUserByAuthCode 通过免登授权码获取用户信息
 // authCode: 前端通过钉钉SDK获取的免登码
-func (c *Client) GetUserByAuthCode(ctx context.Context, authCode string) (*UserInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, getUserByCodeURL, nil)
+// 返回: userid（不再返回UserInfo，因为旧版API只返回userid）
+func (c *Client) GetUserByAuthCode(ctx context.Context, authCode string) (string, error) {
+	token, err := c.GetAccessToken(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("dingtalk: 创建请求失败: %w", err)
+		return "", fmt.Errorf("dingtalk: 获取AccessToken失败: %w", err)
 	}
 
-	// 新版API使用Header传递authCode
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-acs-dingtalk-access-token", authCode)
+	// 旧版API：直接用authCode+企业AccessToken获取userid
+	url := fmt.Sprintf("%s?access_token=%s&code=%s", getUserByCodeURL, token, authCode)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("dingtalk: 创建请求失败: %w", err)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("dingtalk: 发送请求失败: %w", err)
+		return "", fmt.Errorf("dingtalk: 发送请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, ErrAuthCodeInvalid
+	var result authCodeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("dingtalk: 解析响应失败: %w", err)
 	}
 
-	var userInfo UserInfo
-	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
-		return nil, fmt.Errorf("dingtalk: 解析响应失败: %w", err)
+	if result.ErrCode != 0 {
+		return "", fmt.Errorf("dingtalk: API错误: code=%d, msg=%s", result.ErrCode, result.ErrMsg)
 	}
 
-	return &userInfo, nil
+	return result.UserID, nil
 }
 
 // GetUserDetail 获取用户详细信息（包含部门列表）
@@ -111,43 +115,6 @@ func (c *Client) GetUserDetail(ctx context.Context, userID string) (*UserDetail,
 	}
 
 	return &resp.Result, nil
-}
-
-// GetUserIDByUnionID 通过unionID获取用户ID
-func (c *Client) GetUserIDByUnionID(ctx context.Context, unionID string) (string, error) {
-	token, err := c.GetAccessToken(ctx)
-	if err != nil {
-		return "", fmt.Errorf("dingtalk: 获取AccessToken失败: %w", err)
-	}
-
-	url := fmt.Sprintf("https://oapi.dingtalk.com/topapi/user/getbyunionid?access_token=%s", token)
-	reqBody := map[string]string{"unionid": unionID}
-
-	respBody, err := c.postJSON(ctx, url, reqBody)
-	if err != nil {
-		return "", err
-	}
-
-	var resp struct {
-		ErrCode int    `json:"errcode"`
-		ErrMsg  string `json:"errmsg"`
-		Result  struct {
-			UserID string `json:"userid"`
-		} `json:"result"`
-	}
-
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return "", fmt.Errorf("dingtalk: 解析响应失败: %w", err)
-	}
-
-	if resp.ErrCode != 0 {
-		if resp.ErrCode == 60121 {
-			return "", ErrUserNotFound
-		}
-		return "", fmt.Errorf("dingtalk: API错误: code=%d, msg=%s", resp.ErrCode, resp.ErrMsg)
-	}
-
-	return resp.Result.UserID, nil
 }
 
 // postJSON 内部辅助方法：发送POST JSON请求
