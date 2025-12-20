@@ -38,7 +38,7 @@ func (h *SemesterHandler) List(ctx *gin.Context) {
 func (h *SemesterHandler) Create(ctx *gin.Context) {
 	var req dto.CreateSemesterRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		response.Fail(ctx, response.CodeInvalidParam, err.Error())
+		response.Fail(ctx, response.CodeInvalidParam, response.TranslateValidationError(err))
 		return
 	}
 
@@ -69,7 +69,7 @@ func (h *SemesterHandler) Update(ctx *gin.Context) {
 
 	var req dto.UpdateSemesterRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		response.Fail(ctx, response.CodeInvalidParam, err.Error())
+		response.Fail(ctx, response.CodeInvalidParam, response.TranslateValidationError(err))
 		return
 	}
 

@@ -57,6 +57,7 @@ func ConvertToXLSX(ctx context.Context, srcPath, dstPath string) error {
 	case isBinaryXLS(validHeader):
 		return convertBinaryXLSToXLSX(f, dstPath)
 	case isHTML(validHeader):
+		// 这里调用修复后的 HTML 转换函数
 		return convertHTMLToXLSX(f, dstPath)
 	default:
 		return fmt.Errorf("unsupported file format")
@@ -85,42 +86,53 @@ func ParseCourses(ctx context.Context, xlsxPath string) ([]CourseInput, error) {
 
 	colDayMap := make(map[int]int)
 	headerFound := false
-	for rIdx := 0; rIdx < 5 && rIdx < len(rows); rIdx++ {
+
+	// 尝试在前几行寻找表头
+	for rIdx := 0; rIdx < 10 && rIdx < len(rows); rIdx++ {
 		row := rows[rIdx]
+		// 统计这一行包含"星期"的数量，避免误判
+		weekCount := 0
+		tempMap := make(map[int]int)
+
 		for cIdx, cell := range row {
 			txt := strings.ReplaceAll(cell, " ", "")
-			switch {
-			case strings.Contains(txt, "星期一"):
-				colDayMap[cIdx] = 1
-				headerFound = true
-			case strings.Contains(txt, "星期二"):
-				colDayMap[cIdx] = 2
-				headerFound = true
-			case strings.Contains(txt, "星期三"):
-				colDayMap[cIdx] = 3
-				headerFound = true
-			case strings.Contains(txt, "星期四"):
-				colDayMap[cIdx] = 4
-				headerFound = true
-			case strings.Contains(txt, "星期五"):
-				colDayMap[cIdx] = 5
-				headerFound = true
-			case strings.Contains(txt, "星期六"):
-				colDayMap[cIdx] = 6
-				headerFound = true
-			case strings.Contains(txt, "星期日"), strings.Contains(txt, "星期天"):
-				colDayMap[cIdx] = 7
-				headerFound = true
+			if strings.Contains(txt, "星期") {
+				weekCount++
+				if strings.Contains(txt, "一") {
+					tempMap[cIdx] = 1
+				}
+				if strings.Contains(txt, "二") {
+					tempMap[cIdx] = 2
+				}
+				if strings.Contains(txt, "三") {
+					tempMap[cIdx] = 3
+				}
+				if strings.Contains(txt, "四") {
+					tempMap[cIdx] = 4
+				}
+				if strings.Contains(txt, "五") {
+					tempMap[cIdx] = 5
+				}
+				if strings.Contains(txt, "六") {
+					tempMap[cIdx] = 6
+				}
+				if strings.Contains(txt, "日") || strings.Contains(txt, "天") {
+					tempMap[cIdx] = 7
+				}
 			}
 		}
-		if headerFound {
+
+		// 如果一行里至少有3个“星期X”，我们认为这是表头行
+		if weekCount >= 3 {
+			colDayMap = tempMap
+			headerFound = true
 			break
 		}
 	}
 
 	var result []CourseInput
 	for _, row := range rows {
-		// 跳过表头行
+		// 跳过纯表头行
 		isHeader := false
 		for _, cell := range row {
 			if strings.Contains(cell, "星期") {
@@ -134,17 +146,21 @@ func ParseCourses(ctx context.Context, xlsxPath string) ([]CourseInput, error) {
 
 		for colIdx, cellValue := range row {
 			dayOfWeek := 0
+
 			if headerFound {
 				if d, ok := colDayMap[colIdx]; ok {
 					dayOfWeek = d
 				} else {
+					// 如果找到了表头，但这列不在映射里（比如时间列），跳过
 					continue
 				}
 			} else {
+				// 兜底逻辑：通常前2列是时间/节次，第3列开始是星期一
+				// 如果 HTML 转换修复了，这里的列索引应该是准确的
 				if colIdx < 2 {
 					continue
 				}
-				dayOfWeek = colIdx - 1
+				dayOfWeek = colIdx - 1 // 假设 col 2 -> Mon (1)
 				if dayOfWeek > 7 {
 					dayOfWeek = 7
 				}
@@ -155,6 +171,7 @@ func ParseCourses(ctx context.Context, xlsxPath string) ([]CourseInput, error) {
 				continue
 			}
 
+			// 解析单元格内容
 			var records []CourseInput
 			if strings.Contains(cleanValue, "\n") {
 				records = parseStructuredLines(cleanValue)
@@ -172,6 +189,89 @@ func ParseCourses(ctx context.Context, xlsxPath string) ([]CourseInput, error) {
 	}
 
 	return result, nil
+}
+
+// ---------- 核心修复：HTML 转 XLSX (支持跨行/跨列) ----------
+
+func convertHTMLToXLSX(reader io.Reader, dstPath string) error {
+	bufferedReader := bufio.NewReader(reader)
+	sample, _ := bufferedReader.Peek(1024)
+	e, _, _ := charset.DetermineEncoding(sample, "text/html")
+	utf8Reader := transform.NewReader(bufferedReader, e.NewDecoder())
+	doc, err := goquery.NewDocumentFromReader(utf8Reader)
+	if err != nil {
+		return err
+	}
+
+	f := excelize.NewFile()
+	defer f.Close()
+	sheetName := "Sheet1"
+	f.SetSheetName("Sheet1", sheetName)
+
+	// occupied 用于记录被 rowspan/colspan 占用的格子
+	// map[row_index]map[col_index]bool
+	occupied := make(map[int]map[int]bool)
+
+	// 辅助函数：标记占用
+	markOccupied := func(r, c int) {
+		if occupied[r] == nil {
+			occupied[r] = make(map[int]bool)
+		}
+		occupied[r][c] = true
+	}
+
+	// 辅助函数：检查是否被占用
+	isOccupied := func(r, c int) bool {
+		if rowMap, ok := occupied[r]; ok {
+			return rowMap[c]
+		}
+		return false
+	}
+
+	rowIdx := 1
+	doc.Find("tr").Each(func(i int, tr *goquery.Selection) {
+		colIdx := 1
+		tr.Find("td, th").Each(func(j int, cell *goquery.Selection) {
+			// 1. 如果当前格子已经被上一行的 rowspan 占用，跳过这些列
+			for isOccupied(rowIdx, colIdx) {
+				colIdx++
+			}
+
+			// 2. 获取跨行跨列属性
+			rowSpan, _ := strconv.Atoi(cell.AttrOr("rowspan", "1"))
+			colSpan, _ := strconv.Atoi(cell.AttrOr("colspan", "1"))
+			if rowSpan < 1 {
+				rowSpan = 1
+			}
+			if colSpan < 1 {
+				colSpan = 1
+			}
+
+			// 3. 处理文本内容
+			cell.Find("br").ReplaceWithHtml("\n")
+			cell.Find("div").AppendHtml("\n")
+			cell.Find("p").AppendHtml("\n")
+			val := strings.TrimSpace(cell.Text())
+
+			// 4. 写入 Excel (只写入左上角的那个单元格)
+			axis, _ := excelize.CoordinatesToCellName(colIdx, rowIdx)
+			f.SetCellValue(sheetName, axis, val)
+
+			// 5. 将当前单元格覆盖的所有区域标记为占用
+			// 注意：这包括了当前格子本身以及未来行/列的格子
+			for r := 0; r < rowSpan; r++ {
+				for c := 0; c < colSpan; c++ {
+					markOccupied(rowIdx+r, colIdx+c)
+				}
+			}
+
+			// 6. 移动列指针
+			colIdx += colSpan
+		})
+		rowIdx++
+	})
+
+	return f.SaveAs(dstPath)
 }
 
 // ---------- 结构化解析 ----------
@@ -307,7 +407,7 @@ func splitLocationAndNextCourse(raw string) (string, string) {
 	if raw == "" {
 		return "", ""
 	}
-	protectedSuffixes := []string{"实验室", "中心", "机房", "基地", "平台", "实训室"}
+	protectedSuffixes := []string{"实验室", "中心", "机房", "基地", "平台", "实训室", "楼", "区", "室"}
 	for _, suffix := range protectedSuffixes {
 		if strings.HasSuffix(raw, suffix) {
 			return raw, ""
@@ -435,7 +535,7 @@ func joinWeeks(weeks []int) string {
 	return b.String()
 }
 
-// ---------- 文件转换 ----------
+// ---------- 文件转换基础 ----------
 
 func isXLSX(header []byte) bool      { return bytes.HasPrefix(header, []byte{0x50, 0x4B, 0x03, 0x04}) }
 func isBinaryXLS(header []byte) bool { return bytes.HasPrefix(header, []byte{0xD0, 0xCF, 0x11, 0xE0}) }
@@ -498,37 +598,5 @@ func convertBinaryXLSToXLSX(reader io.Reader, dstPath string) error {
 			}
 		}
 	}
-	return f.SaveAs(dstPath)
-}
-
-func convertHTMLToXLSX(reader io.Reader, dstPath string) error {
-	bufferedReader := bufio.NewReader(reader)
-	sample, _ := bufferedReader.Peek(1024)
-	e, _, _ := charset.DetermineEncoding(sample, "text/html")
-	utf8Reader := transform.NewReader(bufferedReader, e.NewDecoder())
-	doc, err := goquery.NewDocumentFromReader(utf8Reader)
-	if err != nil {
-		return err
-	}
-
-	f := excelize.NewFile()
-	defer f.Close()
-	f.SetSheetName("Sheet1", "Sheet1")
-
-	rowIdx := 1
-	doc.Find("tr").Each(func(i int, s *goquery.Selection) {
-		colIdx := 1
-		s.Find("td, th").Each(func(j int, cell *goquery.Selection) {
-			cell.Find("br").ReplaceWithHtml("\n")
-			cell.Find("div").AppendHtml("\n")
-			cell.Find("p").AppendHtml("\n")
-			val := cell.Text()
-			axis, _ := excelize.CoordinatesToCellName(colIdx, rowIdx)
-			f.SetCellValue("Sheet1", axis, strings.TrimSpace(val))
-			colIdx++
-		})
-		rowIdx++
-	})
-
 	return f.SaveAs(dstPath)
 }

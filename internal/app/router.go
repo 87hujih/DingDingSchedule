@@ -44,4 +44,5 @@ func registerRoutes(r *gin.Engine, h *handler.Handler) {
 	protected := r.Group("/api", middleware.JWTAuth())
 	registerUserRoutes(protected, h)
 	registerAdminRoutes(protected, h)
+	registerScheduleRoutes(protected, h)
 }

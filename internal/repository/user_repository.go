@@ -3,8 +3,10 @@ package repository
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"schedule_server/internal/model"
+	"schedule_server/pkg/pinyinutil"
 
 	"gorm.io/gorm"
 )
@@ -20,6 +22,14 @@ type UserRepository interface {
 	FindByID(ctx context.Context, id uint) (*model.User, error)
 	// FindByDingUserID 根据钉钉用户ID查询用户
 	FindByDingUserID(ctx context.Context, dingUserID string) (*model.User, error)
+	// Search 按关键词分页搜索用户，可选按部门或用户ID过滤（union）
+	// - keyword 匹配 name/phone/ding_user_id/name_pinyin/name_pinyin_abbr
+	// - deptIDs: 允许的部门列表（为空则不限制）
+	// - onlyUserIDs: 允许的用户ID列表（为空则不限制）
+	Search(ctx context.Context, keyword string, page, pageSize int,
+		deptIDs []int64, onlyUserIDs []uint) ([]model.User, int, error)
+	// FindDepartmentNames 查询用户所属部门名称列表
+	FindDepartmentNames(ctx context.Context, userID uint) ([]string, error)
 	// Create 创建用户
 	Create(ctx context.Context, user *model.User) error
 	// Update 更新用户
@@ -67,11 +77,13 @@ func (r *userRepository) FindByDingUserID(ctx context.Context, dingUserID string
 
 // Create 创建用户
 func (r *userRepository) Create(ctx context.Context, user *model.User) error {
+	fillUserPinyin(user)
 	return r.db.WithContext(ctx).Create(user).Error
 }
 
 // Update 更新用户
 func (r *userRepository) Update(ctx context.Context, user *model.User) error {
+	fillUserPinyin(user)
 	return r.db.WithContext(ctx).Save(user).Error
 }
 
@@ -86,6 +98,7 @@ func (r *userRepository) Upsert(ctx context.Context, user *model.User) error {
 		// 已存在，更新
 		user.ID = existing.ID
 		user.CreatedAt = existing.CreatedAt
+		user.Role = existing.Role
 		return r.Update(ctx, user)
 	}
 
@@ -131,4 +144,84 @@ func (r *userRepository) FindDepartmentIDs(ctx context.Context, userID uint) ([]
 	}
 
 	return deptIDs, nil
+}
+
+// FindDepartmentNames 查询用户所属部门名称列表
+func (r *userRepository) FindDepartmentNames(ctx context.Context, userID uint) ([]string, error) {
+	var names []string
+	if err := r.db.WithContext(ctx).
+		Table("user_departments AS ud").
+		Select("d.name").
+		Joins("JOIN departments d ON d.dept_id = ud.dept_id").
+		Where("ud.user_id = ?", userID).
+		Scan(&names).Error; err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+func fillUserPinyin(user *model.User) {
+	if user == nil {
+		return
+	}
+	if strings.TrimSpace(user.Name) == "" {
+		user.NamePinyin = ""
+		user.NamePinyinAbbr = ""
+		return
+	}
+
+	full, abbr := pinyinutil.FullAndAbbr(user.Name)
+	user.NamePinyin = full
+	user.NamePinyinAbbr = abbr
+}
+
+// Search 按关键词分页搜索用户
+func (r *userRepository) Search(
+	ctx context.Context,
+	keyword string,
+	page,
+	pageSize int,
+	deptIDs []int64,
+	onlyUserIDs []uint,
+) ([]model.User, int, error) {
+	q := r.db.WithContext(ctx).Model(&model.User{}).Distinct("users.id")
+
+	useDept := len(deptIDs) > 0
+	useUserIDs := len(onlyUserIDs) > 0
+
+	if useDept {
+		q = q.Joins("JOIN user_departments ud ON ud.user_id = users.id")
+	}
+
+	switch {
+	case useDept && useUserIDs:
+		q = q.Where(r.db.Where("users.id IN ?", onlyUserIDs).Or("ud.dept_id IN ?", deptIDs))
+	case useDept:
+		q = q.Where("ud.dept_id IN ?", deptIDs)
+	case useUserIDs:
+		q = q.Where("users.id IN ?", onlyUserIDs)
+	}
+
+	if keyword != "" {
+		like := "%" + keyword + "%"
+		q = q.Where(
+			"name LIKE ? OR phone LIKE ? OR ding_user_id LIKE ? OR name_pinyin LIKE ? OR name_pinyin_abbr LIKE ?",
+			like, like, like, like, like,
+		)
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var users []model.User
+	if err := q.Order("users.id DESC").
+		Limit(pageSize).
+		Offset((page - 1) * pageSize).
+		Find(&users).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return users, int(total), nil
 }

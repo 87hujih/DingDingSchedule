@@ -13,9 +13,8 @@ type CourseRepository interface {
 	DeleteByUserSemester(ctx context.Context, userID uint, semester string) error
 	BatchCreate(ctx context.Context, courses []model.Course) error
 	ListByUserSemester(ctx context.Context, userID uint, semester string) ([]model.Course, error)
+	ListByUserSemesterPaged(ctx context.Context, userID uint, semester string, page, pageSize int) ([]model.Course, int64, error)
 	ReplaceByUserSemester(ctx context.Context, userID uint, semester string, courses []model.Course) error
-
-	// 单条 CRUD
 	GetByID(ctx context.Context, id uint) (*model.Course, error)
 	Create(ctx context.Context, course *model.Course) error
 	Update(ctx context.Context, course *model.Course) error
@@ -59,10 +58,44 @@ func (r *courseRepository) ListByUserSemester(ctx context.Context, userID uint, 
 	return courses, nil
 }
 
+// ListByUserSemesterPaged 用户课程列表（分页）
+func (r *courseRepository) ListByUserSemesterPaged(ctx context.Context, userID uint, semester string, page, pageSize int) ([]model.Course, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 10
+	}
+
+	offset := (page - 1) * pageSize
+
+	query := r.db.WithContext(ctx).Model(&model.Course{}).
+		Where("user_id = ? AND semester = ?", userID, semester)
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	if total == 0 || int64(offset) >= total {
+		return []model.Course{}, total, nil
+	}
+
+	var courses []model.Course
+	if err := query.Order("day_of_week ASC, section ASC, id ASC").
+		Limit(pageSize).
+		Offset(offset).
+		Find(&courses).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return courses, total, nil
+}
+
 // ReplaceByUserSemester 在事务中先删除指定用户+学期的课程，再插入新课程
 func (r *courseRepository) ReplaceByUserSemester(ctx context.Context, userID uint, semester string, courses []model.Course) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.
+		if err := tx.Unscoped().
 			Where("user_id = ? AND semester = ?", userID, semester).
 			Delete(&model.Course{}).Error; err != nil {
 			return err

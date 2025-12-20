@@ -3,6 +3,9 @@ package response
 import (
 	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/go-playground/validator/v10"
 )
 
 // BizError 业务错误，可在 service 层抛出，handler 层统一处理
@@ -42,6 +45,11 @@ func ErrForbidden() *BizError {
 // ErrNotFound 资源不存在
 func ErrNotFound() *BizError {
 	return NewBizErrorWithCode(CodeNotFound)
+}
+
+// ErrNotFoundWithMsg 资源不存在（自定义消息）
+func ErrNotFoundWithMsg(msg string) *BizError {
+	return NewBizError(CodeNotFound, msg)
 }
 
 // ErrInvalidParam 参数无效
@@ -101,4 +109,62 @@ func GetBizError(err error) (*BizError, bool) {
 	var bizErr *BizError
 	ok := errors.As(err, &bizErr)
 	return bizErr, ok
+}
+
+// TranslateValidationError 将 validator 错误翻译为友好的中文提示
+func TranslateValidationError(err error) string {
+	var validationErrs validator.ValidationErrors
+	if !errors.As(err, &validationErrs) {
+		return err.Error()
+	}
+
+	var msgs []string
+	for _, e := range validationErrs {
+		field := translateFieldName(e.Field())
+		msg := translateValidationTag(field, e.Tag(), e.Param())
+		msgs = append(msgs, msg)
+	}
+
+	return strings.Join(msgs, "; ")
+}
+
+// translateFieldName 字段名翻译
+func translateFieldName(field string) string {
+	fieldMap := map[string]string{
+		"Name":       "名称",
+		"StartDate":  "开始日期",
+		"TotalWeek":  "总周数",
+		"AuthCode":   "授权码",
+		"Semester":   "学期",
+		"CourseName": "课程名称",
+		"DayOfWeek":  "星期",
+		"Section":    "节次",
+		"WeekList":   "周次列表",
+		"Teacher":    "教师",
+		"Location":   "地点",
+	}
+	if name, ok := fieldMap[field]; ok {
+		return name
+	}
+	return field
+}
+
+// translateValidationTag 验证规则翻译
+func translateValidationTag(field, tag, param string) string {
+	switch tag {
+	case "required":
+		return fmt.Sprintf("%s不能为空", field)
+	case "min":
+		return fmt.Sprintf("%s不能小于%s", field, param)
+	case "max":
+		return fmt.Sprintf("%s不能大于%s", field, param)
+	case "len":
+		return fmt.Sprintf("%s长度必须为%s", field, param)
+	case "email":
+		return fmt.Sprintf("%s格式不正确", field)
+	case "oneof":
+		return fmt.Sprintf("%s必须是以下值之一: %s", field, param)
+	default:
+		return fmt.Sprintf("%s验证失败(%s)", field, tag)
+	}
 }

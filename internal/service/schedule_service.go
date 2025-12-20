@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"schedule_server/internal/consts"
 	"schedule_server/internal/dto"
 	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
@@ -21,13 +22,15 @@ import (
 
 // ScheduleService 课表服务
 type ScheduleService struct {
+	userRepo     repository.UserRepository
 	courseRepo   repository.CourseRepository
 	semesterRepo repository.SemesterRepository
 }
 
 // NewScheduleService 创建课表服务
-func NewScheduleService(courseRepo repository.CourseRepository, semesterRepo repository.SemesterRepository) *ScheduleService {
+func NewScheduleService(courseRepo repository.CourseRepository, semesterRepo repository.SemesterRepository, userRepo repository.UserRepository) *ScheduleService {
 	return &ScheduleService{
+		userRepo:     userRepo,
 		courseRepo:   courseRepo,
 		semesterRepo: semesterRepo,
 	}
@@ -94,15 +97,20 @@ type WeekScheduleResult struct {
 // week <= 0 则自动计算当前周
 func (s *ScheduleService) ListByWeek(
 	ctx context.Context,
-	userID uint,
+	viewerID uint,
+	viewerRole int,
+	targetUserID uint,
 	semesterName string,
 	week int,
 ) (*WeekScheduleResult, error) {
-	if userID == 0 {
-		return nil, response.ErrForbidden()
-	}
 	if semesterName == "" {
 		return nil, response.ErrInvalidParamWithMsg("semester 不能为空")
+	}
+
+	// 0. 权限校验并确定实际查询的用户
+	finalUserID, err := s.resolveTargetUserID(ctx, viewerID, viewerRole, targetUserID)
+	if err != nil {
+		return nil, err
 	}
 
 	// 1. 查询学期配置
@@ -121,7 +129,7 @@ func (s *ScheduleService) ListByWeek(
 	}
 
 	// 3. 查询该用户该学期所有课程
-	all, err := s.courseRepo.ListByUserSemester(ctx, userID, semesterName)
+	all, err := s.courseRepo.ListByUserSemester(ctx, finalUserID, semesterName)
 	if err != nil {
 		return nil, fmt.Errorf("list courses: %w", err)
 	}
@@ -143,8 +151,23 @@ func (s *ScheduleService) ListByWeek(
 
 // AllCoursesResult 全部课程查询结果
 type AllCoursesResult struct {
-	Total   int
-	Courses []model.Course
+	Page     int
+	PageSize int
+	Total    int
+	Courses  []model.Course
+}
+
+func normalizePagination(page, pageSize int) (int, int) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 10
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	return page, pageSize
 }
 
 // ListAll 查询用户某学期的全部课程（不按周过滤），支持分页
@@ -161,38 +184,18 @@ func (s *ScheduleService) ListAll(
 	if semesterName == "" {
 		return nil, response.ErrInvalidParamWithMsg("semester 不能为空")
 	}
+	page, pageSize = normalizePagination(page, pageSize)
 
-	// 查询该用户该学期所有课程
-	all, err := s.courseRepo.ListByUserSemester(ctx, userID, semesterName)
+	courses, total, err := s.courseRepo.ListByUserSemesterPaged(ctx, userID, semesterName, page, pageSize)
 	if err != nil {
 		return nil, fmt.Errorf("list courses: %w", err)
 	}
 
-	// 分页处理
-	if page <= 0 {
-		page = 1
-	}
-	if pageSize <= 0 {
-		pageSize = 10
-	}
-
-	total := len(all)
-	start := (page - 1) * pageSize
-	end := start + pageSize
-
-	var courses []model.Course
-	if start >= total {
-		courses = []model.Course{}
-	} else {
-		if end > total {
-			end = total
-		}
-		courses = all[start:end]
-	}
-
 	return &AllCoursesResult{
-		Total:   total,
-		Courses: courses,
+		Page:     page,
+		PageSize: pageSize,
+		Total:    int(total),
+		Courses:  courses,
 	}, nil
 }
 
@@ -302,4 +305,67 @@ func (s *ScheduleService) DeleteCourse(ctx context.Context, userID uint, courseI
 
 	// 3. 执行删除
 	return s.courseRepo.Delete(ctx, courseID)
+}
+
+// resolveTargetUserID 校验访问权限并返回实际查询的用户ID
+func (s *ScheduleService) resolveTargetUserID(ctx context.Context, viewerID uint, viewerRole int, targetUserID uint) (uint, error) {
+	if viewerID == 0 {
+		return 0, response.ErrForbidden()
+	}
+
+	// 未指定目标或目标即为自己
+	if targetUserID == 0 || targetUserID == viewerID {
+		return viewerID, nil
+	}
+
+	// 管理员及以上可直接查看任意用户
+	if viewerRole >= consts.RoleLabAdmin {
+		return targetUserID, nil
+	}
+
+	// 小组长只能查看同组成员（部门交集）
+	if viewerRole >= consts.RoleGroupLead {
+		viewerDeptIDs, err := s.userRepo.FindDepartmentIDs(ctx, viewerID)
+		if err != nil {
+			return 0, err
+		}
+		if len(viewerDeptIDs) == 0 {
+			return 0, response.ErrForbidden()
+		}
+
+		targetDeptIDs, err := s.userRepo.FindDepartmentIDs(ctx, targetUserID)
+		if err != nil {
+			return 0, err
+		}
+		if len(targetDeptIDs) == 0 {
+			return 0, response.ErrForbidden()
+		}
+
+		if hasDeptIntersection(viewerDeptIDs, targetDeptIDs) {
+			return targetUserID, nil
+		}
+		return 0, response.ErrForbidden()
+	}
+
+	// 普通成员无权查看他人
+	return 0, response.ErrForbidden()
+}
+
+// hasDeptIntersection 判断两个部门ID列表是否有交集
+func hasDeptIntersection(a, b []int64) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+
+	set := make(map[int64]struct{}, len(a))
+	for _, id := range a {
+		set[id] = struct{}{}
+	}
+
+	for _, id := range b {
+		if _, ok := set[id]; ok {
+			return true
+		}
+	}
+	return false
 }

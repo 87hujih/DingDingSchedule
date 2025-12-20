@@ -50,14 +50,34 @@ func (h *ScheduleHandler) Import(ctx *gin.Context) {
 }
 
 // List 列出课表（按周查询，不分页）
-// GET /schedules?semester=2025-Spring&week=3
-// week 可选，不传则返回当前周的课程
+// GET /schedules/week?semester=2025-Spring&week=3&user_id=2
+// week、user_id 可选；user_id 需具备相应权限才可查看他人
 func (h *ScheduleHandler) List(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
+	roleVal, exists := ctx.Get("user_role")
+	if userID == 0 || !exists {
+		response.Fail(ctx, response.CodeUnauthorized, "未登录或ID无效")
+		return
+	}
+	userRole, ok := roleVal.(int)
+	if !ok {
+		response.Fail(ctx, response.CodeUnauthorized, "用户角色无效")
+		return
+	}
+
 	semester := ctx.Query("semester")
 	week, _ := strconv.Atoi(ctx.Query("week"))
+	targetUserID := userID
+	if rawUserID := ctx.Query("user_id"); rawUserID != "" {
+		if parsed, err := strconv.ParseUint(rawUserID, 10, 64); err != nil {
+			response.Fail(ctx, response.CodeInvalidParam, "无效的用户ID")
+			return
+		} else if parsed != 0 {
+			targetUserID = uint(parsed)
+		}
+	}
 
-	result, err := h.scheduleSrv.ListByWeek(ctx.Request.Context(), userID, semester, week)
+	result, err := h.scheduleSrv.ListByWeek(ctx.Request.Context(), userID, userRole, targetUserID, semester, week)
 	if err != nil {
 		response.FailWithError(ctx, err)
 		return
@@ -71,10 +91,16 @@ func (h *ScheduleHandler) List(ctx *gin.Context) {
 	}))
 }
 
-// ListAll 获取全部课程（不按周过滤，用于管理）
+// ListAll 获取全部课程（不按周过滤）
 // GET /schedules/all?semester=2025-Spring&page=1&page_size=10
+// 仅查看自己的课表，不做角色校验
 func (h *ScheduleHandler) ListAll(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
+	if userID == 0 {
+		response.Fail(ctx, response.CodeUnauthorized, "未登录或ID无效")
+		return
+	}
+
 	semester := ctx.Query("semester")
 
 	page, _ := strconv.Atoi(ctx.Query("page"))
@@ -87,8 +113,8 @@ func (h *ScheduleHandler) ListAll(ctx *gin.Context) {
 	}
 
 	response.OK(ctx, dto.NewAllCoursesListResponse(&dto.AllCoursesListParams{
-		Page:     page,
-		PageSize: pageSize,
+		Page:     result.Page,
+		PageSize: result.PageSize,
 		Total:    result.Total,
 		Courses:  result.Courses,
 	}))

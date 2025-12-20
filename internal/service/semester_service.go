@@ -37,7 +37,7 @@ func (s *SemesterService) Create(ctx context.Context, name string, startDate tim
 	// 检查是否已存在同名学期
 	existing, err := s.semesterRepo.GetByName(ctx, name)
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, fmt.Errorf("check semester: %w", err)
+		return nil, fmt.Errorf("查询学期 err =: %w", err)
 	}
 	if existing != nil {
 		return nil, response.ErrInvalidParamWithMsg("学期名称已存在")
@@ -49,7 +49,7 @@ func (s *SemesterService) Create(ctx context.Context, name string, startDate tim
 		TotalWeek: totalWeek,
 	}
 	if err := s.semesterRepo.Create(ctx, semester); err != nil {
-		return nil, fmt.Errorf("create semester: %w", err)
+		return nil, fmt.Errorf("创建学期 err =: %w", err)
 	}
 	return semester, nil
 }
@@ -62,14 +62,14 @@ func (s *SemesterService) Update(ctx context.Context, id uint, name string, star
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return response.ErrNotFoundWithMsg("学期不存在")
 		}
-		return fmt.Errorf("get semester: %w", err)
+		return fmt.Errorf("查询学期 err =: %w", err)
 	}
 
 	// 2. 如果更新名称，检查是否与其他学期重名
 	if name != "" && name != existing.Name {
 		other, err := s.semesterRepo.GetByName(ctx, name)
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("check semester name: %w", err)
+			return fmt.Errorf("检查学期名称 err =: %w", err)
 		}
 		if other != nil && other.ID != id {
 			return response.ErrInvalidParamWithMsg("学期名称已存在")
@@ -96,7 +96,7 @@ func (s *SemesterService) Delete(ctx context.Context, id uint) error {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return response.ErrNotFoundWithMsg("学期不存在")
 		}
-		return fmt.Errorf("get semester: %w", err)
+		return fmt.Errorf("查询学期 err =: %w", err)
 	}
 
 	return s.semesterRepo.Delete(ctx, id)

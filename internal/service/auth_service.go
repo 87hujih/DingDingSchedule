@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"schedule_server/config"
+	"schedule_server/internal/consts"
 	"schedule_server/internal/dto"
 	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
@@ -105,7 +106,7 @@ func (s *AuthService) Login(ctx context.Context, authCode string) (*dto.LoginRes
 			Avatar:     user.Avatar,
 			Phone:      user.Phone,
 			Role:       user.Role,
-			RoleName:   user.RoleName(),
+			RoleName:   consts.RoleName(user.Role),
 			DeptIDs:    userDetail.DeptIDList,
 		},
 	}, nil

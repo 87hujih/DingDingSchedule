@@ -24,7 +24,7 @@ func NewAuthHandler(authSrv *service.AuthService) *AuthHandler {
 func (h *AuthHandler) Login(ctx *gin.Context) {
 	var req dto.LoginRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		response.Fail(ctx, response.CodeInvalidParam, "auth_code不能为空")
+		response.Fail(ctx, response.CodeInvalidParam, response.TranslateValidationError(err))
 		return
 	}
 

@@ -14,7 +14,6 @@ type SemesterRepository interface {
 	Create(ctx context.Context, semester *model.Semester) error
 	Update(ctx context.Context, semester *model.Semester) error
 
-	// 扩展 CRUD
 	GetByID(ctx context.Context, id uint) (*model.Semester, error)
 	List(ctx context.Context) ([]model.Semester, error)
 	Delete(ctx context.Context, id uint) error

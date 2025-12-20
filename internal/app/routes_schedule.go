@@ -10,11 +10,11 @@ import (
 func registerScheduleRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 	schedules := rg.Group("/schedules")
 	{
-		schedules.POST("/import", h.ScheduleHdl.Import)
-		schedules.GET("", h.ScheduleHdl.List)          // 按周查询课表
-		schedules.GET("/all", h.ScheduleHdl.ListAll)   // 获取全部课程（用于管理）
-		schedules.POST("", h.ScheduleHdl.Create)       // 手动添加课程
-		schedules.PUT("/:id", h.ScheduleHdl.Update)    // 更新课程
-		schedules.DELETE("/:id", h.ScheduleHdl.Delete) // 删除课程
+		schedules.POST("/import", h.ScheduleHdl.Import)       // 导入(.xls,.xlsx)文件
+		schedules.GET("/week", h.ScheduleHdl.List)            // 按周查询课表
+		schedules.GET("/all", h.ScheduleHdl.ListAll)          // 获取全部课程（用于管理）
+		schedules.POST("/create", h.ScheduleHdl.Create)       // 手动添加课程
+		schedules.PUT("/update/:id", h.ScheduleHdl.Update)    // 更新课程
+		schedules.DELETE("/delete/:id", h.ScheduleHdl.Delete) // 删除课程
 	}
 }

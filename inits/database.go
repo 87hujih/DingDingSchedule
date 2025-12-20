@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// DBInit 初始化 MySQL 数据库连接（必须在 ConfigInit 和 LogInit 之后调用）
+// DBInit 初始化 MySQL 数据库连接
 func DBInit() {
 	cfg := global.AppConfig.Database
 
@@ -49,6 +49,8 @@ func AutoMigrate() {
 		&model.UserType{},
 		&model.Department{},
 		&model.UserDepartment{},
+		&model.Course{},
+		&model.Semester{},
 	); err != nil {
 		global.Log.Panicf("数据库迁移失败: %s", err)
 	}
