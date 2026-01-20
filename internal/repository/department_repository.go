@@ -6,6 +6,7 @@ import (
 	"schedule_server/internal/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // DepartmentRepository 部门仓库接口
@@ -16,6 +17,10 @@ type DepartmentRepository interface {
 	FindLeaf(ctx context.Context) ([]model.Department, error)
 	// FindByID 根据ID查询部门
 	FindByID(ctx context.Context, deptID int64) (*model.Department, error)
+	// UpdateStatus 更新部门考勤状态
+	UpdateStatus(ctx context.Context, deptID int64, status int) error
+	// Delete 软删除部门
+	Delete(ctx context.Context, deptID int64) error
 }
 
 type departmentRepository struct {
@@ -38,8 +43,14 @@ func (r *departmentRepository) SyncAll(ctx context.Context, depts []model.Depart
 		}
 
 		// 2. 批量 upsert（存在则更新，不存在则插入）
-		for i := range depts {
-			if err := tx.Save(&depts[i]).Error; err != nil {
+		if len(depts) > 0 {
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{
+					{Name: "tenant_id"},
+					{Name: "dept_id"},
+				},
+				DoUpdates: clause.AssignmentColumns([]string{"name", "parent_id", "is_leaf", "status", "deleted_at"}),
+			}).Create(&depts).Error; err != nil {
 				return err
 			}
 		}
@@ -64,4 +75,35 @@ func (r *departmentRepository) FindByID(ctx context.Context, deptID int64) (*mod
 		return nil, err
 	}
 	return &dept, nil
+}
+
+// UpdateStatus 更新部门考勤状态
+func (r *departmentRepository) UpdateStatus(ctx context.Context, deptID int64, status int) error {
+	// 先检查记录是否存在，避免值相同时 RowsAffected=0 被误判为不存在
+	var count int64
+	if err := r.db.WithContext(ctx).Model(&model.Department{}).Where("dept_id = ?", deptID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return gorm.ErrRecordNotFound
+	}
+
+	return r.db.WithContext(ctx).
+		Model(&model.Department{}).
+		Where("dept_id = ?", deptID).
+		Update("status", status).Error
+}
+
+// Delete 软删除部门
+func (r *departmentRepository) Delete(ctx context.Context, deptID int64) error {
+	result := r.db.WithContext(ctx).
+		Where("dept_id = ?", deptID).
+		Delete(&model.Department{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }

@@ -2,13 +2,17 @@ package app
 
 import (
 	"schedule_server/global"
+	"schedule_server/internal/adminui"
 	"schedule_server/internal/handler"
 	"schedule_server/internal/middleware"
 	"schedule_server/internal/repository"
 	"schedule_server/internal/service"
 
+	goadmin "github.com/GoAdminGroup/go-admin/engine"
 	"github.com/gin-gonic/gin"
 )
+
+var goAdminEng *goadmin.Engine
 
 // setupRouter 初始化路由引擎和依赖注入
 func setupRouter() *gin.Engine {
@@ -19,12 +23,22 @@ func setupRouter() *gin.Engine {
 
 	// 依赖注入
 	repo := repository.NewRepository(global.DB)
-	svc := service.NewService(repo, global.DingTalk, global.AppConfig.JWT)
-	h := handler.NewHandler(svc)
+	dingMgr := service.NewDingTalkClientManager(repo.TenantRepo)
+	svc := service.NewService(repo, dingMgr, global.AppConfig.JWT, global.AppConfig.Schedule, global.Log)
+	h := handler.NewHandler(svc, repo)
 
 	// 注册路由
 	r := gin.Default()
 	registerRoutes(r, h)
+
+	// GoAdmin 后台（可选）
+	if global.AppConfig.GoAdmin.Enable {
+		eng, err := adminui.Mount(r)
+		if err != nil {
+			global.Log.Fatalf("初始化 GoAdmin 失败: %v", err)
+		}
+		goAdminEng = eng
+	}
 
 	return r
 }
@@ -42,7 +56,15 @@ func registerRoutes(r *gin.Engine, h *handler.Handler) {
 
 	// 需要鉴权的路由
 	protected := r.Group("/api", middleware.JWTAuth())
-	registerUserRoutes(protected, h)
-	registerAdminRoutes(protected, h)
-	registerScheduleRoutes(protected, h)
+	registerUserRoutes(protected, h)       // 用户相关
+	registerAdminRoutes(protected, h)      // 管理员相关
+	registerScheduleRoutes(protected, h)   // 课程相关
+	registerAttendanceRoutes(protected, h) // 考勤相关
+	registerSemesterRoutes(protected, h)   // 学期相关
+}
+
+// registerSemesterRoutes 学期相关路由
+func registerSemesterRoutes(rg *gin.RouterGroup, h *handler.Handler) {
+	semesters := rg.Group("/semesters")
+	semesters.GET("/current", h.SemesterHdl.GetCurrentSemester)
 }

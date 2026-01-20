@@ -2,17 +2,15 @@ package consts
 
 // 用户角色
 const (
-	RoleMember     = 0 // 普通成员
-	RoleGroupLead  = 1 // 小组长
-	RoleLabAdmin   = 2 // 实验室管理员
-	RoleSuperAdmin = 3 // 超级管理员
+	RoleUser       = 0 // 普通用户
+	RoleAdmin      = 1 // 管理员
+	RoleSuperAdmin = 2 // 超级管理员
 )
 
 // RoleNames 角色名称映射
 var RoleNames = map[int]string{
-	RoleMember:     "普通成员",
-	RoleGroupLead:  "小组长",
-	RoleLabAdmin:   "实验室管理员",
+	RoleUser:       "普通用户",
+	RoleAdmin:      "管理员",
 	RoleSuperAdmin: "超级管理员",
 }
 

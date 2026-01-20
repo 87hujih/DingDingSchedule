@@ -45,11 +45,13 @@ func DBInit() {
 // AutoMigrate 自动化迁移表
 func AutoMigrate() {
 	if err := global.DB.AutoMigrate(
+		&model.Tenant{},
 		&model.User{},
 		&model.UserType{},
 		&model.Department{},
 		&model.UserDepartment{},
 		&model.Course{},
+		&model.LeaveApproval{},
 		&model.Semester{},
 	); err != nil {
 		global.Log.Panicf("数据库迁移失败: %s", err)

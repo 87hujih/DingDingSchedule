@@ -26,3 +26,8 @@ func NewDepartmentListResponse(depts []model.Department) *DepartmentListResponse
 	}
 	return &DepartmentListResponse{Items: items}
 }
+
+// UpdateDeptStatusRequest 更新部门考勤状态请求
+type UpdateDeptStatusRequest struct {
+	Status int `json:"status" binding:"oneof=0 1"` // 部门状态(0:不参与考勤;1:参与考勤)
+}

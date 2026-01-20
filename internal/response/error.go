@@ -135,7 +135,7 @@ func translateFieldName(field string) string {
 		"StartDate":  "开始日期",
 		"TotalWeek":  "总周数",
 		"AuthCode":   "授权码",
-		"Semester":   "学期",
+		"CorpID":     "企业ID",
 		"CourseName": "课程名称",
 		"DayOfWeek":  "星期",
 		"Section":    "节次",

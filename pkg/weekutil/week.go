@@ -2,15 +2,15 @@ package weekutil
 
 import "time"
 
-// CurrentWeek 根据学期起始日期计算当前是第几周
-// 若当前时间早于学期起始，返回 1；超过 totalWeek 则返回 totalWeek
-func CurrentWeek(semesterStart time.Time, totalWeek int) int {
+// CurrentWeek 根据起始日期计算当前是第几周
+// 若当前时间早于起始日期，返回 1；超过 totalWeek 则返回 totalWeek
+func CurrentWeek(startDate time.Time, totalWeek int) int {
 	now := time.Now()
-	if now.Before(semesterStart) {
+	if now.Before(startDate) {
 		return 1
 	}
 
-	days := int(now.Sub(semesterStart).Hours() / 24)
+	days := int(now.Sub(startDate).Hours() / 24)
 	week := days/7 + 1
 
 	if week > totalWeek {

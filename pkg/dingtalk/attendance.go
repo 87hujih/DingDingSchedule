@@ -94,7 +94,19 @@ func (c *Client) GetLeaveStatus(ctx context.Context, userIDs []string, startAt, 
 	return all, nil
 }
 
+// isTokenInvalidError 判断是否为 Token 无效错误（需要刷新重试）
+func isTokenInvalidError(code int) bool {
+	// 200003: 无效的access_token
+	// 40014: 不合法的access_token
+	// 42001: access_token超时
+	return code == 200003 || code == 40014 || code == 42001
+}
+
 func (c *Client) getLeaveStatusByChunk(ctx context.Context, userIDs []string, startAt, endAt time.Time) ([]LeaveRecord, error) {
+	return c.getLeaveStatusByChunkWithRetry(ctx, userIDs, startAt, endAt, false)
+}
+
+func (c *Client) getLeaveStatusByChunkWithRetry(ctx context.Context, userIDs []string, startAt, endAt time.Time, isRetry bool) ([]LeaveRecord, error) {
 	token, err := c.GetAccessToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("钉钉请假查询失败: 获取AccessToken失败: %w", err)
@@ -135,6 +147,11 @@ func (c *Client) getLeaveStatusByChunk(ctx context.Context, userIDs []string, st
 		}
 
 		if resp.ErrCode != 0 {
+			// Token 无效时，强制刷新并重试一次
+			if !isRetry && isTokenInvalidError(resp.ErrCode) {
+				c.InvalidateToken()
+				return c.getLeaveStatusByChunkWithRetry(ctx, userIDs, startAt, endAt, true)
+			}
 			return nil, fmt.Errorf("钉钉请假查询失败: code=%d, msg=%s", resp.ErrCode, resp.ErrMsg)
 		}
 
@@ -282,4 +299,124 @@ func trimStrings(in []string) []string {
 		}
 	}
 	return out
+}
+
+// ========== 打卡记录查询 ==========
+
+const (
+	// 获取打卡记录接口
+	getAttendanceRecordURL = "https://oapi.dingtalk.com/attendance/listRecord"
+)
+
+// CheckRecord 打卡记录
+type CheckRecord struct {
+	DingUserID string    `json:"ding_user_id"` // 钉钉用户ID
+	CheckTime  time.Time `json:"check_time"`   // 打卡时间
+	CheckType  string    `json:"check_type"`   // 打卡类型: OnDuty/OffDuty
+}
+
+type attendanceRecordResponse struct {
+	ErrCode int    `json:"errcode"`
+	ErrMsg  string `json:"errmsg"`
+	Result  struct {
+		RecordResult []attendanceRecordItem `json:"recordresult"`
+	} `json:"result"`
+}
+
+type attendanceRecordItem struct {
+	UserID        string `json:"userId"`
+	UserID2       string `json:"userid"` // 兼容不同命名
+	CheckType     string `json:"checkType"`
+	UserCheckTime int64  `json:"userCheckTime"` // 毫秒时间戳
+}
+
+// GetAttendanceRecords 获取打卡记录
+// userIDs: 钉钉用户ID列表
+// startAt/endAt: 查询时间范围
+func (c *Client) GetAttendanceRecords(ctx context.Context, userIDs []string, startAt, endAt time.Time) ([]CheckRecord, error) {
+	userIDs = trimStrings(userIDs)
+	if len(userIDs) == 0 {
+		return []CheckRecord{}, nil
+	}
+	if endAt.Before(startAt) {
+		return nil, fmt.Errorf("钉钉打卡查询失败: 时间范围无效")
+	}
+
+	// 钉钉API限制：每次最多查询50个用户
+	const chunkSize = 50
+
+	all := make([]CheckRecord, 0)
+	for i := 0; i < len(userIDs); i += chunkSize {
+		j := i + chunkSize
+		if j > len(userIDs) {
+			j = len(userIDs)
+		}
+
+		part, err := c.getAttendanceRecordsByChunk(ctx, userIDs[i:j], startAt, endAt)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, part...)
+	}
+
+	return all, nil
+}
+
+// getAttendanceRecordsByChunk 分批获取打卡记录
+func (c *Client) getAttendanceRecordsByChunk(ctx context.Context, userIDs []string, startAt, endAt time.Time) ([]CheckRecord, error) {
+	return c.getAttendanceRecordsByChunkWithRetry(ctx, userIDs, startAt, endAt, false)
+}
+
+func (c *Client) getAttendanceRecordsByChunkWithRetry(ctx context.Context, userIDs []string, startAt, endAt time.Time, isRetry bool) ([]CheckRecord, error) {
+	token, err := c.GetAccessToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("钉钉打卡查询失败: 获取AccessToken失败: %w", err)
+	}
+
+	url := fmt.Sprintf("%s?access_token=%s", getAttendanceRecordURL, token)
+
+	reqBody := map[string]interface{}{
+		"userIds":       userIDs,
+		"checkDateFrom": startAt.Format("2006-01-02 15:04:05"),
+		"checkDateTo":   endAt.Format("2006-01-02 15:04:05"),
+		"isI18n":        false,
+	}
+
+	respBody, err := c.postJSON(ctx, url, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("钉钉打卡查询失败: 请求发送失败: %w", err)
+	}
+
+	var resp attendanceRecordResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("钉钉打卡查询失败: 解析响应失败: %w", err)
+	}
+
+	if resp.ErrCode != 0 {
+		// Token 无效时，强制刷新并重试一次
+		if !isRetry && isTokenInvalidError(resp.ErrCode) {
+			c.InvalidateToken()
+			return c.getAttendanceRecordsByChunkWithRetry(ctx, userIDs, startAt, endAt, true)
+		}
+		return nil, fmt.Errorf("钉钉打卡查询失败: code=%d, msg=%s", resp.ErrCode, resp.ErrMsg)
+	}
+
+	records := make([]CheckRecord, 0, len(resp.Result.RecordResult))
+	for _, r := range resp.Result.RecordResult {
+		userID := r.UserID
+		if userID == "" {
+			userID = r.UserID2
+		}
+		if userID == "" || r.UserCheckTime == 0 {
+			continue
+		}
+
+		records = append(records, CheckRecord{
+			DingUserID: userID,
+			CheckTime:  time.UnixMilli(r.UserCheckTime),
+			CheckType:  r.CheckType,
+		})
+	}
+
+	return records, nil
 }

@@ -1,5 +1,10 @@
 package inits
 
+import (
+	"schedule_server/global"
+	"schedule_server/internal/repository"
+)
+
 // Init 统一初始化入口，按顺序初始化所有组件
 func Init() {
 	// 初始化配置
@@ -14,9 +19,8 @@ func Init() {
 	// 初始化表
 	AutoMigrate()
 
-	// 初始化钉钉客户端
-	DingTalkInit()
-
-	// 初始化部门（从钉钉同步到数据库）
-	InitDepartments()
+	// 启用 GORM 租户隔离插件（必须在 AutoMigrate 之后，避免迁移阶段缺少 tenant ctx）
+	if err := global.DB.Use(repository.NewTenantScopePlugin()); err != nil {
+		global.Log.Fatalf("初始化租户隔离插件失败: %v", err)
+	}
 }

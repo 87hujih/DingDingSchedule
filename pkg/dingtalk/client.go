@@ -22,6 +22,7 @@ const (
 var (
 	ErrEmptyCredentials = errors.New("钉钉: appKey 或 appSecret 为空")
 	ErrTokenFetch       = errors.New("钉钉: 获取 AccessToken 失败")
+	ErrTokenInvalid     = errors.New("钉钉: AccessToken 无效")
 )
 
 // tokenResponse 钉钉获取 Token 的响应结构
@@ -71,6 +72,14 @@ func (c *Client) GetAccessToken(ctx context.Context) (string, error) {
 
 	// 需要刷新 Token
 	return c.refreshToken(ctx)
+}
+
+// InvalidateToken 使当前 Token 失效，强制下次请求时刷新
+func (c *Client) InvalidateToken() {
+	c.mu.Lock()
+	c.accessToken = ""
+	c.expireAt = time.Time{}
+	c.mu.Unlock()
 }
 
 // refreshToken 从钉钉服务器获取新的 AccessToken

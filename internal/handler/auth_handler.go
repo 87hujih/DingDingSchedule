@@ -28,7 +28,7 @@ func (h *AuthHandler) Login(ctx *gin.Context) {
 		return
 	}
 
-	result, err := h.authSrv.Login(ctx.Request.Context(), req.AuthCode)
+	result, err := h.authSrv.Login(ctx.Request.Context(), req.CorpID, req.AuthCode)
 	if err != nil {
 		if errors.Is(err, service.ErrAuthCodeRequired) {
 			response.Fail(ctx, response.CodeInvalidParam, err.Error())

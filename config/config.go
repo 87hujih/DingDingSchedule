@@ -14,6 +14,7 @@ type Config struct {
 	JWT      JWT      `mapstructure:"jwt" yaml:"jwt"`
 	WiFi     WiFi     `mapstructure:"wifi" yaml:"wifi"`
 	Schedule Schedule `mapstructure:"schedule" yaml:"schedule"`
+	GoAdmin  GoAdmin  `mapstructure:"goadmin" yaml:"goadmin"`
 	Env      string   `mapstructure:"env" yaml:"env"`
 	App      App      `mapstructure:"app" yaml:"app"`
 }
@@ -28,6 +29,25 @@ type Server struct {
 
 type App struct {
 	Name string `mapstructure:"name" yaml:"name"`
+}
+
+// GoAdmin GoAdmin 管理后台配置
+type GoAdmin struct {
+	Enable bool `mapstructure:"enable" yaml:"enable"`
+
+	// UrlPrefix 管理后台挂载路径前缀（例如 "admin" 或 "/admin"）
+	UrlPrefix string `mapstructure:"url_prefix" yaml:"url_prefix"`
+
+	// Theme UI 主题（adminlte / sword）
+	Theme string `mapstructure:"theme" yaml:"theme"`
+
+	// Language 界面语言（cn / en / tc / jp / pt-BR）
+	Language string `mapstructure:"language" yaml:"language"`
+
+	// StorePath 上传目录（本地存储）
+	StorePath string `mapstructure:"store_path" yaml:"store_path"`
+	// StorePrefix 上传访问前缀（通常为 "uploads"，对应 gin.Static("/uploads", "./uploads")）
+	StorePrefix string `mapstructure:"store_prefix" yaml:"store_prefix"`
 }
 
 // Database 配置(MySQL)
@@ -55,6 +75,14 @@ type DingTalk struct {
 	AppSecret string `mapstructure:"app_secret" yaml:"app_secret"`
 	AgentID   string `mapstructure:"agent_id" yaml:"agent_id"` // 建议用 string 防止数字过大溢出或丢失前导零
 	CorpID    string `mapstructure:"corp_id" yaml:"corp_id"`
+
+	// CallbackToken / CallbackAESKey 用于"事件订阅回调"的验签与解密。
+	// 多租户场景下建议所有租户的应用回调配置使用同一套 token/aesKey（否则无法在解密前定位租户）。
+	CallbackToken  string `mapstructure:"callback_token" yaml:"callback_token"`
+	CallbackAESKey string `mapstructure:"callback_aes_key" yaml:"callback_aes_key"` // 43位 EncodingAESKey（不含末尾 '='）
+
+	// StreamMode 是否启用 Stream 模式接收事件（无需公网 IP）
+	StreamMode bool `mapstructure:"stream_mode" yaml:"stream_mode"`
 }
 
 // Log 日志配置 (Zap)

@@ -1,6 +1,9 @@
 package dto
 
-import "schedule_server/internal/model"
+import (
+	"schedule_server/internal/model"
+	"time"
+)
 
 // ImportScheduleResponse 导入课表结果
 type ImportScheduleResponse struct {
@@ -16,31 +19,23 @@ type ScheduleItem struct {
 	DayOfWeek  int    `json:"day_of_week"`
 	Section    int    `json:"section"`
 	WeekList   string `json:"week_list"`
-	Semester   string `json:"semester"`
 }
 
 // ScheduleListResponse 课表列表响应（按周查询，不分页）
 type ScheduleListResponse struct {
-	CurrentWeek int            `json:"current_week"` // 当前周次
-	TotalWeek   int            `json:"total_week"`   // 学期总周数
-	Week        int            `json:"week"`         // 查询的周次
-	Items       []ScheduleItem `json:"items"`        // 课程列表
+	Week  int            `json:"week"`  // 查询的周次
+	Items []ScheduleItem `json:"items"` // 课程列表
 }
 
 // ScheduleListParams 构造 ScheduleListResponse 的参数
 type ScheduleListParams struct {
-	CurrentWeek int
-	TotalWeek   int
-	Week        int // 请求的周次，<=0 时使用 CurrentWeek
-	Courses     []model.Course
+	Week    int // 请求的周次
+	Courses []model.Course
 }
 
 // NewScheduleListResponse 从参数构造课表列表响应
 func NewScheduleListResponse(p *ScheduleListParams) *ScheduleListResponse {
 	week := p.Week
-	if week <= 0 {
-		week = p.CurrentWeek
-	}
 
 	items := make([]ScheduleItem, 0, len(p.Courses))
 	for _, c := range p.Courses {
@@ -52,21 +47,17 @@ func NewScheduleListResponse(p *ScheduleListParams) *ScheduleListResponse {
 			DayOfWeek:  c.DayOfWeek,
 			Section:    c.Section,
 			WeekList:   c.WeekList,
-			Semester:   c.Semester,
 		})
 	}
 
 	return &ScheduleListResponse{
-		CurrentWeek: p.CurrentWeek,
-		TotalWeek:   p.TotalWeek,
-		Week:        week,
-		Items:       items,
+		Week:  week,
+		Items: items,
 	}
 }
 
 // CreateCourseRequest 手动添加课程请求
 type CreateCourseRequest struct {
-	Semester   string `json:"semester" binding:"required"`
 	CourseName string `json:"course_name" binding:"required"`
 	Teacher    string `json:"teacher"`
 	Location   string `json:"location"`
@@ -127,7 +118,6 @@ func NewAllCoursesListResponse(p *AllCoursesListParams) *AllCoursesListResponse 
 			DayOfWeek:  c.DayOfWeek,
 			Section:    c.Section,
 			WeekList:   c.WeekList,
-			Semester:   c.Semester,
 		})
 	}
 
@@ -137,4 +127,44 @@ func NewAllCoursesListResponse(p *AllCoursesListParams) *AllCoursesListResponse 
 		Total:    p.Total,
 		Items:    items,
 	}
+}
+
+// CourseAttendanceUserItem 课节考勤中的用户信息
+type CourseAttendanceUserItem struct {
+	ID     uint   `json:"id"`
+	Name   string `json:"name"`
+	Avatar string `json:"avatar"`
+	Phone  string `json:"phone"`
+}
+
+// SlotAttendanceStatusResponse 时段考勤状态响应（不依赖课程ID）
+type SlotAttendanceStatusResponse struct {
+	Date         string                     `json:"date"`
+	Week         int                        `json:"week"`
+	DayOfWeek    int                        `json:"day_of_week"`
+	Section      int                        `json:"section"`
+	ShouldArrive []CourseAttendanceUserItem `json:"should_arrive"`
+	OnLeave      []CourseAttendanceUserItem `json:"on_leave,omitempty"`
+}
+
+// CourseLeaveRecordItem 请假记录明细（点击人员后展示）
+type CourseLeaveRecordItem struct {
+	LeaveType       string    `json:"leave_type"`
+	StartAt         time.Time `json:"start_at"`
+	EndAt           time.Time `json:"end_at"`
+	DurationSeconds int64     `json:"duration_seconds,omitempty"`
+	Status          string    `json:"status,omitempty"`
+	Remark          string    `json:"remark,omitempty"`
+}
+
+// SlotUserLeaveDetailResponse 某用户在某“时段(日期+节次)时间窗口”内的请假明细响应（不依赖课程ID）。
+type SlotUserLeaveDetailResponse struct {
+	UserID       uint                    `json:"user_id"`
+	Week         int                     `json:"week"`
+	Date         string                  `json:"date"`
+	DayOfWeek    int                     `json:"day_of_week"`
+	Section      int                     `json:"section"`
+	SessionStart time.Time               `json:"session_start"`
+	SessionEnd   time.Time               `json:"session_end"`
+	Items        []CourseLeaveRecordItem `json:"items"`
 }

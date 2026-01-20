@@ -7,6 +7,7 @@ import (
 
 	"schedule_server/config"
 	"schedule_server/internal/response"
+	"schedule_server/internal/tenantctx"
 	"schedule_server/pkg/jwt"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +26,8 @@ const (
 	CtxKeyDingUserID = "ding_user_id"
 	CtxKeyUserName   = "user_name"
 	CtxKeyUserRole   = "user_role"
+	CtxKeyTenantID   = "tenant_id"
+	CtxKeyCorpID     = "corp_id"
 )
 
 // 包级变量，存储已初始化的 JWT Manager
@@ -83,13 +86,24 @@ func JWTAuth() gin.HandlerFunc {
 		c.Set(CtxKeyDingUserID, claims.DingUserID)
 		c.Set(CtxKeyUserName, claims.Name)
 		c.Set(CtxKeyUserRole, claims.Role)
+		if claims.TenantID == 0 {
+			response.New(c).Code(response.CodeUnauthorized).Message("Token缺少租户信息").Abort()
+			return
+		}
+		c.Set(CtxKeyTenantID, claims.TenantID)
+		if strings.TrimSpace(claims.CorpID) != "" {
+			c.Set(CtxKeyCorpID, claims.CorpID)
+		}
+
+		// 6. 将租户信息写入 request context（供 repository/service 使用）
+		c.Request = c.Request.WithContext(tenantctx.WithTenantID(c.Request.Context(), claims.TenantID))
 
 		c.Next()
 	}
 }
 
 // RequireRole 要求指定角色及以上权限的中间件
-// minRole: 最小角色等级（0=普通成员, 1=小组长, 2=实验室管理员, 3=超级管理员）
+// minRole: 最小角色等级（0=普通用户, 1=管理员, 2=超级管理员）
 func RequireRole(minRole int) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		roleVal, exists := c.Get(CtxKeyUserRole)
@@ -113,17 +127,12 @@ func RequireRole(minRole int) gin.HandlerFunc {
 	}
 }
 
-// RequireGroupLead 要求小组长及以上权限
-func RequireGroupLead() gin.HandlerFunc {
+// RequireAdmin 要求管理员及以上权限
+func RequireAdmin() gin.HandlerFunc {
 	return RequireRole(1)
-}
-
-// RequireLabAdmin 要求实验室管理员及以上权限
-func RequireLabAdmin() gin.HandlerFunc {
-	return RequireRole(2)
 }
 
 // RequireSuperAdmin 要求超级管理员权限
 func RequireSuperAdmin() gin.HandlerFunc {
-	return RequireRole(3)
+	return RequireRole(2)
 }

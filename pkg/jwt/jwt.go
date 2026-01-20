@@ -18,6 +18,8 @@ var (
 
 // Claims 自定义JWT载荷
 type Claims struct {
+	TenantID   uint   `json:"tenant_id"`
+	CorpID     string `json:"corp_id,omitempty"`
 	UserID     uint   `json:"user_id"`
 	DingUserID string `json:"ding_user_id"`
 	Name       string `json:"name"`
@@ -44,8 +46,15 @@ func NewManager(cfg Config) *Manager {
 
 // GenerateToken 签发Token
 func (m *Manager) GenerateToken(userID uint, dingUserID, name string, role int) (string, error) {
+	return m.GenerateTokenWithTenant(0, "", userID, dingUserID, name, role)
+}
+
+// GenerateTokenWithTenant 签发包含租户信息的 Token（单实例多租户场景使用）。
+func (m *Manager) GenerateTokenWithTenant(tenantID uint, corpID string, userID uint, dingUserID, name string, role int) (string, error) {
 	now := time.Now()
 	claims := Claims{
+		TenantID:   tenantID,
+		CorpID:     corpID,
 		UserID:     userID,
 		DingUserID: dingUserID,
 		Name:       name,

@@ -1,11 +1,10 @@
 package handler
 
 import (
-	"strconv"
-
 	"schedule_server/internal/dto"
 	"schedule_server/internal/response"
 	"schedule_server/internal/service"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -24,7 +23,6 @@ func NewScheduleHandler(scheduleSrv *service.ScheduleService) *ScheduleHandler {
 func (h *ScheduleHandler) Import(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
 
-	semester := ctx.PostForm("semester")
 	fileHeader, err := ctx.FormFile("file")
 	if err != nil {
 		response.Fail(ctx, response.CodeMissingParam, "缺少文件参数")
@@ -40,7 +38,7 @@ func (h *ScheduleHandler) Import(ctx *gin.Context) {
 		return
 	}
 
-	count, err := h.scheduleSrv.ImportFromFile(ctx.Request.Context(), userID, semester, tmpPath)
+	count, err := h.scheduleSrv.ImportFromFile(ctx.Request.Context(), userID, tmpPath)
 	if err != nil {
 		response.FailWithError(ctx, err)
 		return
@@ -50,8 +48,8 @@ func (h *ScheduleHandler) Import(ctx *gin.Context) {
 }
 
 // List 列出课表（按周查询，不分页）
-// GET /schedules/week?semester=2025-Spring&week=3&user_id=2
-// week、user_id 可选；user_id 需具备相应权限才可查看他人
+// GET /schedules/week?week=3&user_id=2
+// user_id 可选；user_id 需具备相应权限才可查看他人
 func (h *ScheduleHandler) List(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
 	roleVal, exists := ctx.Get("user_role")
@@ -65,8 +63,16 @@ func (h *ScheduleHandler) List(ctx *gin.Context) {
 		return
 	}
 
-	semester := ctx.Query("semester")
-	week, _ := strconv.Atoi(ctx.Query("week"))
+	rawWeek := ctx.Query("week")
+	if rawWeek == "" {
+		response.Fail(ctx, response.CodeMissingParam, "缺少 week 参数")
+		return
+	}
+	week, err := strconv.Atoi(rawWeek)
+	if err != nil || week <= 0 {
+		response.Fail(ctx, response.CodeInvalidParam, "无效的 week")
+		return
+	}
 	targetUserID := userID
 	if rawUserID := ctx.Query("user_id"); rawUserID != "" {
 		if parsed, err := strconv.ParseUint(rawUserID, 10, 64); err != nil {
@@ -77,22 +83,20 @@ func (h *ScheduleHandler) List(ctx *gin.Context) {
 		}
 	}
 
-	result, err := h.scheduleSrv.ListByWeek(ctx.Request.Context(), userID, userRole, targetUserID, semester, week)
+	result, err := h.scheduleSrv.ListByWeek(ctx.Request.Context(), userID, userRole, targetUserID, week)
 	if err != nil {
 		response.FailWithError(ctx, err)
 		return
 	}
 
 	response.OK(ctx, dto.NewScheduleListResponse(&dto.ScheduleListParams{
-		CurrentWeek: result.CurrentWeek,
-		TotalWeek:   result.TotalWeek,
-		Week:        week,
-		Courses:     result.Courses,
+		Week:    week,
+		Courses: result.Courses,
 	}))
 }
 
 // ListAll 获取全部课程（不按周过滤）
-// GET /schedules/all?semester=2025-Spring&page=1&page_size=10
+// GET /schedules/all?page=1&page_size=10
 // 仅查看自己的课表，不做角色校验
 func (h *ScheduleHandler) ListAll(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
@@ -101,12 +105,10 @@ func (h *ScheduleHandler) ListAll(ctx *gin.Context) {
 		return
 	}
 
-	semester := ctx.Query("semester")
-
 	page, _ := strconv.Atoi(ctx.Query("page"))
 	pageSize, _ := strconv.Atoi(ctx.Query("page_size"))
 
-	result, err := h.scheduleSrv.ListAll(ctx.Request.Context(), userID, semester, page, pageSize)
+	result, err := h.scheduleSrv.ListAll(ctx.Request.Context(), userID, page, pageSize)
 	if err != nil {
 		response.FailWithError(ctx, err)
 		return

@@ -8,8 +8,9 @@ import (
 
 type Course struct {
 	ID         uint           `gorm:"primaryKey" json:"id"`
+	TenantID   uint           `gorm:"not null;index" json:"tenant_id"`
 	UserID     uint           `gorm:"index;not null;comment:用户ID"`
-	Semester   string         `gorm:"type:varchar(20);comment:学期(如2025-Spring)"`
+	SemesterID *uint          `gorm:"index;comment:学期ID" json:"semester_id"` // 可为空，兼容历史数据
 	CourseName string         `gorm:"type:varchar(100);not null"`
 	Teacher    string         `gorm:"type:varchar(50)"`
 	Location   string         `gorm:"type:varchar(100)"`

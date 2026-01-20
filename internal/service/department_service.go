@@ -2,27 +2,40 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"schedule_server/global"
 	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
+	"schedule_server/internal/response"
+
+	"gorm.io/gorm"
 )
 
 // DepartmentService 部门服务
 type DepartmentService struct {
 	deptRepo repository.DepartmentRepository
+	dingMgr  *DingTalkClientManager
 }
 
 // NewDepartmentService 创建部门服务
-func NewDepartmentService(deptRepo repository.DepartmentRepository) *DepartmentService {
-	return &DepartmentService{deptRepo: deptRepo}
+func NewDepartmentService(deptRepo repository.DepartmentRepository, dingMgr *DingTalkClientManager) *DepartmentService {
+	return &DepartmentService{deptRepo: deptRepo, dingMgr: dingMgr}
 }
 
 // Sync 从钉钉同步部门数据到数据库
 func (s *DepartmentService) Sync(ctx context.Context) error {
+	if s.dingMgr == nil {
+		return response.NewBizError(response.CodeInternalError, "钉钉租户管理器未初始化")
+	}
+	_, dingClient, err := s.dingMgr.FromContext(ctx)
+	if err != nil {
+		return response.NewBizError(response.CodeUnauthorized, "缺少租户信息")
+	}
+
 	// 从钉钉获取所有部门
-	allDepts, err := global.DingTalk.FetchAllDepartments(ctx)
+	allDepts, err := dingClient.FetchAllDepartments(ctx)
 	if err != nil {
 		return fmt.Errorf("获取钉钉部门失败: %w", err)
 	}
@@ -71,7 +84,43 @@ func (s *DepartmentService) Sync(ctx context.Context) error {
 	return nil
 }
 
-// GetLeafDepartments 获取所有叶子部门
-func (s *DepartmentService) GetLeafDepartments(ctx context.Context) ([]model.Department, error) {
+// List 获取所有叶子部门（需要考勤的部门）
+func (s *DepartmentService) List(ctx context.Context) ([]model.Department, error) {
 	return s.deptRepo.FindLeaf(ctx)
+}
+
+// UpdateStatus 更新部门考勤状态
+func (s *DepartmentService) UpdateStatus(ctx context.Context, deptID int64, status int) error {
+	if deptID <= 0 {
+		return response.ErrInvalidParam()
+	}
+
+	if status != 0 && status != 1 {
+		return response.ErrInvalidParamWithMsg("状态值无效")
+	}
+
+	if err := s.deptRepo.UpdateStatus(ctx, deptID, status); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return response.ErrNotFoundWithMsg("部门不存在")
+		}
+		return fmt.Errorf("更新部门状态失败: %w", err)
+	}
+
+	return nil
+}
+
+// Delete 删除部门（软删除）
+func (s *DepartmentService) Delete(ctx context.Context, deptID int64) error {
+	if deptID <= 0 {
+		return response.ErrInvalidParam()
+	}
+
+	if err := s.deptRepo.Delete(ctx, deptID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return response.ErrNotFoundWithMsg("部门不存在")
+		}
+		return fmt.Errorf("删除部门失败: %w", err)
+	}
+
+	return nil
 }

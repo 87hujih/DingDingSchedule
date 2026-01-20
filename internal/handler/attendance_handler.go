@@ -1,9 +1,9 @@
 package handler
 
 import (
-	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"schedule_server/internal/response"
 	"schedule_server/internal/service"
@@ -14,42 +14,50 @@ import (
 // AttendanceHandler 考勤处理器
 type AttendanceHandler struct {
 	attendanceSrv *service.AttendanceService
+	semesterSrv   *service.SemesterService
 }
 
-func NewAttendanceHandler(attendanceSrv *service.AttendanceService) *AttendanceHandler {
-	return &AttendanceHandler{attendanceSrv: attendanceSrv}
+func NewAttendanceHandler(attendanceSrv *service.AttendanceService, semesterSrv *service.SemesterService) *AttendanceHandler {
+	return &AttendanceHandler{attendanceSrv: attendanceSrv, semesterSrv: semesterSrv}
 }
 
-// CourseAttendanceStatus 课节考勤状态（应到/请假）
-// GET /attendance/courses/:id/status?week=3&dept_ids=1,2,3
-//
-// 说明：
-// - 所有登录用户可访问（不做角色判定）
-// - dept_ids 可选：
-//   - 不传/为空：按“全体参与考勤用户（status=1）”计算
-//   - 传多个：按“这些部门的并集用户（status=1）”计算
-func (h *AttendanceHandler) CourseAttendanceStatus(ctx *gin.Context) {
-	viewerID := ctx.GetUint("user_id")
-	if viewerID == 0 {
-		response.Fail(ctx, response.CodeUnauthorized, "未登录或ID无效")
-		return
-	}
-
-	courseID, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
-	if err != nil || courseID == 0 {
-		response.Fail(ctx, response.CodeInvalidParam, "无效的课程ID")
-		return
-	}
-
-	week, _ := strconv.Atoi(ctx.Query("week"))
-
-	deptIDs, err := parseDeptIDsQuery(ctx.Query("dept_ids"))
+// SlotAttendanceStatus 时段考勤状态（应到/请假，不依赖 courseID）
+func (h *AttendanceHandler) SlotAttendanceStatus(ctx *gin.Context) {
+	// 1. 获取查看者ID
+	viewerID, err := h.getViewerID(ctx)
 	if err != nil {
-		response.Fail(ctx, response.CodeInvalidParam, err.Error())
+		response.FailWithError(ctx, err)
 		return
 	}
 
-	result, err := h.attendanceSrv.GetCourseAttendanceStatus(ctx.Request.Context(), viewerID, uint(courseID), week, deptIDs)
+	// 2. 解析公共参数 (Date, Week, Section)
+	params, err := ParseAttendanceQueryParams(ctx)
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	// 3. 解析部门ID (特定参数)
+	deptIDs, err := ParseDeptIDsQuery(ctx.Query("dept_ids"))
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	// 4. 可选校验: 星期一致性
+	if err := h.validateDayOfWeek(ctx, params.Date); err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	// 5. 校验周数与日期一致性
+	if err := ValidateWeekDate(ctx, h.semesterSrv, params.Date, params.Week); err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	// 6. 调用服务
+	result, err := h.attendanceSrv.GetSlotAttendanceStatus(ctx.Request.Context(), viewerID, params.Date, params.Week, params.Section, deptIDs)
 	if err != nil {
 		response.FailWithError(ctx, err)
 		return
@@ -58,73 +66,91 @@ func (h *AttendanceHandler) CourseAttendanceStatus(ctx *gin.Context) {
 	response.OK(ctx, result)
 }
 
-// CourseUserLeaveDetail 查看某用户在该课程课节时间窗口内的请假明细（点击人员后查看）
-// GET /attendance/courses/:course_id/users/:user_id/leave?week=3
-func (h *AttendanceHandler) CourseUserLeaveDetail(ctx *gin.Context) {
-	viewerID := ctx.GetUint("user_id")
+// SlotUserLeaveDetail 查看某用户在"时段"内的请假明细
+func (h *AttendanceHandler) SlotUserLeaveDetail(ctx *gin.Context) {
+	// 1. 获取查看者信息 (ID + Role)
+	viewerID, viewerRole, err := h.getViewerInfo(ctx)
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	// 2. 解析目标用户ID
+	userID, err := h.parseUintParam(ctx, "user_id")
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	// 3. 解析公共参数 (Date, Week, Section)
+	params, err := ParseAttendanceQueryParams(ctx)
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	// 4. 调用服务
+	result, err := h.attendanceSrv.GetSlotUserLeaveDetail(ctx.Request.Context(), viewerID, viewerRole, uint(userID), params.Week, params.Date, params.Section)
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	response.OK(ctx, result)
+}
+
+// getViewerID 仅获取用户ID
+func (h *AttendanceHandler) getViewerID(ctx *gin.Context) (uint, error) {
+	id := ctx.GetUint("user_id")
+	if id == 0 {
+		return 0, response.NewBizError(response.CodeUnauthorized, "未登录或ID无效")
+	}
+	return id, nil
+}
+
+// getViewerInfo 获取用户ID和角色
+func (h *AttendanceHandler) getViewerInfo(ctx *gin.Context) (uint, int, error) {
+	id, err := h.getViewerID(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
 	roleVal, exists := ctx.Get("user_role")
-	if viewerID == 0 || !exists {
-		response.Fail(ctx, response.CodeUnauthorized, "未登录或ID无效")
-		return
+	if !exists {
+		return 0, 0, response.NewBizError(response.CodeUnauthorized, "用户角色无效")
 	}
-	viewerRole, ok := roleVal.(int)
+	role, ok := roleVal.(int)
 	if !ok {
-		response.Fail(ctx, response.CodeUnauthorized, "用户角色无效")
-		return
+		return 0, 0, response.NewBizError(response.CodeUnauthorized, "用户角色格式错误")
 	}
-
-	courseID, err := strconv.ParseUint(ctx.Param("course_id"), 10, 64)
-	if err != nil || courseID == 0 {
-		response.Fail(ctx, response.CodeInvalidParam, "无效的课程ID")
-		return
-	}
-	userID, err := strconv.ParseUint(ctx.Param("user_id"), 10, 64)
-	if err != nil || userID == 0 {
-		response.Fail(ctx, response.CodeInvalidParam, "无效的用户ID")
-		return
-	}
-
-	week, _ := strconv.Atoi(ctx.Query("week"))
-
-	result, err := h.attendanceSrv.GetCourseUserLeaveDetail(ctx.Request.Context(), viewerID, viewerRole, uint(courseID), uint(userID), week)
-	if err != nil {
-		response.FailWithError(ctx, err)
-		return
-	}
-
-	response.OK(ctx, result)
+	return id, role, nil
 }
 
-// parseDeptIDsQuery 解析 dept_ids 查询参数（逗号分隔多个部门ID）。
-// - 返回 nil,nil 表示“不按部门过滤”（查看全部）
-// - 会去重、忽略空项
-func parseDeptIDsQuery(raw string) ([]int64, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		// 不传则表示不按部门筛选（查看全部）
-		return nil, nil
+// parseUintParam 解析 Path 参数中的 ID
+func (h *AttendanceHandler) parseUintParam(ctx *gin.Context, key string) (uint64, error) {
+	valStr := ctx.Param(key)
+	val, err := strconv.ParseUint(valStr, 10, 64)
+	if err != nil || val == 0 {
+		return 0, response.NewBizError(response.CodeInvalidParam, "无效的 "+key)
 	}
+	return val, nil
+}
 
-	parts := strings.Split(raw, ",")
-	deptIDs := make([]int64, 0, len(parts))
-	seen := make(map[int64]struct{}, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		id, err := strconv.ParseInt(p, 10, 64)
-		if err != nil || id <= 0 {
-			return nil, errors.New("dept_ids 参数无效")
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		deptIDs = append(deptIDs, id)
+// validateDayOfWeek 校验前端传来的星期几是否正确 (可选逻辑)
+func (h *AttendanceHandler) validateDayOfWeek(ctx *gin.Context, date time.Time) error {
+	rawDayOfWeek := strings.TrimSpace(ctx.Query("day_of_week"))
+	if rawDayOfWeek == "" {
+		return nil
 	}
-	if len(deptIDs) == 0 {
-		return nil, errors.New("dept_ids 参数无效")
+	dayOfWeek, err := strconv.Atoi(rawDayOfWeek)
+	if err != nil || dayOfWeek <= 0 {
+		return response.NewBizError(response.CodeInvalidParam, "无效的 day_of_week")
 	}
-	return deptIDs, nil
+	derived := int(date.Weekday())
+	if derived == 0 {
+		derived = 7
+	}
+	if dayOfWeek != derived {
+		return response.NewBizError(response.CodeInvalidParam, "day_of_week 与 date 不一致")
+	}
+	return nil
 }

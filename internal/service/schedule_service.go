@@ -28,7 +28,11 @@ type ScheduleService struct {
 }
 
 // NewScheduleService 创建课表服务
-func NewScheduleService(courseRepo repository.CourseRepository, semesterRepo repository.SemesterRepository, userRepo repository.UserRepository) *ScheduleService {
+func NewScheduleService(
+	courseRepo repository.CourseRepository,
+	userRepo repository.UserRepository,
+	semesterRepo repository.SemesterRepository,
+) *ScheduleService {
 	return &ScheduleService{
 		userRepo:     userRepo,
 		courseRepo:   courseRepo,
@@ -36,13 +40,16 @@ func NewScheduleService(courseRepo repository.CourseRepository, semesterRepo rep
 	}
 }
 
-// ImportFromFile 导入课表（覆盖同一用户+学期数据），返回插入条数
-func (s *ScheduleService) ImportFromFile(ctx context.Context, userID uint, semester, srcPath string) (int, error) {
+// ImportFromFile 导入课表（覆盖同一用户全部数据），返回插入条数
+func (s *ScheduleService) ImportFromFile(ctx context.Context, userID uint, srcPath string) (int, error) {
 	if userID == 0 {
 		return 0, response.ErrForbidden()
 	}
-	if semester == "" {
-		return 0, response.ErrInvalidParamWithMsg("semester 不能为空")
+
+	// 获取当前激活学期ID
+	var semesterID *uint
+	if semester, err := s.semesterRepo.GetActiveSemester(ctx); err == nil && semester != nil {
+		semesterID = &semester.ID
 	}
 
 	tmpXlsx, err := os.CreateTemp("", "schedule-*.xlsx")
@@ -69,7 +76,7 @@ func (s *ScheduleService) ImportFromFile(ctx context.Context, userID uint, semes
 	for _, c := range parsedCourses {
 		courses = append(courses, model.Course{
 			UserID:     userID,
-			Semester:   semester,
+			SemesterID: semesterID,
 			CourseName: c.CourseName,
 			Teacher:    c.Teacher,
 			Location:   c.Location,
@@ -79,7 +86,7 @@ func (s *ScheduleService) ImportFromFile(ctx context.Context, userID uint, semes
 		})
 	}
 
-	if err = s.courseRepo.ReplaceByUserSemester(ctx, userID, semester, courses); err != nil {
+	if err = s.courseRepo.ReplaceByUser(ctx, userID, courses); err != nil {
 		return 0, fmt.Errorf("replace courses: %w", err)
 	}
 
@@ -88,23 +95,19 @@ func (s *ScheduleService) ImportFromFile(ctx context.Context, userID uint, semes
 
 // WeekScheduleResult 按周查询结果
 type WeekScheduleResult struct {
-	CurrentWeek int
-	TotalWeek   int
-	Courses     []model.Course
+	Courses []model.Course
 }
 
 // ListByWeek 查询指定周次的课表（不分页）
-// week <= 0 则自动计算当前周
 func (s *ScheduleService) ListByWeek(
 	ctx context.Context,
 	viewerID uint,
 	viewerRole int,
 	targetUserID uint,
-	semesterName string,
 	week int,
 ) (*WeekScheduleResult, error) {
-	if semesterName == "" {
-		return nil, response.ErrInvalidParamWithMsg("semester 不能为空")
+	if week <= 0 {
+		return nil, response.ErrInvalidParamWithMsg("week 不能为空")
 	}
 
 	// 0. 权限校验并确定实际查询的用户
@@ -113,28 +116,13 @@ func (s *ScheduleService) ListByWeek(
 		return nil, err
 	}
 
-	// 1. 查询学期配置
-	sem, err := s.semesterRepo.GetByName(ctx, semesterName)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, response.ErrInvalidParamWithMsg("学期不存在，请先配置学期信息")
-		}
-		return nil, fmt.Errorf("get semester: %w", err)
-	}
-
-	// 2. 若未指定周次，计算当前周
-	currentWeek := weekutil.CurrentWeek(sem.StartDate, sem.TotalWeek)
-	if week <= 0 {
-		week = currentWeek
-	}
-
-	// 3. 查询该用户该学期所有课程
-	all, err := s.courseRepo.ListByUserSemester(ctx, finalUserID, semesterName)
+	// 1. 查询该用户所有课程
+	all, err := s.courseRepo.ListByUser(ctx, finalUserID)
 	if err != nil {
 		return nil, fmt.Errorf("list courses: %w", err)
 	}
 
-	// 4. 过滤出该周有课的课程
+	// 2. 过滤出该周有课的课程
 	filtered := make([]model.Course, 0, len(all))
 	for _, c := range all {
 		if weekutil.ContainsWeek(c.WeekList, week) {
@@ -143,9 +131,7 @@ func (s *ScheduleService) ListByWeek(
 	}
 
 	return &WeekScheduleResult{
-		CurrentWeek: currentWeek,
-		TotalWeek:   sem.TotalWeek,
-		Courses:     filtered,
+		Courses: filtered,
 	}, nil
 }
 
@@ -170,23 +156,19 @@ func normalizePagination(page, pageSize int) (int, int) {
 	return page, pageSize
 }
 
-// ListAll 查询用户某学期的全部课程（不按周过滤），支持分页
+// ListAll 查询用户的全部课程（不按周过滤），支持分页
 func (s *ScheduleService) ListAll(
 	ctx context.Context,
 	userID uint,
-	semesterName string,
 	page int,
 	pageSize int,
 ) (*AllCoursesResult, error) {
 	if userID == 0 {
 		return nil, response.ErrForbidden()
 	}
-	if semesterName == "" {
-		return nil, response.ErrInvalidParamWithMsg("semester 不能为空")
-	}
 	page, pageSize = normalizePagination(page, pageSize)
 
-	courses, total, err := s.courseRepo.ListByUserSemesterPaged(ctx, userID, semesterName, page, pageSize)
+	courses, total, err := s.courseRepo.ListByUserPaged(ctx, userID, page, pageSize)
 	if err != nil {
 		return nil, fmt.Errorf("list courses: %w", err)
 	}
@@ -201,7 +183,10 @@ func (s *ScheduleService) ListAll(
 
 // SaveUploadToTemp 保存上传文件到临时路径
 func (s *ScheduleService) SaveUploadToTemp(
-	ctx context.Context, filename string, reader func() (multipart.File, error)) (string, func(), error) {
+	ctx context.Context,
+	filename string,
+	reader func() (multipart.File, error),
+) (string, func(), error) {
 	rc, err := reader()
 	if err != nil {
 		return "", nil, err
@@ -233,9 +218,15 @@ func (s *ScheduleService) CreateCourse(ctx context.Context, userID uint, req *dt
 		return 0, response.ErrForbidden()
 	}
 
+	// 获取当前激活学期ID
+	var semesterID *uint
+	if semester, err := s.semesterRepo.GetActiveSemester(ctx); err == nil && semester != nil {
+		semesterID = &semester.ID
+	}
+
 	course := &model.Course{
 		UserID:     userID,
-		Semester:   req.Semester,
+		SemesterID: semesterID,
 		CourseName: req.CourseName,
 		Teacher:    req.Teacher,
 		Location:   req.Location,
@@ -319,32 +310,8 @@ func (s *ScheduleService) resolveTargetUserID(ctx context.Context, viewerID uint
 	}
 
 	// 管理员及以上可直接查看任意用户
-	if viewerRole >= consts.RoleLabAdmin {
+	if viewerRole >= consts.RoleAdmin {
 		return targetUserID, nil
-	}
-
-	// 小组长只能查看同组成员（部门交集）
-	if viewerRole >= consts.RoleGroupLead {
-		viewerDeptIDs, err := s.userRepo.FindDepartmentIDs(ctx, viewerID)
-		if err != nil {
-			return 0, err
-		}
-		if len(viewerDeptIDs) == 0 {
-			return 0, response.ErrForbidden()
-		}
-
-		targetDeptIDs, err := s.userRepo.FindDepartmentIDs(ctx, targetUserID)
-		if err != nil {
-			return 0, err
-		}
-		if len(targetDeptIDs) == 0 {
-			return 0, response.ErrForbidden()
-		}
-
-		if hasDeptIntersection(viewerDeptIDs, targetDeptIDs) {
-			return targetUserID, nil
-		}
-		return 0, response.ErrForbidden()
 	}
 
 	// 普通成员无权查看他人

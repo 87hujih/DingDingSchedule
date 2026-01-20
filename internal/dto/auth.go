@@ -2,7 +2,8 @@ package dto
 
 // LoginRequest 登录请求
 type LoginRequest struct {
-	AuthCode string `json:"auth_code" binding:"required"`
+	AuthCode string `json:"auth_code" binding:"required"` // 免登授权码
+	CorpID   string `json:"corp_id" binding:"required"`   // 企业标识ID
 }
 
 // LoginResponse 登录响应
