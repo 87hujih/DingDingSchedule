@@ -56,15 +56,26 @@ func registerRoutes(r *gin.Engine, h *handler.Handler) {
 
 	// 需要鉴权的路由
 	protected := r.Group("/api", middleware.JWTAuth())
-	registerUserRoutes(protected, h)       // 用户相关
-	registerAdminRoutes(protected, h)      // 管理员相关
-	registerScheduleRoutes(protected, h)   // 课程相关
-	registerAttendanceRoutes(protected, h) // 考勤相关
-	registerSemesterRoutes(protected, h)   // 学期相关
+	registerUserRoutes(protected, h)            // 用户相关
+	registerAdminRoutes(protected, h)           // 管理员相关
+	registerScheduleRoutes(protected, h)        // 课程相关
+	registerAttendanceRoutes(protected, h)      // 考勤相关
+	registerSemesterRoutes(protected, h)        // 学期相关
+	registerScheduleSettingRoutes(protected, h) // 作息设置相关
 }
 
 // registerSemesterRoutes 学期相关路由
 func registerSemesterRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 	semesters := rg.Group("/semesters")
 	semesters.GET("/current", h.SemesterHdl.GetCurrentSemester)
+}
+
+// registerScheduleSettingRoutes 作息设置相关路由
+func registerScheduleSettingRoutes(rg *gin.RouterGroup, h *handler.Handler) {
+	schedule := rg.Group("/schedule")
+	{
+		schedule.GET("/info", h.ScheduleSettingHdl.GetScheduleInfo)
+		schedule.GET("/current-mode", h.ScheduleSettingHdl.GetCurrentMode)
+		schedule.POST("/switch-mode", h.ScheduleSettingHdl.SwitchMode)
+	}
 }

@@ -11,10 +11,13 @@ type Repository struct {
 	LeaveRepo            LeaveApprovalRepository
 	SemesterRepo         SemesterRepository
 	AttendanceRecordRepo AttendanceRecordRepository
+	SchedulePeriodRepo   SchedulePeriodRepository
+	ScheduleSettingRepo  ScheduleSettingRepository
 }
 
 // NewRepository 创建仓库实例
 func NewRepository(db *gorm.DB) *Repository {
+	scheduleSettingRepo := NewScheduleSettingRepository(db)
 	return &Repository{
 		UserRepo:             NewUserRepository(db),
 		DeptRepo:             NewDepartmentRepository(db),
@@ -23,5 +26,7 @@ func NewRepository(db *gorm.DB) *Repository {
 		LeaveRepo:            NewLeaveApprovalRepository(db),
 		SemesterRepo:         NewSemesterRepository(db),
 		AttendanceRecordRepo: NewAttendanceRecordRepository(db),
+		SchedulePeriodRepo:   NewSchedulePeriodRepository(db, scheduleSettingRepo),
+		ScheduleSettingRepo:  scheduleSettingRepo,
 	}
 }

@@ -17,6 +17,7 @@ type Service struct {
 	LeaveSyncSrv        *LeaveSyncService
 	SemesterSrv         *SemesterService
 	AttendanceRecordSrv *AttendanceRecordService
+	SchedulePeriodSrv   *SchedulePeriodService
 }
 
 // NewService 创建服务层实例
@@ -44,5 +45,6 @@ func NewService(repo *repository.Repository, dingMgr *DingTalkClientManager, jwt
 		LeaveSyncSrv:        leaveSyncSrv,
 		SemesterSrv:         NewSemesterService(repo.SemesterRepo),
 		AttendanceRecordSrv: attendanceRecordSrv,
+		SchedulePeriodSrv:   NewSchedulePeriodService(repo.SchedulePeriodRepo, repo.ScheduleSettingRepo, &scheduleCfg),
 	}
 }

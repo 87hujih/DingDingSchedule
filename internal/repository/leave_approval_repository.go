@@ -23,7 +23,7 @@ type LeaveApprovalRepository interface {
 	// ListOverlappingByUserID 查询某本地用户在时间窗口内的请假审批记录
 	ListOverlappingByUserID(ctx context.Context, userID uint, startAt, endAt time.Time) ([]model.LeaveApproval, error)
 
-	// ListApprovedByUserIDs 查询一批本地用户在时间窗口内已通过的请假记录
+	// ListApprovedByUserIDs 查询一批本地用户在时间窗口内的请假记录（只要提交了请假即算，无需审批通过）
 	ListApprovedByUserIDs(ctx context.Context, userIDs []uint, startAt, endAt time.Time) ([]model.LeaveApproval, error)
 }
 
@@ -124,7 +124,7 @@ func (r *leaveApprovalRepository) ListOverlappingByUserID(ctx context.Context, u
 	return out, nil
 }
 
-// ListApprovedByUserIDs 查询一批本地用户在时间窗口内已通过的请假记录
+// ListApprovedByUserIDs 查询一批本地用户在时间窗口内的请假记录（只要提交了请假即算，无需审批通过）
 func (r *leaveApprovalRepository) ListApprovedByUserIDs(ctx context.Context, userIDs []uint, startAt, endAt time.Time) ([]model.LeaveApproval, error) {
 	if len(userIDs) == 0 || endAt.Before(startAt) {
 		return []model.LeaveApproval{}, nil
@@ -134,8 +134,6 @@ func (r *leaveApprovalRepository) ListApprovedByUserIDs(ctx context.Context, use
 	err := r.db.WithContext(ctx).
 		Model(&model.LeaveApproval{}).
 		Where("user_id IN ?", userIDs).
-		Where("approve_status = ?", "COMPLETED").
-		Where("result = ?", "agree").
 		Where("start_at < ? AND end_at > ?", endAt, startAt).
 		Order("start_at ASC, end_at ASC, id ASC").
 		Find(&out).Error

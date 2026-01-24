@@ -124,11 +124,6 @@ func startDingTalkStream() {
 
 // startAttendanceScheduler 启动考勤调度器
 func startAttendanceScheduler() *scheduler.AttendanceScheduler {
-	if len(global.AppConfig.Schedule.Periods) == 0 {
-		global.Log.Warn("作息表未配置，跳过考勤调度器启动")
-		return nil
-	}
-
 	// 创建依赖
 	repo := repository.NewRepository(global.DB)
 	dingMgr := service.NewDingTalkClientManager(repo.TenantRepo)
@@ -144,10 +139,12 @@ func startAttendanceScheduler() *scheduler.AttendanceScheduler {
 	)
 	semesterSrv := service.NewSemesterService(repo.SemesterRepo)
 
-	// 创建调度器
+	// 创建调度器（支持多租户动态配置）
 	attendanceScheduler := scheduler.NewAttendanceScheduler(
 		global.AppConfig.Schedule,
 		repo.TenantRepo,
+		repo.SchedulePeriodRepo,
+		repo.ScheduleSettingRepo,
 		attendanceRecordSrv,
 		semesterSrv,
 		global.Log,

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"schedule_server/config"
@@ -15,6 +16,7 @@ import (
 	"schedule_server/pkg/weekutil"
 
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // AttendanceRecordService 考勤记录服务（打卡统计）
@@ -25,6 +27,7 @@ type AttendanceRecordService struct {
 	attendanceRecordRepo repository.AttendanceRecordRepository
 	dingMgr              *DingTalkClientManager
 	scheduleCfg          config.Schedule
+	schedulePeriodSrv    *SchedulePeriodService
 	logger               *zap.SugaredLogger
 }
 
@@ -150,6 +153,9 @@ func (s *AttendanceRecordService) GetAttendanceRecordFromDB(
 
 	record, err := s.attendanceRecordRepo.FindByDateSection(ctx, date, req.Section)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, response.ErrNotFoundWithMsg("该时段暂无考勤记录")
+		}
 		return nil, err
 	}
 
@@ -435,7 +441,7 @@ func (s *AttendanceRecordService) GetAttendanceRecordsByDate(
 	}
 
 	if len(records) == 0 {
-		return []*dto.AttendanceDetailResponse{}, nil
+		return nil, response.ErrNotFoundWithMsg("该日期暂无考勤记录")
 	}
 
 	// 2. 收集所有记录中涉及的用户ID
