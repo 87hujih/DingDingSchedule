@@ -1,0 +1,118 @@
+package tables
+
+import (
+	"strconv"
+	"time"
+
+	"schedule_server/global"
+
+	"github.com/GoAdminGroup/go-admin/context"
+	"github.com/GoAdminGroup/go-admin/modules/db"
+	form2 "github.com/GoAdminGroup/go-admin/plugins/admin/modules/form"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/table"
+	"github.com/GoAdminGroup/go-admin/template/types"
+	"github.com/GoAdminGroup/go-admin/template/types/form"
+)
+
+// GetScheduleSettingTable 作息设置表的 CRUD 配置
+func GetScheduleSettingTable(ctx *context.Context) (settingTable table.Table) {
+	settingTable = table.NewDefaultTable(ctx, table.Config{
+		Driver:     db.DriverMysql,
+		CanAdd:     true,
+		Editable:   true,
+		Deletable:  false,
+		Exportable: false,
+		Connection: table.DefaultConnectionName,
+		PrimaryKey: table.PrimaryKey{
+			Type: db.Int,
+			Name: table.DefaultPrimaryKeyName,
+		},
+	})
+
+	// 列表页
+	info := settingTable.GetInfo()
+	info.AddField("ID", "id", db.Int).FieldSortable()
+	info.AddField("企业名称", "tenant_id", db.Int).
+		FieldDisplay(func(m types.FieldModel) interface{} {
+			return getTenantNameForScheduleSettings(m.Value)
+		})
+	info.AddField("当前模式", "current_mode", db.Varchar).FieldDisplay(func(m types.FieldModel) interface{} {
+		switch m.Value {
+		case "school":
+			return "上学模式"
+		case "holiday":
+			return "假期模式"
+		default:
+			return m.Value
+		}
+	})
+	info.AddField("更新时间", "updated_at", db.Timestamp)
+	info.SetTable("schedule_settings").SetTitle("作息模式设置").SetDescription("切换上学/假期模式")
+
+	// 表单页
+	formList := settingTable.GetForm()
+	formList.AddField("ID", "id", db.Int, form.Default).
+		FieldDisplayButCanNotEditWhenUpdate().FieldDisableWhenCreate()
+	formList.AddField("企业名称", "tenant_id", db.Int, form.SelectSingle).
+		FieldOptions(getTenantOptionsForScheduleSettings()).
+		FieldMust().
+		FieldDisplayButCanNotEditWhenUpdate()
+	formList.AddField("当前模式", "current_mode", db.Varchar, form.SelectSingle).
+		FieldOptions(types.FieldOptions{
+			{Text: "上学模式", Value: "school"},
+			{Text: "假期模式", Value: "holiday"},
+		}).
+		FieldDefault("school").
+		FieldMust().
+		FieldHelpMsg("选择当前生效的作息模式")
+
+	formList.SetPreProcessFn(func(values form2.Values) form2.Values {
+		now := time.Now().Format("2006-01-02 15:04:05")
+		if values.IsInsertPost() {
+			values.Add("created_at", now)
+			values.Add("updated_at", now)
+			return values
+		}
+		if values.IsUpdatePost() {
+			values.Add("updated_at", now)
+			return values
+		}
+		return values
+	})
+
+	formList.AddField("更新时间", "updated_at", db.Timestamp, form.Datetime).
+		FieldDisableWhenCreate().
+		FieldDisplayButCanNotEditWhenUpdate()
+	formList.SetTable("schedule_settings").SetTitle("作息模式设置").SetDescription("切换上学/假期模式")
+
+	return
+}
+
+// getTenantOptionsForScheduleSettings 从数据库加载租户选项
+func getTenantOptionsForScheduleSettings() types.FieldOptions {
+	var tenants []struct {
+		ID   uint
+		Name string
+	}
+	if err := global.DB.Table("tenants").Select("id, name").Find(&tenants).Error; err != nil {
+		return types.FieldOptions{}
+	}
+	opts := make(types.FieldOptions, 0, len(tenants))
+	for _, t := range tenants {
+		opts = append(opts, types.FieldOption{
+			Text:  t.Name,
+			Value: strconv.FormatUint(uint64(t.ID), 10),
+		})
+	}
+	return opts
+}
+
+// getTenantNameForScheduleSettings 根据租户ID获取名称
+func getTenantNameForScheduleSettings(tenantID string) string {
+	if tenantID == "" {
+		return ""
+	}
+	var name string
+	global.DB.Table("tenants").Select("name").Where("id = ?", tenantID).Scan(&name)
+	return name
+}
