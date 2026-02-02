@@ -46,8 +46,14 @@ func GetScheduleSettingTable(ctx *context.Context) (settingTable table.Table) {
 			return m.Value
 		}
 	})
+	info.AddField("考勤开关", "attendance_enabled", db.Tinyint).FieldDisplay(func(m types.FieldModel) interface{} {
+		if m.Value == "1" || m.Value == "true" {
+			return "✅ 已开启"
+		}
+		return "❌ 已关闭"
+	})
 	info.AddField("更新时间", "updated_at", db.Timestamp)
-	info.SetTable("schedule_settings").SetTitle("作息模式设置").SetDescription("切换上学/假期模式")
+	info.SetTable("schedule_settings").SetTitle("作息与考勤设置").SetDescription("管理作息模式和考勤开关")
 
 	// 表单页
 	formList := settingTable.GetForm()
@@ -65,6 +71,13 @@ func GetScheduleSettingTable(ctx *context.Context) (settingTable table.Table) {
 		FieldDefault("school").
 		FieldMust().
 		FieldHelpMsg("选择当前生效的作息模式")
+	formList.AddField("考勤开关", "attendance_enabled", db.Tinyint, form.Switch).
+		FieldOptions(types.FieldOptions{
+			{Text: "开启", Value: "1"},
+			{Text: "关闭", Value: "0"},
+		}).
+		FieldDefault("1").
+		FieldHelpMsg("关闭后将停止自动考勤统计")
 
 	formList.SetPreProcessFn(func(values form2.Values) form2.Values {
 		now := time.Now().Format("2006-01-02 15:04:05")
@@ -83,7 +96,7 @@ func GetScheduleSettingTable(ctx *context.Context) (settingTable table.Table) {
 	formList.AddField("更新时间", "updated_at", db.Timestamp, form.Datetime).
 		FieldDisableWhenCreate().
 		FieldDisplayButCanNotEditWhenUpdate()
-	formList.SetTable("schedule_settings").SetTitle("作息模式设置").SetDescription("切换上学/假期模式")
+	formList.SetTable("schedule_settings").SetTitle("作息与考勤设置").SetDescription("管理作息模式和考勤开关")
 
 	return
 }

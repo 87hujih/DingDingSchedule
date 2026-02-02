@@ -18,6 +18,12 @@ type ScheduleSettingRepository interface {
 
 	// SwitchMode 切换作息模式
 	SwitchMode(ctx context.Context, mode string) error
+
+	// SetAttendanceEnabled 设置考勤开关状态
+	SetAttendanceEnabled(ctx context.Context, enabled bool) error
+
+	// IsAttendanceEnabled 检查考勤是否启用
+	IsAttendanceEnabled(ctx context.Context) (bool, error)
 }
 
 type scheduleSettingRepository struct {
@@ -47,4 +53,18 @@ func (r *scheduleSettingRepository) SwitchMode(ctx context.Context, mode string)
 	return r.db.WithContext(ctx).
 		Model(&model.ScheduleSetting{}).
 		Update("current_mode", mode).Error
+}
+
+func (r *scheduleSettingRepository) SetAttendanceEnabled(ctx context.Context, enabled bool) error {
+	return r.db.WithContext(ctx).
+		Model(&model.ScheduleSetting{}).
+		Update("attendance_enabled", enabled).Error
+}
+
+func (r *scheduleSettingRepository) IsAttendanceEnabled(ctx context.Context) (bool, error) {
+	setting, err := r.GetByTenantID(ctx)
+	if err != nil {
+		return true, err // 默认启用
+	}
+	return setting.AttendanceEnabled, nil
 }

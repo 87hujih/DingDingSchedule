@@ -129,6 +129,40 @@ func NewAllCoursesListResponse(p *AllCoursesListParams) *AllCoursesListResponse 
 	}
 }
 
+// CourseDetailResponse 课程详情响应
+type CourseDetailResponse struct {
+	ID         uint   `json:"id"`
+	CourseName string `json:"course_name"`
+	Teacher    string `json:"teacher"`
+	Location   string `json:"location"`
+	DayOfWeek  int    `json:"day_of_week"`
+	Section    int    `json:"section"`
+	WeekList   string `json:"week_list"`
+}
+
+// NewCourseDetailResponse 从 model.Course 构造课程详情响应
+func NewCourseDetailResponse(c *model.Course) *CourseDetailResponse {
+	return &CourseDetailResponse{
+		ID:         c.ID,
+		CourseName: c.CourseName,
+		Teacher:    c.Teacher,
+		Location:   c.Location,
+		DayOfWeek:  c.DayOfWeek,
+		Section:    c.Section,
+		WeekList:   c.WeekList,
+	}
+}
+
+// CopyFromUserRequest 从其他用户复制课表请求
+type CopyFromUserRequest struct {
+	SourceUserID uint `json:"source_user_id" binding:"required,min=1"`
+}
+
+// CopyFromUserResponse 复制课表响应
+type CopyFromUserResponse struct {
+	Copied int `json:"copied"` // 复制的课程数量
+}
+
 // CourseAttendanceUserItem 课节考勤中的用户信息
 type CourseAttendanceUserItem struct {
 	ID     uint   `json:"id"`

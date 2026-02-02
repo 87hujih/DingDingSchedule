@@ -105,28 +105,46 @@ func (s *SchedulePeriodService) SwitchMode(ctx context.Context, mode string) err
 	return s.settingRepo.SwitchMode(ctx, mode)
 }
 
+// SetAttendanceEnabled 设置考勤开关状态
+func (s *SchedulePeriodService) SetAttendanceEnabled(ctx context.Context, enabled bool) error {
+	return s.settingRepo.SetAttendanceEnabled(ctx, enabled)
+}
+
+// IsAttendanceEnabled 检查考勤是否启用
+func (s *SchedulePeriodService) IsAttendanceEnabled(ctx context.Context) (bool, error) {
+	return s.settingRepo.IsAttendanceEnabled(ctx)
+}
+
 // GetScheduleInfo 获取完整的作息配置信息
 func (s *SchedulePeriodService) GetScheduleInfo(ctx context.Context) (*ScheduleInfo, error) {
-	currentMode, _ := s.GetCurrentMode(ctx)
+	setting, _ := s.settingRepo.GetByTenantID(ctx)
+	currentMode := model.ScheduleModeSchool
+	attendanceEnabled := true
+	if setting != nil {
+		currentMode = setting.CurrentMode
+		attendanceEnabled = setting.AttendanceEnabled
+	}
 
 	schoolPeriods, _ := s.GetPeriodsByMode(ctx, model.ScheduleModeSchool)
 	holidayPeriods, _ := s.GetPeriodsByMode(ctx, model.ScheduleModeHoliday)
 	activePeriods, _ := s.GetActivePeriods(ctx)
 
 	return &ScheduleInfo{
-		CurrentMode:    currentMode,
-		ActivePeriods:  activePeriods,
-		SchoolPeriods:  schoolPeriods,
-		HolidayPeriods: holidayPeriods,
+		CurrentMode:       currentMode,
+		AttendanceEnabled: attendanceEnabled,
+		ActivePeriods:     activePeriods,
+		SchoolPeriods:     schoolPeriods,
+		HolidayPeriods:    holidayPeriods,
 	}, nil
 }
 
 // ScheduleInfo 作息配置完整信息
 type ScheduleInfo struct {
-	CurrentMode    string          `json:"current_mode"`    // 当前模式
-	ActivePeriods  []config.Period `json:"active_periods"`  // 当前生效的配置
-	SchoolPeriods  []config.Period `json:"school_periods"`  // 上学配置
-	HolidayPeriods []config.Period `json:"holiday_periods"` // 假期配置
+	CurrentMode       string          `json:"current_mode"`       // 当前模式
+	AttendanceEnabled bool            `json:"attendance_enabled"` // 考勤总开关
+	ActivePeriods     []config.Period `json:"active_periods"`     // 当前生效的配置
+	SchoolPeriods     []config.Period `json:"school_periods"`     // 上学配置
+	HolidayPeriods    []config.Period `json:"holiday_periods"`    // 假期配置
 }
 
 // trimTimeSeconds 去掉时间的秒部分

@@ -94,7 +94,8 @@ func (s *AttendanceRecordService) GetAttendanceDetail(
 	}
 
 	// 5. 获取打卡记录（只返回正常打卡的人）
-	onTime, err := s.getOnTimeUsers(ctx, shouldAttend, date, slotStart, slotEnd)
+	// 【修改】传入 section 参数用于计算打卡窗口
+	onTime, err := s.getOnTimeUsers(ctx, shouldAttend, date, req.Section, slotStart, slotEnd)
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +179,43 @@ func (s *AttendanceRecordService) GetAttendanceRecordFromDB(
 	return dto.NewAttendanceDetailResponseFromRecord(record, slotStart, slotEnd, userMap), nil
 }
 
+// calculateCheckWindowStart 计算打卡窗口开始时间
+// 第1节：当天00:00
+// 第2节及以后：上一节的下课时间
+func (s *AttendanceRecordService) calculateCheckWindowStart(
+	ctx context.Context,
+	date time.Time,
+	section int,
+) (time.Time, error) {
+	if section <= 1 {
+		// 第1节：从当天00:00开始
+		return time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location()), nil
+	}
+
+	// 第2节及以后：从上一节的下课时间开始
+	// 注意：这里使用配置文件作为回退方案，实际应该从数据库读取
+	prevSection := section - 1
+	if prevSection > len(s.scheduleCfg.Periods) {
+		return time.Time{}, response.NewBizError(response.CodeInvalidParam, "无效的节次")
+	}
+
+	// 获取上一节的下课时间
+	prevPeriod := s.scheduleCfg.Periods[prevSection-1]
+	prevEndTime, err := time.Parse("15:04", prevPeriod.End)
+	if err != nil {
+		return time.Time{}, response.NewBizError(response.CodeInternalError, "解析上一节下课时间失败")
+	}
+
+	// 构造完整的日期时间
+	windowStart := time.Date(
+		date.Year(), date.Month(), date.Day(),
+		prevEndTime.Hour(), prevEndTime.Minute(), 0, 0,
+		date.Location(),
+	)
+
+	return windowStart, nil
+}
+
 // getShouldAttendUsers 获取应到人员（候选人 - 有课人员）
 // deptIDs 为空时返回全部参与考勤用户，否则仅返回指定部门的用户
 func (s *AttendanceRecordService) getShouldAttendUsers(
@@ -235,11 +273,12 @@ func (s *AttendanceRecordService) getShouldAttendUsers(
 	return shouldAttend, nil
 }
 
-// getOnTimeUsers 获取正常打卡人员（在截止时间前打卡的人）
+// getOnTimeUsers 获取正常打卡人员（在有效时间窗口内打卡的人）
 func (s *AttendanceRecordService) getOnTimeUsers(
 	ctx context.Context,
 	users []model.User,
 	date time.Time,
+	section int, // 节次（用于计算打卡窗口）
 	deadline time.Time, // 上课时间（打卡截止时间）
 	slotEnd time.Time,
 ) ([]dto.AttendanceUserCheck, error) {
@@ -270,14 +309,23 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 		return nil, response.NewBizError(response.CodeUnauthorized, "缺少租户信息")
 	}
 
-	// 查询打卡记录：从当天00:00到下课时间
-	queryStart := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
-	records, err := dingClient.GetAttendanceRecords(ctx, dingUserIDs, queryStart, slotEnd)
+	// 【核心修改】计算有效打卡窗口
+	windowStart, err := s.calculateCheckWindowStart(ctx, date, section)
+	if err != nil {
+		return nil, errs.WrapMsgErr("计算打卡窗口失败", err)
+	}
+
+	// 查询打卡记录：从窗口开始到下课时间
+	// 注意：仍然查询到下课时间，以便统计迟到人数
+	queryStart := windowStart
+	queryEnd := slotEnd
+
+	records, err := dingClient.GetAttendanceRecords(ctx, dingUserIDs, queryStart, queryEnd)
 	if err != nil {
 		s.logger.Errorw("获取钉钉打卡记录失败",
 			"userCount", len(dingUserIDs),
 			"queryStart", queryStart,
-			"queryEnd", slotEnd,
+			"queryEnd", queryEnd,
 			"error", err,
 		)
 		return nil, errs.WrapMsgErr("获取钉钉打卡记录失败", err)
@@ -295,22 +343,68 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 		}
 	}
 
-	// 只返回在截止时间前打卡的人（正常打卡）
+	s.logger.Infow("打卡记录统计",
+		"应到人数", len(users),
+		"查询到的打卡记录数", len(records),
+		"有效打卡人数", len(earliestCheck),
+		"窗口开始", windowStart.Format("2006-01-02 15:04:05"),
+		"截止时间", deadline.Format("2006-01-02 15:04:05"),
+	)
+
+	// 【核心修改】只返回在有效窗口内打卡的人
 	onTime := make([]dto.AttendanceUserCheck, 0)
+	lateCount := 0
+	tooEarlyCount := 0
+
 	for dingUserID, checkTime := range earliestCheck {
 		user := userByDingID[dingUserID]
 		if user == nil {
+			s.logger.Warnw("找不到对应的用户", "dingUserID", dingUserID)
 			continue
 		}
 
+		// 【新增】检查打卡时间是否在有效窗口内
+		if checkTime.Before(windowStart) {
+			tooEarlyCount++
+			s.logger.Infow("打卡时间早于有效窗口",
+				"用户", user.Name,
+				"打卡时间", checkTime.Format("2006-01-02 15:04:05"),
+				"窗口开始", windowStart.Format("2006-01-02 15:04:05"),
+				"提前了", windowStart.Sub(checkTime).String(),
+			)
+			continue // 跳过这条打卡记录
+		}
+
+		// 判断是否迟到
 		if checkTime.Before(deadline) || checkTime.Equal(deadline) {
 			onTime = append(onTime, dto.AttendanceUserCheck{
 				ID:        user.ID,
 				Name:      user.Name,
 				CheckTime: checkTime,
 			})
+			s.logger.Debugw("正常打卡",
+				"用户", user.Name,
+				"打卡时间", checkTime.Format("2006-01-02 15:04:05"),
+				"窗口开始", windowStart.Format("2006-01-02 15:04:05"),
+				"截止时间", deadline.Format("2006-01-02 15:04:05"),
+			)
+		} else {
+			lateCount++
+			s.logger.Infow("打卡晚于截止时间",
+				"用户", user.Name,
+				"打卡时间", checkTime.Format("2006-01-02 15:04:05"),
+				"截止时间", deadline.Format("2006-01-02 15:04:05"),
+				"晚了", checkTime.Sub(deadline).String(),
+			)
 		}
 	}
+
+	s.logger.Infow("打卡统计结果",
+		"正常打卡", len(onTime),
+		"晚于截止时间", lateCount,
+		"早于窗口", tooEarlyCount,
+		"未打卡", len(users)-len(onTime)-lateCount,
+	)
 
 	return onTime, nil
 }

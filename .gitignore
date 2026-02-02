@@ -1,0 +1,31 @@
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Output
+bin/
+dist/
+
+# Logs
+logs/
+*.log
+
+# Temp files
+*.tmp
+*.swp
+
+# Local config (contains secrets)
+configs/local.yaml
+.claude/settings.local.json
+.claude/settings.json
+
+# Uploads
+uploads/

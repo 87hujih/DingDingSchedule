@@ -3,7 +3,6 @@ package dingtalk
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/client"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/payload"
@@ -37,57 +36,31 @@ func (s *StreamClient) SetBpmsEventHandler(handler func(ctx context.Context, cor
 	s.onBpmsEvent = handler
 }
 
-// Start 启动 Stream 客户端（阻塞，自动恢复）
+// Start 启动 Stream 客户端（阻塞，使用 SDK 内置重连）
 func (s *StreamClient) Start(ctx context.Context) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Errorw("Stream 客户端 panic 已捕获", "panic", r)
 		}
-
-		s.runWithRecover(ctx)
-		s.logger.Warnw("Stream 客户端异常退出，5秒后重启...")
-		time.Sleep(5 * time.Second)
-	}
-}
-
-// runWithRecover 在隔离的 goroutine 中运行，捕获 panic
-func (s *StreamClient) runWithRecover(ctx context.Context) {
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		defer func() {
-			if r := recover(); r != nil {
-				s.logger.Errorw("Stream 客户端 panic 已捕获", "panic", r)
-			}
-		}()
-
-		cli := client.NewStreamClient(
-			client.WithAppCredential(client.NewAppCredentialConfig(s.appKey, s.appSecret)),
-			client.WithSubscription("EVENT", "*", s.handleEvent),
-			client.WithAutoReconnect(false), // 禁用 SDK 内部重连，由我们控制
-		)
-
-		s.client = cli
-		s.logger.Infow("钉钉 Stream 客户端启动中...", "appKey", s.appKey)
-
-		if err := cli.Start(ctx); err != nil {
-			s.logger.Errorw("Stream 客户端启动失败", "err", err)
-			return
-		}
-
-		s.logger.Infow("钉钉 Stream 客户端已启动，等待事件...")
-		<-ctx.Done()
 	}()
 
-	select {
-	case <-done:
-		// goroutine 退出（panic 或正常结束）
-	case <-ctx.Done():
-		// context 取消
+	cli := client.NewStreamClient(
+		client.WithAppCredential(client.NewAppCredentialConfig(s.appKey, s.appSecret)),
+		client.WithSubscription("EVENT", "*", s.handleEvent),
+		client.WithAutoReconnect(true), // 使用 SDK 内置重连机制
+	)
+
+	s.client = cli
+	s.logger.Infow("钉钉 Stream 客户端启动中...", "appKey", s.appKey)
+
+	// Start 是阻塞的，会一直运行直到 context 取消
+	if err := cli.Start(ctx); err != nil && err != context.Canceled {
+		s.logger.Errorw("Stream 客户端启动失败", "err", err)
+		return err
 	}
+
+	s.logger.Infow("钉钉 Stream 客户端已停止")
+	return ctx.Err()
 }
 
 // handleEvent 处理钉钉事件
