@@ -24,9 +24,12 @@ func RunServer() {
 	// 初始化路由
 	router := setupRouter()
 
+	// 创建可取消的 context 用于控制 Stream 客户端生命周期
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+
 	// 启动钉钉 Stream 客户端（如果启用）
 	if global.AppConfig.DingTalk.StreamMode {
-		go startDingTalkStream()
+		go startDingTalkStream(streamCtx)
 	}
 
 	// 启动考勤调度器
@@ -64,6 +67,10 @@ func RunServer() {
 
 	global.Log.Info("正在关闭服务...")
 
+	// 停止钉钉 Stream 客户端
+	streamCancel()
+	global.Log.Info("已发送 Stream 客户端关闭信号")
+
 	// 停止考勤调度器
 	if attendanceScheduler != nil {
 		attendanceScheduler.Stop()
@@ -91,7 +98,7 @@ func RunServer() {
 }
 
 // startDingTalkStream 启动钉钉 Stream 客户端
-func startDingTalkStream() {
+func startDingTalkStream(ctx context.Context) {
 	cfg := global.AppConfig.DingTalk
 	if cfg.AppKey == "" || cfg.AppSecret == "" {
 		global.Log.Warn("钉钉 Stream 模式未配置 AppKey/AppSecret，跳过启动")
@@ -116,8 +123,8 @@ func startDingTalkStream() {
 		return leaveSyncSrv.SyncProcessInstance(ctx, corpID, processInstanceID)
 	})
 
-	// 启动（阻塞）
-	if err := streamClient.Start(context.Background()); err != nil {
+	// 启动（阻塞，使用传入的可取消 context）
+	if err := streamClient.Start(ctx); err != nil && err != context.Canceled {
 		global.Log.Errorw("钉钉 Stream 客户端启动失败", "err", err)
 	}
 }

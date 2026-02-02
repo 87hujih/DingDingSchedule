@@ -50,9 +50,8 @@ func (r *attendanceRecordRepository) Upsert(ctx context.Context, record *model.A
 			DoUpdates: clause.AssignmentColumns([]string{
 				"week",
 				"on_time_ids",
-				"late_ids",
 				"leave_ids",
-				"absent_ids",
+				"not_arrived_ids",
 				"updated_at",
 			}),
 		}).

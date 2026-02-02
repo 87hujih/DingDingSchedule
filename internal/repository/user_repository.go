@@ -3,9 +3,11 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"schedule_server/internal/model"
+	"schedule_server/internal/tenantctx"
 	"schedule_server/pkg/pinyinutil"
 
 	"gorm.io/gorm"
@@ -248,14 +250,21 @@ func (r *userRepository) SyncDepartments(ctx context.Context, userID uint, deptI
 			return nil
 		}
 
+		// 获取 tenant_id
+		tenantID, ok := tenantctx.TenantIDFrom(ctx)
+		if !ok {
+			return fmt.Errorf("context 中缺少 tenant_id")
+		}
+
 		userDepts := make([]model.UserDepartment, 0, len(deptIDs))
 		for _, deptID := range deptIDs {
 			if deptID <= 0 {
 				continue
 			}
 			userDepts = append(userDepts, model.UserDepartment{
-				UserID: userID,
-				DeptID: deptID,
+				TenantID: tenantID,
+				UserID:   userID,
+				DeptID:   deptID,
 			})
 		}
 

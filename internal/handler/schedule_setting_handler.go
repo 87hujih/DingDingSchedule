@@ -55,3 +55,31 @@ func (h *ScheduleSettingHandler) GetCurrentMode(c *gin.Context) {
 	}
 	response.OK(c, gin.H{"current_mode": mode})
 }
+
+// ToggleAttendance 切换考勤开关
+// POST /api/schedule/attendance/toggle
+func (h *ScheduleSettingHandler) ToggleAttendance(c *gin.Context) {
+	var req dto.ToggleAttendanceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Fail(c, response.CodeInvalidParam, "请求参数错误")
+		return
+	}
+
+	if err := h.schedulePeriodSrv.SetAttendanceEnabled(c.Request.Context(), req.Enabled); err != nil {
+		response.FailWithError(c, err)
+		return
+	}
+
+	response.OK(c, gin.H{"enabled": req.Enabled})
+}
+
+// GetAttendanceStatus 获取考勤开关状态
+// GET /api/schedule/attendance/status
+func (h *ScheduleSettingHandler) GetAttendanceStatus(c *gin.Context) {
+	enabled, err := h.schedulePeriodSrv.IsAttendanceEnabled(c.Request.Context())
+	if err != nil {
+		response.FailWithError(c, err)
+		return
+	}
+	response.OK(c, dto.AttendanceStatusResponse{Enabled: enabled})
+}

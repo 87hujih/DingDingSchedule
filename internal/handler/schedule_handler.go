@@ -143,7 +143,8 @@ func (h *ScheduleHandler) Create(ctx *gin.Context) {
 }
 
 // Update 更新课程
-// PUT /schedules/:id
+// POST /schedules/:id
+// 注：使用 POST 方法而非 PUT，因为钉钉小程序对 PUT 请求支持不佳
 func (h *ScheduleHandler) Update(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
 
@@ -155,7 +156,7 @@ func (h *ScheduleHandler) Update(ctx *gin.Context) {
 
 	var req dto.UpdateCourseRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		response.Fail(ctx, response.CodeInvalidParam, err.Error())
+		response.Fail(ctx, response.CodeInvalidParam, "请求参数错误: "+err.Error())
 		return
 	}
 
@@ -184,4 +185,48 @@ func (h *ScheduleHandler) Delete(ctx *gin.Context) {
 	}
 
 	response.OK(ctx, nil)
+}
+
+// GetDetail 获取课程详情
+// GET /schedules/:id
+func (h *ScheduleHandler) GetDetail(ctx *gin.Context) {
+	userID := ctx.GetUint("user_id")
+
+	courseID, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
+	if err != nil {
+		response.Fail(ctx, response.CodeInvalidParam, "无效的课程ID")
+		return
+	}
+
+	course, err := h.scheduleSrv.GetCourseDetail(ctx.Request.Context(), userID, uint(courseID))
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	response.OK(ctx, dto.NewCourseDetailResponse(course))
+}
+
+// CopyFromUser 从其他用户复制课表
+// POST /schedules/copy-from-user
+func (h *ScheduleHandler) CopyFromUser(ctx *gin.Context) {
+	userID := ctx.GetUint("user_id")
+	if userID == 0 {
+		response.Fail(ctx, response.CodeUnauthorized, "未登录")
+		return
+	}
+
+	var req dto.CopyFromUserRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		response.Fail(ctx, response.CodeInvalidParam, response.TranslateValidationError(err))
+		return
+	}
+
+	count, err := h.scheduleSrv.CopyFromUser(ctx.Request.Context(), userID, req.SourceUserID)
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	response.OK(ctx, dto.CopyFromUserResponse{Copied: count})
 }

@@ -77,5 +77,9 @@ func registerScheduleSettingRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 		schedule.GET("/info", h.ScheduleSettingHdl.GetScheduleInfo)
 		schedule.GET("/current-mode", h.ScheduleSettingHdl.GetCurrentMode)
 		schedule.POST("/switch-mode", h.ScheduleSettingHdl.SwitchMode)
+
+		// 考勤开关
+		schedule.GET("/attendance/status", h.ScheduleSettingHdl.GetAttendanceStatus)
+		schedule.POST("/attendance/toggle", h.ScheduleSettingHdl.ToggleAttendance)
 	}
 }

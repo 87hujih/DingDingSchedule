@@ -321,6 +321,17 @@ func (s *AttendanceScheduler) buildCronExpression(startTimeStr string) (string, 
 func (s *AttendanceScheduler) triggerAttendanceForTenant(tenantID uint, section int, now time.Time) {
 	ctx := tenantctx.WithTenantID(context.Background(), tenantID)
 
+	// 检查考勤全局开关
+	enabled, err := s.scheduleSettingRepo.IsAttendanceEnabled(ctx)
+	if err != nil {
+		s.logger.Warnw("检查考勤开关失败", "tenantId", tenantID, "err", err)
+		// 检查失败时继续执行（保守策略）
+	}
+	if !enabled {
+		s.logger.Infow("考勤已全局关闭，跳过执行", "tenantId", tenantID, "section", section)
+		return
+	}
+
 	// 获取租户信息（用于日志）
 	tenant, err := s.tenantRepo.FindByID(ctx, tenantID)
 	if err != nil {
@@ -328,15 +339,31 @@ func (s *AttendanceScheduler) triggerAttendanceForTenant(tenantID uint, section 
 		return
 	}
 
+	// 获取当前模式
+	setting, _ := s.scheduleSettingRepo.GetByTenantID(ctx)
+	currentMode := "school"
+	if setting != nil {
+		currentMode = setting.CurrentMode
+	}
+
 	// 获取当前周数
 	week, err := s.semesterSrv.GetCurrentWeek(ctx)
 	if err != nil {
-		s.logger.Warnw("获取当前周数失败",
-			"tenantId", tenantID,
-			"tenantName", tenant.Name,
-			"err", err,
-		)
-		return
+		// 假期模式下，不受学期配置限制，使用周数 0 继续执行
+		if currentMode == "holiday" {
+			s.logger.Infow("假期模式：忽略学期配置，继续执行考勤",
+				"tenantId", tenantID,
+				"tenantName", tenant.Name,
+			)
+			week = 0
+		} else {
+			s.logger.Warnw("获取当前周数失败",
+				"tenantId", tenantID,
+				"tenantName", tenant.Name,
+				"err", err,
+			)
+			return
+		}
 	}
 
 	date := now.Format("2006-01-02")

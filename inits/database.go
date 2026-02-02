@@ -55,6 +55,7 @@ func AutoMigrate() {
 		&model.Semester{},
 		&model.SchedulePeriod{},
 		&model.ScheduleSetting{},
+		&model.AttendanceRecord{},
 	); err != nil {
 		global.Log.Panicf("数据库迁移失败: %s", err)
 	}

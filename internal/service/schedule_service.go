@@ -298,6 +298,91 @@ func (s *ScheduleService) DeleteCourse(ctx context.Context, userID uint, courseI
 	return s.courseRepo.Delete(ctx, courseID)
 }
 
+// GetCourseDetail 获取课程详情，校验归属权限
+func (s *ScheduleService) GetCourseDetail(ctx context.Context, userID uint, courseID uint) (*model.Course, error) {
+	if userID == 0 {
+		return nil, response.ErrForbidden()
+	}
+
+	// 1. 查询课程是否存在
+	course, err := s.courseRepo.GetByID(ctx, courseID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, response.ErrNotFoundWithMsg("课程不存在")
+		}
+		return nil, fmt.Errorf("get course: %w", err)
+	}
+
+	// 2. 校验归属权限
+	if course.UserID != userID {
+		return nil, response.ErrForbidden()
+	}
+
+	return course, nil
+}
+
+// CopyFromUser 从指定用户复制全部课程到当前用户（覆盖）
+func (s *ScheduleService) CopyFromUser(ctx context.Context, currentUserID, sourceUserID uint) (int, error) {
+	// 1. 参数验证
+	if currentUserID == 0 {
+		return 0, response.ErrForbidden()
+	}
+	if sourceUserID == 0 {
+		return 0, response.ErrInvalidParamWithMsg("源用户ID不能为空")
+	}
+	if currentUserID == sourceUserID {
+		return 0, response.ErrInvalidParamWithMsg("不能复制自己的课表")
+	}
+
+	// 2. 验证源用户存在（同租户校验由 GORM 插件自动处理）
+	_, err := s.userRepo.FindByID(ctx, sourceUserID)
+	if err != nil {
+		if errors.Is(err, repository.ErrUserNotFound) {
+			return 0, response.ErrNotFoundWithMsg("源用户不存在")
+		}
+		return 0, fmt.Errorf("查询源用户失败: %w", err)
+	}
+
+	// 3. 查询源用户的全部课程
+	sourceCourses, err := s.courseRepo.ListByUser(ctx, sourceUserID)
+	if err != nil {
+		return 0, fmt.Errorf("查询源课程失败: %w", err)
+	}
+
+	if len(sourceCourses) == 0 {
+		return 0, response.ErrInvalidParamWithMsg("源用户没有课程")
+	}
+
+	// 4. 获取当前激活学期
+	var semesterID *uint
+	if semester, err := s.semesterRepo.GetActiveSemester(ctx); err == nil && semester != nil {
+		semesterID = &semester.ID
+	}
+
+	// 5. 深拷贝课程数据（修改归属为当前用户）
+	copiedCourses := make([]model.Course, 0, len(sourceCourses))
+	for _, c := range sourceCourses {
+		copiedCourses = append(copiedCourses, model.Course{
+			// ID 不设置，让数据库自增
+			UserID:     currentUserID,
+			SemesterID: semesterID,
+			CourseName: c.CourseName,
+			Teacher:    c.Teacher,
+			Location:   c.Location,
+			DayOfWeek:  c.DayOfWeek,
+			Section:    c.Section,
+			WeekList:   c.WeekList,
+		})
+	}
+
+	// 6. 替换当前用户的全部课程（事务：先删后插）
+	if err := s.courseRepo.ReplaceByUser(ctx, currentUserID, copiedCourses); err != nil {
+		return 0, fmt.Errorf("替换课程失败: %w", err)
+	}
+
+	return len(copiedCourses), nil
+}
+
 // resolveTargetUserID 校验访问权限并返回实际查询的用户ID
 func (s *ScheduleService) resolveTargetUserID(ctx context.Context, viewerID uint, viewerRole int, targetUserID uint) (uint, error) {
 	if viewerID == 0 {
