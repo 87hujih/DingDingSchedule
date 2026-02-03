@@ -26,12 +26,15 @@ func NewService(repo *repository.Repository, dingMgr *DingTalkClientManager, jwt
 
 	leaveSyncSrv := NewLeaveSyncService(repo.LeaveRepo, repo.UserRepo, dingMgr, logger)
 
+	schedulePeriodSrv := NewSchedulePeriodService(repo.SchedulePeriodRepo, repo.ScheduleSettingRepo, &scheduleCfg)
+
 	attendanceRecordSrv := NewAttendanceRecordService(
 		repo.UserRepo,
 		repo.CourseRepo,
 		repo.LeaveRepo,
 		repo.AttendanceRecordRepo,
 		dingMgr,
+		schedulePeriodSrv,
 		scheduleCfg,
 		logger,
 	)
@@ -45,6 +48,6 @@ func NewService(repo *repository.Repository, dingMgr *DingTalkClientManager, jwt
 		LeaveSyncSrv:        leaveSyncSrv,
 		SemesterSrv:         NewSemesterService(repo.SemesterRepo),
 		AttendanceRecordSrv: attendanceRecordSrv,
-		SchedulePeriodSrv:   NewSchedulePeriodService(repo.SchedulePeriodRepo, repo.ScheduleSettingRepo, &scheduleCfg),
+		SchedulePeriodSrv:   schedulePeriodSrv,
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,7 +17,8 @@ const (
 	// 钉钉获取 AccessToken 的接口
 	tokenURL = "https://api.dingtalk.com/v1.0/oauth2/accessToken"
 	// 提前刷新时间（Token 过期前 5 分钟刷新）
-	refreshAdvance = 5 * time.Minute
+	refreshAdvance    = 5 * time.Minute
+	sendWorkNoticeURL = "https://oapi.dingtalk.com/topapi/message/corpconversation/asyncsend_v2"
 )
 
 var (
@@ -193,4 +195,66 @@ func (c *Client) Get(ctx context.Context, url string) ([]byte, error) {
 // Post 发送 POST 请求
 func (c *Client) Post(ctx context.Context, url string, body any) ([]byte, error) {
 	return c.Request(ctx, http.MethodPost, url, body)
+}
+
+type workNoticeResponse struct {
+	ErrCode int    `json:"errcode"`
+	ErrMsg  string `json:"errmsg"`
+	TaskID  int64  `json:"task_id"`
+}
+
+func (c *Client) SendWorkNoticeText(ctx context.Context, agentID string, userIDs []string, content string) error {
+	userIDs = trimStrings(userIDs)
+	if len(userIDs) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(agentID) == "" {
+		return fmt.Errorf("钉钉: agent_id 为空")
+	}
+	const chunkSize = 100
+	for i := 0; i < len(userIDs); i += chunkSize {
+		j := i + chunkSize
+		if j > len(userIDs) {
+			j = len(userIDs)
+		}
+		if err := c.sendWorkNoticeTextByChunk(ctx, agentID, userIDs[i:j], content, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Client) sendWorkNoticeTextByChunk(ctx context.Context, agentID string, userIDs []string, content string, isRetry bool) error {
+	token, err := c.GetAccessToken(ctx)
+	if err != nil {
+		return fmt.Errorf("钉钉: 获取AccessToken失败: %w", err)
+	}
+	url := fmt.Sprintf("%s?access_token=%s", sendWorkNoticeURL, token)
+	reqBody := map[string]interface{}{
+		"agent_id":    agentID,
+		"userid_list": strings.Join(userIDs, ","),
+		"msg": map[string]interface{}{
+			"msgtype": "text",
+			"text": map[string]string{
+				"content": content,
+			},
+		},
+	}
+	respBody, err := c.postJSON(ctx, url, reqBody)
+	if err != nil {
+		return fmt.Errorf("钉钉: 发送工作通知失败: %w", err)
+	}
+
+	var resp workNoticeResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return fmt.Errorf("钉钉: 解析工作通知响应失败: %w", err)
+	}
+	if resp.ErrCode != 0 {
+		if !isRetry && isTokenInvalidError(resp.ErrCode) {
+			c.InvalidateToken()
+			return c.sendWorkNoticeTextByChunk(ctx, agentID, userIDs, content, true)
+		}
+		return fmt.Errorf("钉钉: 工作通知失败: code=%d, msg=%s", resp.ErrCode, resp.ErrMsg)
+	}
+	return nil
 }

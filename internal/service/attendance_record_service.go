@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"schedule_server/config"
@@ -38,6 +39,7 @@ func NewAttendanceRecordService(
 	leaveRepo repository.LeaveApprovalRepository,
 	attendanceRecordRepo repository.AttendanceRecordRepository,
 	dingMgr *DingTalkClientManager,
+	schedulePeriodSrv *SchedulePeriodService,
 	scheduleCfg config.Schedule,
 	logger *zap.SugaredLogger,
 ) *AttendanceRecordService {
@@ -47,6 +49,7 @@ func NewAttendanceRecordService(
 		leaveRepo:            leaveRepo,
 		attendanceRecordRepo: attendanceRecordRepo,
 		dingMgr:              dingMgr,
+		schedulePeriodSrv:    schedulePeriodSrv,
 		scheduleCfg:          scheduleCfg,
 		logger:               logger,
 	}
@@ -58,52 +61,69 @@ func (s *AttendanceRecordService) GetAttendanceDetail(
 	ctx context.Context,
 	req *dto.AttendanceDetailRequest,
 ) (*dto.AttendanceDetailResponse, error) {
+	resp, _, err := s.getAttendanceDetailWithLateUsers(ctx, req)
+	return resp, err
+}
+
+func (s *AttendanceRecordService) GetAttendanceDetailWithLateUsers(
+	ctx context.Context,
+	req *dto.AttendanceDetailRequest,
+) (*dto.AttendanceDetailResponse, []model.User, error) {
+	return s.getAttendanceDetailWithLateUsers(ctx, req)
+}
+
+func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
+	ctx context.Context,
+	req *dto.AttendanceDetailRequest,
+) (*dto.AttendanceDetailResponse, []model.User, error) {
 	// 1. 解析日期
 	date, err := time.ParseInLocation("2006-01-02", req.Date, time.Local)
 	if err != nil {
-		return nil, response.ErrInvalidParamWithMsg("日期格式错误")
+		return nil, nil, response.ErrInvalidParamWithMsg("日期格式错误")
 	}
 
+	periods := s.resolveActivePeriods(ctx)
+
 	// 2. 校验节次
-	if req.Section <= 0 || req.Section > len(s.scheduleCfg.Periods) {
-		return nil, response.ErrInvalidParamWithMsg("节次无效")
+	if req.Section <= 0 || req.Section > len(periods) {
+		return nil, nil, response.ErrInvalidParamWithMsg("节次无效")
 	}
 
 	// 3. 计算时间窗口
-	slotStart, slotEnd, err := scheduleutil.CalculateSlotTime(date, req.Section, s.scheduleCfg.Periods)
+	slotStart, slotEnd, err := scheduleutil.CalculateSlotTime(date, req.Section, periods)
 	if err != nil {
-		return nil, response.NewBizError(response.CodeInternalError, err.Error())
+		return nil, nil, response.NewBizError(response.CodeInternalError, err.Error())
 	}
 
 	// 4. 获取应到人员
 	shouldAttend, err := s.getShouldAttendUsers(ctx, date, req.Week, req.Section, req.DeptIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if len(shouldAttend) == 0 {
 		return dto.NewAttendanceDetailResponse(
 			req.Date, req.Week, req.Section,
-			s.scheduleCfg.Periods[req.Section-1].Start,
-			s.scheduleCfg.Periods[req.Section-1].End,
+			periods[req.Section-1].Start,
+			periods[req.Section-1].End,
 			shouldAttend,
 			[]dto.AttendanceUserCheck{},
 			[]dto.AttendanceUserLeave{},
 			[]dto.AttendanceUserBasic{},
-		), nil
+		), nil, nil
 	}
 
 	// 5. 获取打卡记录（只返回正常打卡的人）
 	// 【修改】传入 section 参数用于计算打卡窗口
-	onTime, err := s.getOnTimeUsers(ctx, shouldAttend, date, req.Section, slotStart, slotEnd)
+	onTime, lateUsers, err := s.getOnTimeUsers(ctx, shouldAttend, date, req.Section, slotStart, slotEnd)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// 6. 获取请假人员
 	leave, err := s.getLeaveUsers(ctx, shouldAttend, slotStart, slotEnd)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// 7. 计算未到人员（应到 - 正常打卡 - 请假）
@@ -112,10 +132,10 @@ func (s *AttendanceRecordService) GetAttendanceDetail(
 	// 8. 构建响应
 	return dto.NewAttendanceDetailResponse(
 		req.Date, req.Week, req.Section,
-		s.scheduleCfg.Periods[req.Section-1].Start,
-		s.scheduleCfg.Periods[req.Section-1].End,
+		periods[req.Section-1].Start,
+		periods[req.Section-1].End,
 		shouldAttend, onTime, leave, notArrived,
-	), nil
+	), lateUsers, nil
 }
 
 // SaveAttendanceRecord 保存考勤记录到数据库
@@ -192,15 +212,17 @@ func (s *AttendanceRecordService) calculateCheckWindowStart(
 		return time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location()), nil
 	}
 
+	periods := s.resolveActivePeriods(ctx)
+
 	// 第2节及以后：从上一节的下课时间开始
 	// 注意：这里使用配置文件作为回退方案，实际应该从数据库读取
 	prevSection := section - 1
-	if prevSection > len(s.scheduleCfg.Periods) {
+	if prevSection > len(periods) {
 		return time.Time{}, response.NewBizError(response.CodeInvalidParam, "无效的节次")
 	}
 
 	// 获取上一节的下课时间
-	prevPeriod := s.scheduleCfg.Periods[prevSection-1]
+	prevPeriod := periods[prevSection-1]
 	prevEndTime, err := time.Parse("15:04", prevPeriod.End)
 	if err != nil {
 		return time.Time{}, response.NewBizError(response.CodeInternalError, "解析上一节下课时间失败")
@@ -214,6 +236,16 @@ func (s *AttendanceRecordService) calculateCheckWindowStart(
 	)
 
 	return windowStart, nil
+}
+
+func (s *AttendanceRecordService) resolveActivePeriods(ctx context.Context) []config.Period {
+	if s.schedulePeriodSrv != nil {
+		periods, err := s.schedulePeriodSrv.GetActivePeriods(ctx)
+		if err == nil && len(periods) > 0 {
+			return periods
+		}
+	}
+	return s.scheduleCfg.Periods
 }
 
 // getShouldAttendUsers 获取应到人员（候选人 - 有课人员）
@@ -281,9 +313,9 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 	section int, // 节次（用于计算打卡窗口）
 	deadline time.Time, // 上课时间（打卡截止时间）
 	slotEnd time.Time,
-) ([]dto.AttendanceUserCheck, error) {
+) ([]dto.AttendanceUserCheck, []model.User, error) {
 	if len(users) == 0 {
-		return []dto.AttendanceUserCheck{}, nil
+		return []dto.AttendanceUserCheck{}, []model.User{}, nil
 	}
 
 	// 提取钉钉用户ID
@@ -297,22 +329,22 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 	}
 
 	if len(dingUserIDs) == 0 {
-		return []dto.AttendanceUserCheck{}, nil
+		return []dto.AttendanceUserCheck{}, []model.User{}, nil
 	}
 
 	// 获取钉钉客户端
 	if s.dingMgr == nil {
-		return nil, response.NewBizError(response.CodeInternalError, "钉钉租户管理器未初始化")
+		return nil, nil, response.NewBizError(response.CodeInternalError, "钉钉租户管理器未初始化")
 	}
 	_, dingClient, err := s.dingMgr.FromContext(ctx)
 	if err != nil {
-		return nil, response.NewBizError(response.CodeUnauthorized, "缺少租户信息")
+		return nil, nil, response.NewBizError(response.CodeUnauthorized, "缺少租户信息")
 	}
 
 	// 【核心修改】计算有效打卡窗口
 	windowStart, err := s.calculateCheckWindowStart(ctx, date, section)
 	if err != nil {
-		return nil, errs.WrapMsgErr("计算打卡窗口失败", err)
+		return nil, nil, errs.WrapMsgErr("计算打卡窗口失败", err)
 	}
 
 	// 查询打卡记录：从窗口开始到下课时间
@@ -328,7 +360,7 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 			"queryEnd", queryEnd,
 			"error", err,
 		)
-		return nil, errs.WrapMsgErr("获取钉钉打卡记录失败", err)
+		return nil, nil, errs.WrapMsgErr("获取钉钉打卡记录失败", err)
 	}
 
 	// 按用户ID去重，取最早的打卡记录
@@ -353,6 +385,7 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 
 	// 【核心修改】只返回在有效窗口内打卡的人
 	onTime := make([]dto.AttendanceUserCheck, 0)
+	lateUsers := make([]model.User, 0)
 	lateCount := 0
 	tooEarlyCount := 0
 
@@ -390,6 +423,7 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 			)
 		} else {
 			lateCount++
+			lateUsers = append(lateUsers, *user)
 			s.logger.Infow("打卡晚于截止时间",
 				"用户", user.Name,
 				"打卡时间", checkTime.Format("2006-01-02 15:04:05"),
@@ -406,7 +440,74 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 		"未打卡", len(users)-len(onTime)-lateCount,
 	)
 
-	return onTime, nil
+	return onTime, lateUsers, nil
+}
+
+func (s *AttendanceRecordService) SendLateNotifications(
+	ctx context.Context,
+	date string,
+	section int,
+	slotStart string,
+	slotEnd string,
+	mode string,
+	lateUsers []model.User,
+) error {
+	if len(lateUsers) == 0 {
+		return nil
+	}
+	if s.dingMgr == nil {
+		return response.NewBizError(response.CodeInternalError, "钉钉租户管理器未初始化")
+	}
+	tenant, dingClient, err := s.dingMgr.FromContext(ctx)
+	if err != nil {
+		return response.NewBizError(response.CodeUnauthorized, "缺少租户信息")
+	}
+
+	if tenant.AgentID == "" {
+		return response.NewBizError(response.CodeInvalidParam, "钉钉AgentID未配置")
+	}
+
+	dingUserIDs := make([]string, 0, len(lateUsers))
+	lateUserNames := make([]string, 0, len(lateUsers))
+	for i := range lateUsers {
+		if lateUsers[i].DingUserID != "" {
+			dingUserIDs = append(dingUserIDs, lateUsers[i].DingUserID)
+			lateUserNames = append(lateUserNames, lateUsers[i].Name)
+		}
+	}
+
+	if len(dingUserIDs) == 0 {
+		return nil
+	}
+
+	periodLabel := fmt.Sprintf("第%d节", section)
+	if mode == model.ScheduleModeHoliday {
+		switch section {
+		case 1:
+			periodLabel = "上午"
+		case 2:
+			periodLabel = "下午"
+		case 3:
+			periodLabel = "晚上"
+		default:
+			periodLabel = fmt.Sprintf("第%d次", section)
+		}
+	}
+	content := fmt.Sprintf("你在%s %s考勤(%s-%s)迟到，请及时补签或联系管理员。", date, periodLabel, slotStart, slotEnd)
+	if err := dingClient.SendWorkNoticeText(ctx, tenant.AgentID, dingUserIDs, content); err != nil {
+		return errs.WrapMsgErr("发送钉钉迟到提醒失败", err)
+	}
+
+	s.logger.Infow("成功发送迟到提醒",
+		"tenantId", tenant.ID,
+		"lateUserIDs", dingUserIDs,
+		"lateUserNames", lateUserNames,
+		"date", date,
+		"section", section,
+		"content", content,
+	)
+
+	return nil
 }
 
 // getLeaveUsers 获取请假人员

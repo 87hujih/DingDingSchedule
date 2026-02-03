@@ -15,16 +15,19 @@ import (
 type AttendanceRecordHandler struct {
 	attendanceRecordSrv *service.AttendanceRecordService
 	semesterSrv         *service.SemesterService
+	schedulePeriodSrv   *service.SchedulePeriodService
 }
 
 // NewAttendanceRecordHandler 创建考勤记录处理器实例
 func NewAttendanceRecordHandler(
 	attendanceRecordSrv *service.AttendanceRecordService,
 	semesterSrv *service.SemesterService,
+	schedulePeriodSrv *service.SchedulePeriodService,
 ) *AttendanceRecordHandler {
 	return &AttendanceRecordHandler{
 		attendanceRecordSrv: attendanceRecordSrv,
 		semesterSrv:         semesterSrv,
+		schedulePeriodSrv:   schedulePeriodSrv,
 	}
 }
 
@@ -101,7 +104,7 @@ func (h *AttendanceRecordHandler) TriggerAttendanceStatistics(ctx *gin.Context) 
 	}
 
 	// 5. 获取考勤详情
-	result, err := h.attendanceRecordSrv.GetAttendanceDetail(ctx.Request.Context(), detailReq)
+	result, lateUsers, err := h.attendanceRecordSrv.GetAttendanceDetailWithLateUsers(ctx.Request.Context(), detailReq)
 	if err != nil {
 		response.FailWithError(ctx, err)
 		return
@@ -109,6 +112,16 @@ func (h *AttendanceRecordHandler) TriggerAttendanceStatistics(ctx *gin.Context) 
 
 	// 6. 保存到数据库
 	if err := h.attendanceRecordSrv.SaveAttendanceRecord(ctx.Request.Context(), result); err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	mode, err := h.schedulePeriodSrv.GetCurrentMode(ctx.Request.Context())
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+	if err := h.attendanceRecordSrv.SendLateNotifications(ctx.Request.Context(), result.Date, result.Section, result.SlotTime.Start, result.SlotTime.End, mode, lateUsers); err != nil {
 		response.FailWithError(ctx, err)
 		return
 	}

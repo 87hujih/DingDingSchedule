@@ -26,7 +26,7 @@ func NewHandler(svc *service.Service, repo *repository.Repository) *Handler {
 		ScheduleHdl:         NewScheduleHandler(svc.ScheduleSrv),
 		AttendanceHdl:       NewAttendanceHandler(svc.AttendanceSrv, svc.SemesterSrv),
 		SemesterHdl:         NewSemesterHandler(svc.SemesterSrv),
-		AttendanceRecordHdl: NewAttendanceRecordHandler(svc.AttendanceRecordSrv, svc.SemesterSrv),
+		AttendanceRecordHdl: NewAttendanceRecordHandler(svc.AttendanceRecordSrv, svc.SemesterSrv, svc.SchedulePeriodSrv),
 		ScheduleSettingHdl:  NewScheduleSettingHandler(svc.SchedulePeriodSrv),
 	}
 }

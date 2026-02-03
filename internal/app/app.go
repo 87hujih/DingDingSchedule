@@ -135,12 +135,15 @@ func startAttendanceScheduler() *scheduler.AttendanceScheduler {
 	repo := repository.NewRepository(global.DB)
 	dingMgr := service.NewDingTalkClientManager(repo.TenantRepo)
 
+	schedulePeriodSrv := service.NewSchedulePeriodService(repo.SchedulePeriodRepo, repo.ScheduleSettingRepo, &global.AppConfig.Schedule)
+
 	attendanceRecordSrv := service.NewAttendanceRecordService(
 		repo.UserRepo,
 		repo.CourseRepo,
 		repo.LeaveRepo,
 		repo.AttendanceRecordRepo,
 		dingMgr,
+		schedulePeriodSrv,
 		global.AppConfig.Schedule,
 		global.Log,
 	)
