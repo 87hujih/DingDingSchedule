@@ -183,12 +183,13 @@ type SlotAttendanceStatusResponse struct {
 
 // CourseLeaveRecordItem 请假记录明细（点击人员后展示）
 type CourseLeaveRecordItem struct {
-	LeaveType       string    `json:"leave_type"`
-	StartAt         time.Time `json:"start_at"`
-	EndAt           time.Time `json:"end_at"`
-	DurationSeconds int64     `json:"duration_seconds,omitempty"`
-	Status          string    `json:"status,omitempty"`
-	Remark          string    `json:"remark,omitempty"`
+	UserName        string    `json:"user_name"`                  // 请假人姓名
+	LeaveType       string    `json:"leave_type"`                 // 请假类型
+	StartAt         time.Time `json:"start_at"`                   // 请假开始时间
+	EndAt           time.Time `json:"end_at"`                     // 请假结束时间
+	DurationSeconds int64     `json:"duration_seconds,omitempty"` // 重叠时长（秒）
+	Status          string    `json:"status,omitempty"`           // 审批状态
+	Remark          string    `json:"remark,omitempty"`           // 请假理由
 }
 
 // SlotUserLeaveDetailResponse 某用户在某“时段(日期+节次)时间窗口”内的请假明细响应（不依赖课程ID）。

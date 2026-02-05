@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	// 钉钉获取 AccessToken 的接口
-	tokenURL = "https://api.dingtalk.com/v1.0/oauth2/accessToken"
+	// 钉钉获取 AccessToken 的接口（旧版API，兼容 oapi.dingtalk.com 的接口）
+	tokenURL = "https://oapi.dingtalk.com/gettoken"
 	// 提前刷新时间（Token 过期前 5 分钟刷新）
 	refreshAdvance = 5 * time.Minute
 )
@@ -25,10 +25,12 @@ var (
 	ErrTokenInvalid     = errors.New("钉钉: AccessToken 无效")
 )
 
-// tokenResponse 钉钉获取 Token 的响应结构
+// tokenResponse 钉钉获取 Token 的响应结构（旧API格式）
 type tokenResponse struct {
-	AccessToken string `json:"accessToken"`
-	ExpireIn    int64  `json:"expireIn"` // 过期时间，单位秒
+	ErrCode     int    `json:"errcode"`
+	ErrMsg      string `json:"errmsg"`
+	AccessToken string `json:"access_token"` // 旧API使用 access_token
+	ExpiresIn   int64  `json:"expires_in"`   // 旧API使用 expires_in，单位秒
 }
 
 // Client 钉钉客户端，自动管理 AccessToken
@@ -92,22 +94,14 @@ func (c *Client) refreshToken(ctx context.Context) (string, error) {
 		return c.accessToken, nil
 	}
 
-	// 构造请求体
-	reqBody := map[string]string{
-		"appKey":    c.appKey,
-		"appSecret": c.appSecret,
-	}
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("钉钉: 序列化请求体失败: %w", err)
-	}
+	// 旧API使用 GET 请求，参数在 URL 中
+	url := fmt.Sprintf("%s?appkey=%s&appsecret=%s", tokenURL, c.appKey, c.appSecret)
 
 	// 创建请求
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("钉钉: 创建请求失败: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
 
 	// 发送请求
 	resp, err := c.httpClient.Do(req)
@@ -132,13 +126,18 @@ func (c *Client) refreshToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("钉钉: 解析响应失败: %w", err)
 	}
 
+	// 检查钉钉API错误码
+	if tokenResp.ErrCode != 0 {
+		return "", fmt.Errorf("%w: errcode=%d, errmsg=%s", ErrTokenFetch, tokenResp.ErrCode, tokenResp.ErrMsg)
+	}
+
 	if tokenResp.AccessToken == "" {
 		return "", fmt.Errorf("%w: 响应中 Token 为空, 响应=%s", ErrTokenFetch, string(respBody))
 	}
 
 	// 更新缓存
 	c.accessToken = tokenResp.AccessToken
-	c.expireAt = time.Now().Add(time.Duration(tokenResp.ExpireIn) * time.Second)
+	c.expireAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 
 	return c.accessToken, nil
 }

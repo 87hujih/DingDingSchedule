@@ -21,18 +21,20 @@ import (
 
 // AttendanceService 考勤服务（从 ScheduleService 中拆分）。
 type AttendanceService struct {
-	repo        repository.AttendanceRepository
-	dingMgr     *DingTalkClientManager
-	scheduleCfg config.Schedule
-	logger      *zap.SugaredLogger
+	repo              repository.AttendanceRepository
+	leaveApprovalRepo repository.LeaveApprovalRepository
+	dingMgr           *DingTalkClientManager
+	scheduleCfg       config.Schedule
+	logger            *zap.SugaredLogger
 }
 
-func NewAttendanceService(repo repository.AttendanceRepository, dingMgr *DingTalkClientManager, scheduleCfg config.Schedule, logger *zap.SugaredLogger) *AttendanceService {
+func NewAttendanceService(repo repository.AttendanceRepository, leaveApprovalRepo repository.LeaveApprovalRepository, dingMgr *DingTalkClientManager, scheduleCfg config.Schedule, logger *zap.SugaredLogger) *AttendanceService {
 	return &AttendanceService{
-		repo:        repo,
-		dingMgr:     dingMgr,
-		scheduleCfg: scheduleCfg,
-		logger:      logger,
+		repo:              repo,
+		leaveApprovalRepo: leaveApprovalRepo,
+		dingMgr:           dingMgr,
+		scheduleCfg:       scheduleCfg,
+		logger:            logger,
 	}
 }
 
@@ -112,29 +114,16 @@ func (s *AttendanceService) GetSlotUserLeaveDetail(
 		return nil, response.NewBizError(response.CodeInternalError, err.Error())
 	}
 
-	dingUserID, err := s.getUserDingUserID(ctx, userID)
+	// 从本地数据库查询请假记录，而不是调用钉钉 API
+	leaveRecords, err := s.leaveApprovalRepo.ListOverlappingByUserID(ctx, userID, sessionStart, sessionEnd)
 	if err != nil {
-		return nil, err
-	}
-
-	if s.dingMgr == nil {
-		return nil, response.NewBizError(response.CodeInternalError, "钉钉租户管理器未初始化")
-	}
-	_, dingClient, err := s.dingMgr.FromContext(ctx)
-	if err != nil {
-		return nil, response.NewBizError(response.CodeUnauthorized, "缺少租户信息")
-	}
-
-	leaveRecords, err := dingClient.GetLeaveStatus(ctx, []string{dingUserID}, sessionStart, sessionEnd)
-	if err != nil {
-		s.logger.Errorw("获取钉钉请假详情失败",
+		s.logger.Errorw("查询本地请假记录失败",
 			"userID", userID,
-			"dingUserID", dingUserID,
 			"sessionStart", sessionStart,
 			"sessionEnd", sessionEnd,
 			"error", err,
 		)
-		return nil, errs.WrapMsgErr("获取钉钉请假详情失败", err)
+		return nil, errs.WrapMsgErr("查询请假记录失败", err)
 	}
 
 	return &dto.SlotUserLeaveDetailResponse{
@@ -145,7 +134,7 @@ func (s *AttendanceService) GetSlotUserLeaveDetail(
 		Section:      section,
 		SessionStart: sessionStart,
 		SessionEnd:   sessionEnd,
-		Items:        toCourseLeaveRecordItems(leaveRecords, dingUserID, sessionStart, sessionEnd),
+		Items:        toLeaveRecordItems(leaveRecords, sessionStart, sessionEnd),
 	}, nil
 }
 
@@ -243,7 +232,7 @@ func (s *AttendanceService) busyUserSetForSlot(
 // computeOnLeaveUserItems 在给定课节时间窗口内，筛出请假的用户列表（仅返回用户信息，不含请假明细）。
 //
 // 说明：
-// - 只会对 users 中“已绑定钉钉”的用户（DingUserID 非空）发起钉钉请假查询。
+// - 从本地数据库查询请假记录（不再调用钉钉API）
 // - 通过 timeOverlaps 判断请假记录与课节时间窗口是否重叠；重叠则认为该用户请假。
 func (s *AttendanceService) computeOnLeaveUserItems(
 	ctx context.Context,
@@ -255,45 +244,37 @@ func (s *AttendanceService) computeOnLeaveUserItems(
 		return []dto.CourseAttendanceUserItem{}, nil
 	}
 
-	dingUserIDs := make([]string, 0, len(users))
+	// 收集所有用户的本地ID
+	userIDs := make([]uint, 0, len(users))
 	for _, u := range users {
-		if u.DingUserID != "" {
-			dingUserIDs = append(dingUserIDs, u.DingUserID)
-		}
-	}
-	if len(dingUserIDs) == 0 {
-		return []dto.CourseAttendanceUserItem{}, nil
+		userIDs = append(userIDs, u.ID)
 	}
 
-	if s.dingMgr == nil {
-		return nil, response.NewBizError(response.CodeInternalError, "钉钉租户管理器未初始化")
-	}
-	_, dingClient, err := s.dingMgr.FromContext(ctx)
+	// 从本地数据库查询请假记录
+	leaveRecords, err := s.leaveApprovalRepo.ListApprovedByUserIDs(ctx, userIDs, sessionStart, sessionEnd)
 	if err != nil {
-		return nil, response.NewBizError(response.CodeUnauthorized, "缺少租户信息")
-	}
-
-	leaveRecords, err := dingClient.GetLeaveStatus(ctx, dingUserIDs, sessionStart, sessionEnd)
-	if err != nil {
-		s.logger.Errorw("获取钉钉请假信息失败",
-			"userCount", len(dingUserIDs),
+		s.logger.Errorw("查询本地请假记录失败",
+			"userCount", len(userIDs),
 			"sessionStart", sessionStart,
 			"sessionEnd", sessionEnd,
 			"error", err,
 		)
-		return nil, errs.WrapMsgErr("获取钉钉请假信息失败", err)
+		return nil, errs.WrapMsgErr("查询请假记录失败", err)
 	}
 
-	onLeaveSet := make(map[string]struct{}, len(leaveRecords))
+	// 构建请假用户集合（user_id -> 是否请假）
+	onLeaveSet := make(map[uint]struct{}, len(leaveRecords))
 	for _, rec := range leaveRecords {
+		// 再次检查时间重叠（虽然SQL已经过滤，但这里做二次确认）
 		if timeOverlaps(rec.StartAt, rec.EndAt, sessionStart, sessionEnd) {
-			onLeaveSet[rec.DingUserID] = struct{}{}
+			onLeaveSet[rec.UserID] = struct{}{}
 		}
 	}
 
+	// 返回请假用户列表
 	items := make([]dto.CourseAttendanceUserItem, 0)
 	for _, u := range users {
-		if _, ok := onLeaveSet[u.DingUserID]; !ok {
+		if _, ok := onLeaveSet[u.ID]; !ok {
 			continue
 		}
 		items = append(items, dto.CourseAttendanceUserItem{
@@ -386,4 +367,37 @@ func filterUsersByExclude(users []model.User, exclude map[uint]struct{}) []model
 		out = append(out, u)
 	}
 	return out
+}
+
+// toLeaveRecordItems 将本地数据库的请假记录转换为 DTO（用于 GetSlotUserLeaveDetail）
+func toLeaveRecordItems(records []model.LeaveApproval, sessionStart, sessionEnd time.Time) []dto.CourseLeaveRecordItem {
+	items := make([]dto.CourseLeaveRecordItem, 0, len(records))
+	for _, rec := range records {
+		// 检查请假时间是否与时段重叠
+		if !timeOverlaps(rec.StartAt, rec.EndAt, sessionStart, sessionEnd) {
+			continue
+		}
+
+		// 计算重叠部分的时长
+		overlapStart := rec.StartAt
+		if sessionStart.After(overlapStart) {
+			overlapStart = sessionStart
+		}
+		overlapEnd := rec.EndAt
+		if sessionEnd.Before(overlapEnd) {
+			overlapEnd = sessionEnd
+		}
+		durationSeconds := int64(overlapEnd.Sub(overlapStart).Seconds())
+
+		items = append(items, dto.CourseLeaveRecordItem{
+			UserName:        rec.UserName,
+			LeaveType:       rec.LeaveType,
+			StartAt:         rec.StartAt,
+			EndAt:           rec.EndAt,
+			DurationSeconds: durationSeconds,
+			Status:          rec.ApproveStatus,
+			Remark:          rec.Reason,
+		})
+	}
+	return items
 }

@@ -270,3 +270,39 @@ func (s *UserService) DeleteUser(ctx context.Context, targetUserID uint) error {
 
 	return nil
 }
+
+// UpdateUserRole 更新用户角色（仅限超级管理员操作）
+func (s *UserService) UpdateUserRole(ctx context.Context, targetUserID uint, role int) error {
+	if targetUserID == 0 {
+		return response.ErrInvalidParam()
+	}
+
+	// 验证角色值：只能设置为普通用户(0)或管理员(1)
+	if role != 0 && role != 1 {
+		return response.ErrInvalidParamWithMsg("角色值无效，只能设置为普通用户(0)或管理员(1)")
+	}
+
+	// 检查用户是否存在
+	user, err := s.userRepo.FindByID(ctx, targetUserID)
+	if err != nil {
+		if errors.Is(err, repository.ErrUserNotFound) {
+			return response.ErrUserNotFound()
+		}
+		return fmt.Errorf("查询用户失败: %w", err)
+	}
+
+	// 不允许修改超级管理员的角色
+	if user.Role == 2 {
+		return response.NewBizError(response.CodeForbidden, "不允许修改超级管理员的角色")
+	}
+
+	// 更新角色
+	if err := s.userRepo.UpdateRole(ctx, targetUserID, role); err != nil {
+		if errors.Is(err, repository.ErrUserNotFound) {
+			return response.ErrUserNotFound()
+		}
+		return fmt.Errorf("更新用户角色失败: %w", err)
+	}
+
+	return nil
+}

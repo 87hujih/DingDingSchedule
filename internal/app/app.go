@@ -71,6 +71,9 @@ func RunServer() {
 	streamCancel()
 	global.Log.Info("已发送 Stream 客户端关闭信号")
 
+	// 给 Stream 客户端 2 秒时间优雅关闭，避免 SDK 内部 goroutine 竞态
+	time.Sleep(2 * time.Second)
+
 	// 停止考勤调度器
 	if attendanceScheduler != nil {
 		attendanceScheduler.Stop()
@@ -99,6 +102,13 @@ func RunServer() {
 
 // startDingTalkStream 启动钉钉 Stream 客户端
 func startDingTalkStream(ctx context.Context) {
+	// 捕获 SDK 内部 goroutine 可能的 panic（如关闭时的 "send on closed channel"）
+	defer func() {
+		if r := recover(); r != nil {
+			global.Log.Errorw("钉钉 Stream 客户端 goroutine panic 已捕获", "panic", r)
+		}
+	}()
+
 	cfg := global.AppConfig.DingTalk
 	if cfg.AppKey == "" || cfg.AppSecret == "" {
 		global.Log.Warn("钉钉 Stream 模式未配置 AppKey/AppSecret，跳过启动")
@@ -135,6 +145,14 @@ func startAttendanceScheduler() *scheduler.AttendanceScheduler {
 	repo := repository.NewRepository(global.DB)
 	dingMgr := service.NewDingTalkClientManager(repo.TenantRepo)
 
+	// 创建 SchedulePeriodService
+	schedulePeriodSrv := service.NewSchedulePeriodService(
+		repo.SchedulePeriodRepo,
+		repo.ScheduleSettingRepo,
+		&global.AppConfig.Schedule,
+	)
+
+	// 创建 AttendanceRecordService，注入 SchedulePeriodService
 	attendanceRecordSrv := service.NewAttendanceRecordService(
 		repo.UserRepo,
 		repo.CourseRepo,
@@ -142,6 +160,7 @@ func startAttendanceScheduler() *scheduler.AttendanceScheduler {
 		repo.AttendanceRecordRepo,
 		dingMgr,
 		global.AppConfig.Schedule,
+		schedulePeriodSrv,
 		global.Log,
 	)
 	semesterSrv := service.NewSemesterService(repo.SemesterRepo)

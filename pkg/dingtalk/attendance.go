@@ -375,11 +375,12 @@ func (c *Client) getAttendanceRecordsByChunkWithRetry(ctx context.Context, userI
 
 	url := fmt.Sprintf("%s?access_token=%s", getAttendanceRecordURL, token)
 
+	// 按照钉钉官方文档格式
 	reqBody := map[string]interface{}{
-		"userIds":       userIDs,
+		"userIds":       userIDs, // 数组格式
 		"checkDateFrom": startAt.Format("2006-01-02 15:04:05"),
 		"checkDateTo":   endAt.Format("2006-01-02 15:04:05"),
-		"isI18n":        false,
+		"isI18n":        "false", // 字符串 "false"
 	}
 
 	respBody, err := c.postJSON(ctx, url, reqBody)

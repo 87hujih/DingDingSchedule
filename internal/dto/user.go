@@ -136,5 +136,10 @@ func NewSyncAllUsersResponse(totalRequested, successCount int, failed []SyncAllU
 
 // UpdateUserStatusRequest 更新用户考勤状态请求
 type UpdateUserStatusRequest struct {
-	Status int `json:"status" binding:"required,oneof=0 1"` // 用户状态(0:不参与;1:参与)
+	Status *int `json:"status" binding:"required,oneof=0 1"` // 用户状态(0:不参与;1:参与)
+}
+
+// UpdateUserRoleRequest 更新用户角色请求
+type UpdateUserRoleRequest struct {
+	Role *int `json:"role" binding:"required,oneof=0 1"` // 用户角色(0:普通用户;1:管理员)
 }

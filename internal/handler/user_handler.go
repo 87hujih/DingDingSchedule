@@ -189,7 +189,7 @@ func (h *UserHandler) UpdateStatus(ctx *gin.Context) {
 		return
 	}
 
-	if err := h.userSvc.UpdateUserStatus(ctx.Request.Context(), uint(targetID), req.Status); err != nil {
+	if err := h.userSvc.UpdateUserStatus(ctx.Request.Context(), uint(targetID), *req.Status); err != nil {
 		response.FailWithError(ctx, err)
 		return
 	}
@@ -212,4 +212,27 @@ func (h *UserHandler) Delete(ctx *gin.Context) {
 	}
 
 	response.OKWithMessage(ctx, "删除成功", nil)
+}
+
+// UpdateRole 更新用户角色（超级管理员操作）
+func (h *UserHandler) UpdateRole(ctx *gin.Context) {
+	idParam := ctx.Param("id")
+	targetID, err := strconv.ParseUint(idParam, 10, 64)
+	if err != nil || targetID == 0 {
+		response.Fail(ctx, response.CodeInvalidParam, "用户ID无效")
+		return
+	}
+
+	var req dto.UpdateUserRoleRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		response.Fail(ctx, response.CodeInvalidParam, response.TranslateValidationError(err))
+		return
+	}
+
+	if err := h.userSvc.UpdateUserRole(ctx.Request.Context(), uint(targetID), *req.Role); err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	response.OKWithMessage(ctx, "更新成功", nil)
 }

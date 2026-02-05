@@ -26,8 +26,8 @@ type AttendanceRecordService struct {
 	leaveRepo            repository.LeaveApprovalRepository
 	attendanceRecordRepo repository.AttendanceRecordRepository
 	dingMgr              *DingTalkClientManager
-	scheduleCfg          config.Schedule
-	schedulePeriodSrv    *SchedulePeriodService
+	scheduleCfg          config.Schedule        // 配置文件作为回退
+	schedulePeriodSrv    *SchedulePeriodService // 从数据库读取作息时间
 	logger               *zap.SugaredLogger
 }
 
@@ -39,6 +39,7 @@ func NewAttendanceRecordService(
 	attendanceRecordRepo repository.AttendanceRecordRepository,
 	dingMgr *DingTalkClientManager,
 	scheduleCfg config.Schedule,
+	schedulePeriodSrv *SchedulePeriodService,
 	logger *zap.SugaredLogger,
 ) *AttendanceRecordService {
 	return &AttendanceRecordService{
@@ -48,6 +49,7 @@ func NewAttendanceRecordService(
 		attendanceRecordRepo: attendanceRecordRepo,
 		dingMgr:              dingMgr,
 		scheduleCfg:          scheduleCfg,
+		schedulePeriodSrv:    schedulePeriodSrv,
 		logger:               logger,
 	}
 }
@@ -64,18 +66,30 @@ func (s *AttendanceRecordService) GetAttendanceDetail(
 		return nil, response.ErrInvalidParamWithMsg("日期格式错误")
 	}
 
-	// 2. 校验节次
-	if req.Section <= 0 || req.Section > len(s.scheduleCfg.Periods) {
+	// 2. 从数据库获取当前生效的作息时间配置
+	periods, err := s.schedulePeriodSrv.GetActivePeriods(ctx)
+	if err != nil {
+		return nil, response.NewBizError(response.CodeInternalError, "获取作息时间配置失败")
+	}
+
+	// 如果数据库没有配置，回退到配置文件
+	if len(periods) == 0 {
+		s.logger.Warnw("数据库无作息配置，使用配置文件回退", "tenant_id", ctx.Value("tenant_id"))
+		periods = s.scheduleCfg.Periods
+	}
+
+	// 3. 校验节次
+	if req.Section <= 0 || req.Section > len(periods) {
 		return nil, response.ErrInvalidParamWithMsg("节次无效")
 	}
 
-	// 3. 计算时间窗口
-	slotStart, slotEnd, err := scheduleutil.CalculateSlotTime(date, req.Section, s.scheduleCfg.Periods)
+	// 4. 计算时间窗口
+	slotStart, slotEnd, err := scheduleutil.CalculateSlotTime(date, req.Section, periods)
 	if err != nil {
 		return nil, response.NewBizError(response.CodeInternalError, err.Error())
 	}
 
-	// 4. 获取应到人员
+	// 5. 获取应到人员
 	shouldAttend, err := s.getShouldAttendUsers(ctx, date, req.Week, req.Section, req.DeptIDs)
 	if err != nil {
 		return nil, err
@@ -84,8 +98,8 @@ func (s *AttendanceRecordService) GetAttendanceDetail(
 	if len(shouldAttend) == 0 {
 		return dto.NewAttendanceDetailResponse(
 			req.Date, req.Week, req.Section,
-			s.scheduleCfg.Periods[req.Section-1].Start,
-			s.scheduleCfg.Periods[req.Section-1].End,
+			periods[req.Section-1].Start,
+			periods[req.Section-1].End,
 			shouldAttend,
 			[]dto.AttendanceUserCheck{},
 			[]dto.AttendanceUserLeave{},
@@ -93,27 +107,27 @@ func (s *AttendanceRecordService) GetAttendanceDetail(
 		), nil
 	}
 
-	// 5. 获取打卡记录（只返回正常打卡的人）
+	// 6. 获取打卡记录（只返回正常打卡的人）
 	// 【修改】传入 section 参数用于计算打卡窗口
 	onTime, err := s.getOnTimeUsers(ctx, shouldAttend, date, req.Section, slotStart, slotEnd)
 	if err != nil {
 		return nil, err
 	}
 
-	// 6. 获取请假人员
+	// 7. 获取请假人员
 	leave, err := s.getLeaveUsers(ctx, shouldAttend, slotStart, slotEnd)
 	if err != nil {
 		return nil, err
 	}
 
-	// 7. 计算未到人员（应到 - 正常打卡 - 请假）
+	// 8. 计算未到人员（应到 - 正常打卡 - 请假）
 	notArrived := s.calculateNotArrived(shouldAttend, onTime, leave)
 
-	// 8. 构建响应
+	// 9. 构建响应
 	return dto.NewAttendanceDetailResponse(
 		req.Date, req.Week, req.Section,
-		s.scheduleCfg.Periods[req.Section-1].Start,
-		s.scheduleCfg.Periods[req.Section-1].End,
+		periods[req.Section-1].Start,
+		periods[req.Section-1].End,
 		shouldAttend, onTime, leave, notArrived,
 	), nil
 }
@@ -173,10 +187,37 @@ func (s *AttendanceRecordService) GetAttendanceRecordFromDB(
 		return nil, err
 	}
 
-	slotStart := s.scheduleCfg.Periods[req.Section-1].Start
-	slotEnd := s.scheduleCfg.Periods[req.Section-1].End
+	// 获取用户部门名称映射
+	userDeptNames, err := s.userRepo.GetUserDepartmentNames(ctx, userIDs)
+	if err != nil {
+		return nil, err
+	}
 
-	return dto.NewAttendanceDetailResponseFromRecord(record, slotStart, slotEnd, userMap), nil
+	// 从数据库获取作息时间配置
+	periods, err := s.getActivePeriods(ctx)
+	if err != nil || req.Section > len(periods) {
+		// 回退到配置文件
+		periods = s.scheduleCfg.Periods
+	}
+
+	slotStart := periods[req.Section-1].Start
+	slotEnd := periods[req.Section-1].End
+
+	return dto.NewAttendanceDetailResponseFromRecord(record, slotStart, slotEnd, userMap, userDeptNames), nil
+}
+
+// getActivePeriods 获取当前生效的作息时间配置（内部辅助方法）
+func (s *AttendanceRecordService) getActivePeriods(ctx context.Context) ([]config.Period, error) {
+	if s.schedulePeriodSrv == nil {
+		return s.scheduleCfg.Periods, nil
+	}
+
+	periods, err := s.schedulePeriodSrv.GetActivePeriods(ctx)
+	if err != nil || len(periods) == 0 {
+		return s.scheduleCfg.Periods, err
+	}
+
+	return periods, nil
 }
 
 // calculateCheckWindowStart 计算打卡窗口开始时间
@@ -193,14 +234,19 @@ func (s *AttendanceRecordService) calculateCheckWindowStart(
 	}
 
 	// 第2节及以后：从上一节的下课时间开始
-	// 注意：这里使用配置文件作为回退方案，实际应该从数据库读取
+	// 从数据库读取作息时间配置
+	periods, err := s.getActivePeriods(ctx)
+	if err != nil {
+		return time.Time{}, response.NewBizError(response.CodeInternalError, "获取作息时间配置失败")
+	}
+
 	prevSection := section - 1
-	if prevSection > len(s.scheduleCfg.Periods) {
+	if prevSection > len(periods) {
 		return time.Time{}, response.NewBizError(response.CodeInvalidParam, "无效的节次")
 	}
 
 	// 获取上一节的下课时间
-	prevPeriod := s.scheduleCfg.Periods[prevSection-1]
+	prevPeriod := periods[prevSection-1]
 	prevEndTime, err := time.Parse("15:04", prevPeriod.End)
 	if err != nil {
 		return time.Time{}, response.NewBizError(response.CodeInternalError, "解析上一节下课时间失败")
@@ -320,6 +366,13 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 	queryStart := windowStart
 	queryEnd := slotEnd
 
+	s.logger.Infow("查询钉钉打卡记录",
+		"用户数", len(dingUserIDs),
+		"查询开始", queryStart.Format("2006-01-02 15:04:05"),
+		"查询结束", queryEnd.Format("2006-01-02 15:04:05"),
+		"用户ID列表", dingUserIDs,
+	)
+
 	records, err := dingClient.GetAttendanceRecords(ctx, dingUserIDs, queryStart, queryEnd)
 	if err != nil {
 		s.logger.Errorw("获取钉钉打卡记录失败",
@@ -334,8 +387,15 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 	// 按用户ID去重，取最早的打卡记录
 	earliestCheck := make(map[string]time.Time)
 	for _, r := range records {
+		s.logger.Debugw("收到打卡记录",
+			"用户ID", r.DingUserID,
+			"打卡时间", r.CheckTime.Format("2006-01-02 15:04:05"),
+			"打卡类型", r.CheckType,
+		)
+
 		// 只统计上班打卡
 		if r.CheckType != "OnDuty" {
+			s.logger.Debugw("跳过非上班打卡", "用户ID", r.DingUserID, "类型", r.CheckType)
 			continue
 		}
 		if existing, ok := earliestCheck[r.DingUserID]; !ok || r.CheckTime.Before(existing) {
@@ -564,16 +624,28 @@ func (s *AttendanceRecordService) GetAttendanceRecordsByDate(
 		return nil, err
 	}
 
-	// 5. 构建响应列表
+	// 5. 获取用户部门名称映射
+	userDeptNames, err := s.userRepo.GetUserDepartmentNames(ctx, userIDList)
+	if err != nil {
+		return nil, err
+	}
+
+	// 6. 获取作息时间配置
+	periods, err := s.getActivePeriods(ctx)
+	if err != nil {
+		periods = s.scheduleCfg.Periods
+	}
+
+	// 7. 构建响应列表
 	results := make([]*dto.AttendanceDetailResponse, 0, len(records))
 	for i := range records {
 		record := &records[i]
-		if record.Section <= 0 || record.Section > len(s.scheduleCfg.Periods) {
+		if record.Section <= 0 || record.Section > len(periods) {
 			continue
 		}
-		slotStart := s.scheduleCfg.Periods[record.Section-1].Start
-		slotEnd := s.scheduleCfg.Periods[record.Section-1].End
-		resp := dto.NewAttendanceDetailResponseFromRecord(record, slotStart, slotEnd, userMap)
+		slotStart := periods[record.Section-1].Start
+		slotEnd := periods[record.Section-1].End
+		resp := dto.NewAttendanceDetailResponseFromRecord(record, slotStart, slotEnd, userMap, userDeptNames)
 		results = append(results, resp)
 	}
 

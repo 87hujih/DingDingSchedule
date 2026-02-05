@@ -15,7 +15,7 @@ func registerAttendanceRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 		attendance.GET("/slots/users/:user_id/leave", middleware.RequireAdmin(), h.AttendanceHdl.SlotUserLeaveDetail) // 时段请假明细
 
 		// 考勤统计记录（管理员）
-		record := attendance.Group("/record", middleware.RequireAdmin())
+		record := attendance.Group("/record")
 		{
 			record.GET("/detail", h.AttendanceRecordHdl.GetAttendanceDetail)           // 获取考勤详情（实时计算）
 			record.GET("/snapshot", h.AttendanceRecordHdl.GetAttendanceSnapshot)       // 获取考勤快照（已保存记录）

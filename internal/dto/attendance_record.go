@@ -60,14 +60,16 @@ type AttendanceUserLists struct {
 
 // AttendanceUserBasic 基础用户信息
 type AttendanceUserBasic struct {
-	ID   uint   `json:"id"`
-	Name string `json:"name"`
+	ID       uint   `json:"id"`
+	Name     string `json:"name"`
+	DeptName string `json:"dept_name"`
 }
 
 // AttendanceUserCheck 打卡用户信息
 type AttendanceUserCheck struct {
 	ID        uint      `json:"id"`
 	Name      string    `json:"name"`
+	DeptName  string    `json:"dept_name"`
 	CheckTime time.Time `json:"check_time"`
 }
 
@@ -75,6 +77,7 @@ type AttendanceUserCheck struct {
 type AttendanceUserLeave struct {
 	ID        uint   `json:"id"`
 	Name      string `json:"name"`
+	DeptName  string `json:"dept_name"`
 	LeaveType string `json:"leave_type"`
 	Reason    string `json:"reason"`
 }
@@ -143,6 +146,7 @@ func NewAttendanceDetailResponseFromRecord(
 	record *model.AttendanceRecord,
 	slotStart, slotEnd string,
 	userMap map[uint]*model.User,
+	userDeptNames map[uint]string,
 ) *AttendanceDetailResponse {
 	// 解析存储的JSON数据
 	var onTimeStored []StoredUserCheck
@@ -169,8 +173,9 @@ func NewAttendanceDetailResponseFromRecord(
 	for id := range shouldAttendMap {
 		if user, ok := userMap[id]; ok {
 			shouldAttendList = append(shouldAttendList, AttendanceUserBasic{
-				ID:   user.ID,
-				Name: user.Name,
+				ID:       user.ID,
+				Name:     user.Name,
+				DeptName: userDeptNames[user.ID],
 			})
 		}
 	}
@@ -182,6 +187,7 @@ func NewAttendanceDetailResponseFromRecord(
 			onTimeList = append(onTimeList, AttendanceUserCheck{
 				ID:        user.ID,
 				Name:      user.Name,
+				DeptName:  userDeptNames[user.ID],
 				CheckTime: time.Unix(u.CheckTime, 0),
 			})
 		}
@@ -194,6 +200,7 @@ func NewAttendanceDetailResponseFromRecord(
 			leaveList = append(leaveList, AttendanceUserLeave{
 				ID:        user.ID,
 				Name:      user.Name,
+				DeptName:  userDeptNames[user.ID],
 				LeaveType: u.LeaveType,
 				Reason:    u.Reason,
 			})
@@ -205,8 +212,9 @@ func NewAttendanceDetailResponseFromRecord(
 	for _, id := range notArrivedIDs {
 		if user, ok := userMap[id]; ok {
 			notArrivedList = append(notArrivedList, AttendanceUserBasic{
-				ID:   user.ID,
-				Name: user.Name,
+				ID:       user.ID,
+				Name:     user.Name,
+				DeptName: userDeptNames[user.ID],
 			})
 		}
 	}

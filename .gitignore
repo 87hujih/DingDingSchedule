@@ -29,3 +29,5 @@ configs/local.yaml
 
 # Uploads
 uploads/
+
+configs

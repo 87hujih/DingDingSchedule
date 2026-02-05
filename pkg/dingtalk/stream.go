@@ -40,6 +40,7 @@ func (s *StreamClient) SetBpmsEventHandler(handler func(ctx context.Context, cor
 func (s *StreamClient) Start(ctx context.Context) error {
 	defer func() {
 		if r := recover(); r != nil {
+			// 捕获主 goroutine 的 panic
 			s.logger.Errorw("Stream 客户端 panic 已捕获", "panic", r)
 		}
 	}()
@@ -54,6 +55,8 @@ func (s *StreamClient) Start(ctx context.Context) error {
 	s.logger.Infow("钉钉 Stream 客户端启动中...", "appKey", s.appKey)
 
 	// Start 是阻塞的，会一直运行直到 context 取消
+	// 注意：SDK v0.9.1 在关闭时可能有 "send on closed channel" panic
+	// 这是 SDK 内部 goroutine 的竞态问题，无法在此捕获
 	if err := cli.Start(ctx); err != nil && err != context.Canceled {
 		s.logger.Errorw("Stream 客户端启动失败", "err", err)
 		return err

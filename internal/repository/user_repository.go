@@ -42,6 +42,8 @@ type UserRepository interface {
 	Update(ctx context.Context, user *model.User) error
 	// UpdateStatus 更新用户考勤状态
 	UpdateStatus(ctx context.Context, userID uint, status int) error
+	// UpdateRole 更新用户角色
+	UpdateRole(ctx context.Context, userID uint, role int) error
 	// Delete 软删除用户
 	Delete(ctx context.Context, userID uint) error
 	// Upsert 创建或更新用户（根据ding_user_id判断）
@@ -52,6 +54,8 @@ type UserRepository interface {
 	FindDepartmentIDs(ctx context.Context, userID uint) ([]int64, error)
 	// FindDepartments 查询用户所属部门详情
 	FindDepartments(ctx context.Context, userID uint) ([]model.Department, error)
+	// GetUserDepartmentNames 批量获取用户的部门名称（多个部门用逗号分隔）
+	GetUserDepartmentNames(ctx context.Context, userIDs []uint) (map[uint]string, error)
 }
 
 type userRepository struct {
@@ -193,6 +197,21 @@ func (r *userRepository) UpdateStatus(ctx context.Context, userID uint, status i
 		Model(&model.User{}).
 		Where("id = ?", userID).
 		Update("status", status)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// UpdateRole 更新用户角色
+func (r *userRepository) UpdateRole(ctx context.Context, userID uint, role int) error {
+	result := r.db.WithContext(ctx).
+		Model(&model.User{}).
+		Where("id = ?", userID).
+		Update("role", role)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -414,4 +433,46 @@ func (r *userRepository) ListByStatus(ctx context.Context, status int) ([]model.
 		return nil, err
 	}
 	return users, nil
+}
+
+// GetUserDepartmentNames 批量获取用户的部门名称（多个部门用逗号分隔）
+func (r *userRepository) GetUserDepartmentNames(ctx context.Context, userIDs []uint) (map[uint]string, error) {
+	if len(userIDs) == 0 {
+		return make(map[uint]string), nil
+	}
+
+	// 查询用户部门关联及部门信息
+	type UserDeptInfo struct {
+		UserID   uint
+		DeptName string
+	}
+
+	var results []UserDeptInfo
+	err := r.db.WithContext(ctx).
+		Table("user_departments ud").
+		Select("ud.user_id, d.name as dept_name").
+		Joins("LEFT JOIN departments d ON d.dept_id = ud.dept_id AND d.tenant_id = ud.tenant_id").
+		Where("ud.user_id IN ?", userIDs).
+		Order("ud.user_id ASC, d.name ASC").
+		Scan(&results).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	// 构建用户ID到部门名称的映射（多个部门用逗号分隔）
+	userDeptMap := make(map[uint][]string)
+	for _, r := range results {
+		if r.DeptName != "" {
+			userDeptMap[r.UserID] = append(userDeptMap[r.UserID], r.DeptName)
+		}
+	}
+
+	// 将部门列表转换为逗号分隔的字符串
+	result := make(map[uint]string)
+	for userID, deptNames := range userDeptMap {
+		result[userID] = strings.Join(deptNames, ",")
+	}
+
+	return result, nil
 }

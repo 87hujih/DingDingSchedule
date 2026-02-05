@@ -88,19 +88,22 @@ func (s *LeaveSyncService) SyncProcessInstance(ctx context.Context, corpID, proc
 		// 不阻断，继续处理
 	}
 
-	// 4. 查找本地 user_id 和姓名
+	// 4. 创建带租户ID的上下文（用于后续数据库操作）
+	ctxWithTenant := tenantctx.WithTenantID(ctx, tenant.ID)
+
+	// 5. 查找本地 user_id 和姓名
 	dingUserID := strings.TrimSpace(pi.OriginatorUserID)
 	var userID uint
 	var userName string
 	if dingUserID != "" {
-		user, err := s.userRepo.FindByDingUserID(ctx, dingUserID)
+		user, err := s.userRepo.FindByDingUserID(ctxWithTenant, dingUserID)
 		if err == nil && user != nil {
 			userID = user.ID
 			userName = user.Name
 		}
 	}
 
-	// 5. 构建落库记录
+	// 6. 构建落库记录
 	rec := &model.LeaveApproval{
 		TenantID:          tenant.ID,
 		ProcessInstanceID: pi.ProcessInstanceID,
@@ -124,9 +127,8 @@ func (s *LeaveSyncService) SyncProcessInstance(ctx context.Context, corpID, proc
 		rec.RawFormJSON = string(formBytes)
 	}
 
-	// 6. Upsert（幂等）
-	// 注意：需要在 tenant ctx 中执行，确保 tenant_id 被正确注入
-	ctxWithTenant := tenantctx.WithTenantID(ctx, tenant.ID)
+	// 7. Upsert（幂等）
+	// 注意：使用带租户ID的上下文，确保 tenant_id 被正确注入
 	if err := s.leaveRepo.UpsertByProcessInstanceID(ctxWithTenant, rec); err != nil {
 		return errs.WrapMsgErr("leave_sync: 落库失败", err)
 	}
