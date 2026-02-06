@@ -36,8 +36,8 @@ func NewService(repo *repository.Repository, dingMgr *DingTalkClientManager, jwt
 		repo.LeaveRepo,
 		repo.AttendanceRecordRepo,
 		dingMgr,
-		scheduleCfg,
 		schedulePeriodSrv,
+		scheduleCfg,
 		logger,
 	)
 

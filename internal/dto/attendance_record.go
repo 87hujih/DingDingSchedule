@@ -98,6 +98,19 @@ type AttendanceTextResponse struct {
 	FullText   string   `json:"full_text"`  // 完整文本（可直接复制）
 }
 
+// AttendanceRankingItem 考勤排行项
+type AttendanceRankingItem struct {
+	UserID    uint   `json:"user_id"`
+	Name      string `json:"name"`
+	Avatar    string `json:"avatar"`
+	LateCount int    `json:"late_count"`
+}
+
+// WeeklyAttendanceRankingResponse 周考勤排行响应
+type WeeklyAttendanceRankingResponse struct {
+	Items []AttendanceRankingItem `json:"items"`
+}
+
 // ========== 存储结构（用于JSON序列化到数据库） ==========
 
 // StoredUserCheck 存储的打卡用户信息

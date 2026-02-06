@@ -31,3 +31,5 @@ configs/local.yaml
 uploads/
 
 configs
+
+configs/dev.yaml

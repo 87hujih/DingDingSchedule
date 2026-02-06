@@ -160,6 +160,7 @@ func startAttendanceScheduler() *scheduler.AttendanceScheduler {
 		repo.LeaveRepo,
 		repo.AttendanceRecordRepo,
 		dingMgr,
+		schedulePeriodSrv,
 		global.AppConfig.Schedule,
 		schedulePeriodSrv,
 		global.Log,

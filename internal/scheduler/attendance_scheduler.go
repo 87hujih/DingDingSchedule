@@ -19,7 +19,7 @@ import (
 //
 // 功能说明：
 // - 支持多租户独立配置
-// - 支持动态配置重载（每5分钟检查一次）
+// - 支持动态配置重载（每10秒检查一次）
 // - 支持配置回退（数据库 → YAML）
 // - 在每节课上课后延迟 delayAfterClassStart 分钟触发统计
 type AttendanceScheduler struct {
@@ -31,7 +31,7 @@ type AttendanceScheduler struct {
 	semesterSrv          *service.SemesterService
 	logger               *zap.SugaredLogger
 	cron                 *cron.Cron
-	delayAfterClassStart int // 上课后延迟多少分钟统计，默认3分钟
+	delayAfterClassStart int // 上课后延迟多少分钟统计，默认0分钟（立即执行）
 
 	// tenantJobs 存储每个租户的调度任务ID
 	tenantJobs map[uint][]cron.EntryID
@@ -55,7 +55,7 @@ func NewAttendanceScheduler(
 		attendanceRecordSrv:  attendanceRecordSrv,
 		semesterSrv:          semesterSrv,
 		logger:               logger,
-		delayAfterClassStart: 3,
+		delayAfterClassStart: 0,
 		tenantJobs:           make(map[uint][]cron.EntryID),
 	}
 }
@@ -64,14 +64,14 @@ func NewAttendanceScheduler(
 func (s *AttendanceScheduler) Start() {
 	s.logger.Info("考勤调度器启动")
 
-	// 创建 cron 实例，使用本地时区
-	s.cron = cron.New(cron.WithLocation(time.Local))
+	// 创建 cron 实例，使用本地时区，支持秒级调度
+	s.cron = cron.New(cron.WithSeconds(), cron.WithLocation(time.Local))
 
 	// 初始加载所有租户的调度任务
 	s.reloadAllTenantSchedules()
 
-	// 添加定时重载任务（每5分钟检查一次配置变更）
-	_, err := s.cron.AddFunc("*/5 * * * *", func() {
+	// 添加定时重载任务（每10秒检查一次配置变更）
+	_, err := s.cron.AddFunc("*/10 * * * * *", func() {
 		s.logger.Info("定时重载租户作息配置")
 		s.reloadAllTenantSchedules()
 	})
@@ -275,7 +275,7 @@ func (s *AttendanceScheduler) removeTenantJobs(tenantID uint) {
 
 // buildCronExpressionFromTime 从数据库时间格式构建cron表达式
 // 输入: "08:00:00" 或 "08:00"
-// 输出: "3 8 * * *" (每天8:03)
+// 输出: "0 3 8 * * *" (每天8:03)
 func (s *AttendanceScheduler) buildCronExpressionFromTime(timeStr string) (string, error) {
 	// 支持 "HH:MM:SS" 和 "HH:MM" 格式
 	var startClock time.Time
@@ -296,15 +296,15 @@ func (s *AttendanceScheduler) buildCronExpressionFromTime(timeStr string) (strin
 	// 计算触发时间 = 上课时间 + 延迟分钟数
 	triggerTime := startClock.Add(time.Duration(s.delayAfterClassStart) * time.Minute)
 
-	// cron表达式格式: 分 时 日 月 周
-	cronExpr := fmt.Sprintf("%d %d * * *", triggerTime.Minute(), triggerTime.Hour())
+	// cron表达式格式: 秒 分 时 日 月 周
+	cronExpr := fmt.Sprintf("%d %d %d * * *", triggerTime.Second(), triggerTime.Minute(), triggerTime.Hour())
 
 	return cronExpr, nil
 }
 
 // buildCronExpression 从YAML配置时间格式构建cron表达式（用于配置文件回退）
 // 输入: "08:00"
-// 输出: "3 8 * * *" (每天8:03)
+// 输出: "0 3 8 * * *" (每天8:03)
 func (s *AttendanceScheduler) buildCronExpression(startTimeStr string) (string, error) {
 	startClock, err := time.Parse("15:04", startTimeStr)
 	if err != nil {
@@ -312,7 +312,7 @@ func (s *AttendanceScheduler) buildCronExpression(startTimeStr string) (string, 
 	}
 
 	triggerTime := startClock.Add(time.Duration(s.delayAfterClassStart) * time.Minute)
-	cronExpr := fmt.Sprintf("%d %d * * *", triggerTime.Minute(), triggerTime.Hour())
+	cronExpr := fmt.Sprintf("0 %d %d * * *", triggerTime.Minute(), triggerTime.Hour())
 
 	return cronExpr, nil
 }
@@ -384,7 +384,7 @@ func (s *AttendanceScheduler) triggerAttendanceForTenant(tenantID uint, section 
 	)
 
 	// 获取考勤详情
-	result, err := s.attendanceRecordSrv.GetAttendanceDetail(ctx, req)
+	result, lateUsers, err := s.attendanceRecordSrv.GetAttendanceDetailWithLateUsers(ctx, req)
 	if err != nil {
 		s.logger.Errorw("获取考勤详情失败",
 			"tenantId", tenantID,
@@ -400,6 +400,26 @@ func (s *AttendanceScheduler) triggerAttendanceForTenant(tenantID uint, section 
 			"err", err,
 		)
 		return
+	}
+
+	//users := []model.User{}
+	//ids := []int{1, 2}
+	//
+	//res := global.DB.WithContext(ctx).Find(&users, ids)
+	//
+	//if res.Error != nil {
+	//	s.logger.Errorw("数据库报的错误", res.Error)
+	//}
+	//
+	//lateUsers = append(lateUsers, users...)
+	//
+	//s.logger.Infow("查询数据库之后lateusers", "数据库", lateUsers)
+
+	if err := s.attendanceRecordSrv.SendLateNotifications(ctx, result.Date, result.Section, result.SlotTime.Start, result.SlotTime.End, currentMode, lateUsers); err != nil {
+		s.logger.Errorw("发送迟到提醒失败",
+			"tenantId", tenantID,
+			"err", err,
+		)
 	}
 
 	s.logger.Infow("考勤统计完成",

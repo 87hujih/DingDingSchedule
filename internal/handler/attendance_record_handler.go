@@ -15,16 +15,19 @@ import (
 type AttendanceRecordHandler struct {
 	attendanceRecordSrv *service.AttendanceRecordService
 	semesterSrv         *service.SemesterService
+	schedulePeriodSrv   *service.SchedulePeriodService
 }
 
 // NewAttendanceRecordHandler 创建考勤记录处理器实例
 func NewAttendanceRecordHandler(
 	attendanceRecordSrv *service.AttendanceRecordService,
 	semesterSrv *service.SemesterService,
+	schedulePeriodSrv *service.SchedulePeriodService,
 ) *AttendanceRecordHandler {
 	return &AttendanceRecordHandler{
 		attendanceRecordSrv: attendanceRecordSrv,
 		semesterSrv:         semesterSrv,
+		schedulePeriodSrv:   schedulePeriodSrv,
 	}
 }
 
@@ -69,6 +72,23 @@ func (h *AttendanceRecordHandler) GetAttendanceDetail(ctx *gin.Context) {
 	response.OK(ctx, result)
 }
 
+// SignForUser 代签
+func (h *AttendanceRecordHandler) SignForUser(ctx *gin.Context) {
+	var req dto.SignForUserRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		response.Fail(ctx, response.CodeInvalidParam, response.TranslateValidationError(err))
+		return
+	}
+
+	resp, err := h.attendanceRecordSrv.SignForUsers(ctx.Request.Context(), &req)
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	response.OK(ctx, resp)
+}
+
 // TriggerAttendanceStatistics 手动触发考勤统计
 // POST /api/admin/attendance/record/trigger
 func (h *AttendanceRecordHandler) TriggerAttendanceStatistics(ctx *gin.Context) {
@@ -101,7 +121,7 @@ func (h *AttendanceRecordHandler) TriggerAttendanceStatistics(ctx *gin.Context) 
 	}
 
 	// 5. 获取考勤详情
-	result, err := h.attendanceRecordSrv.GetAttendanceDetail(ctx.Request.Context(), detailReq)
+	result, lateUsers, err := h.attendanceRecordSrv.GetAttendanceDetailWithLateUsers(ctx.Request.Context(), detailReq)
 	if err != nil {
 		response.FailWithError(ctx, err)
 		return
@@ -113,6 +133,27 @@ func (h *AttendanceRecordHandler) TriggerAttendanceStatistics(ctx *gin.Context) 
 		return
 	}
 
+	mode, err := h.schedulePeriodSrv.GetCurrentMode(ctx.Request.Context())
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+	if err := h.attendanceRecordSrv.SendLateNotifications(ctx.Request.Context(), result.Date, result.Section, result.SlotTime.Start, result.SlotTime.End, mode, lateUsers); err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	response.OK(ctx, result)
+}
+
+// GetWeeklyRanking 获取本周考勤排行
+// GET /api/admin/attendance/record/ranking/weekly
+func (h *AttendanceRecordHandler) GetWeeklyRanking(ctx *gin.Context) {
+	result, err := h.attendanceRecordSrv.GetWeeklyRanking(ctx.Request.Context())
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
 	response.OK(ctx, result)
 }
 
