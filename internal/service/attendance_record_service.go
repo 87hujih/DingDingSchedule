@@ -830,3 +830,106 @@ func (s *AttendanceRecordService) buildUserMapWithDeptFilter(
 
 	return userMap, nil
 }
+
+// SignForUsers 代签（将指定用户从迟到列表移动到正常签到列表）
+func (s *AttendanceRecordService) SignForUsers(ctx context.Context, req *dto.SignForUserRequest) (*dto.SignForUserResponse, error) {
+	// 1. 获取最近一次考勤记录
+	record, err := s.attendanceRecordRepo.FindLatest(ctx)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, response.ErrNotFoundWithMsg("未找到考勤记录")
+		}
+		return nil, err
+	}
+
+	// 2. 解析 NotArrivedIDs 和 OnTimeIDs
+	var notArrivedIDs []uint
+	var onTimeUsers []dto.StoredUserCheck
+
+	if len(record.NotArrivedIDs) > 0 {
+		if err := json.Unmarshal([]byte(record.NotArrivedIDs), &notArrivedIDs); err != nil {
+			s.logger.Errorw("Failed to unmarshal not_arrived_ids", "error", err)
+			return nil, errs.WrapMsgErr("解析未到人员数据失败", err)
+		}
+	}
+	if len(record.OnTimeIDs) > 0 {
+		if err := json.Unmarshal([]byte(record.OnTimeIDs), &onTimeUsers); err != nil {
+			s.logger.Errorw("Failed to unmarshal on_time_ids", "error", err)
+			return nil, errs.WrapMsgErr("解析已签到人员数据失败", err)
+		}
+	}
+
+	// 3. 处理代签
+	successIDs := make([]uint, 0)
+	failedIDs := make([]uint, 0)
+
+	// 构建迟到用户Map以便快速查找
+	lateMap := make(map[uint]bool)
+	for _, id := range notArrivedIDs {
+		lateMap[id] = true
+	}
+
+	// 构建已签到用户Map防止重复
+	onTimeMap := make(map[uint]bool)
+	for _, u := range onTimeUsers {
+		onTimeMap[u.ID] = true
+	}
+
+	hasChange := false
+	now := time.Now().Unix()
+
+	for _, targetID := range req.TargetUserIDs {
+		if lateMap[targetID] {
+			// 存在于迟到列表 -> 移动
+			delete(lateMap, targetID)
+
+			// 如果不在已签到列表中，则添加
+			if !onTimeMap[targetID] {
+				onTimeUsers = append(onTimeUsers, dto.StoredUserCheck{
+					ID:        targetID,
+					CheckTime: now,
+				})
+				onTimeMap[targetID] = true
+			}
+			successIDs = append(successIDs, targetID)
+			hasChange = true
+		} else {
+			// 不在迟到列表（可能已经签到，或本来就不需要签到）
+			failedIDs = append(failedIDs, targetID)
+		}
+	}
+
+	// 4. 如果有变更，更新数据库
+	if hasChange {
+		// 重建 notArrivedIDs slice
+		newNotArrivedIDs := make([]uint, 0, len(lateMap))
+		for id := range lateMap {
+			newNotArrivedIDs = append(newNotArrivedIDs, id)
+		}
+		// 排序保持一致性 (可选，但推荐)
+		sort.Slice(newNotArrivedIDs, func(i, j int) bool { return newNotArrivedIDs[i] < newNotArrivedIDs[j] })
+
+		// 序列化
+		notArrivedBytes, err := json.Marshal(newNotArrivedIDs)
+		if err != nil {
+			return nil, errs.WrapMsgErr("序列化未到人员数据失败", err)
+		}
+
+		onTimeBytes, err := json.Marshal(onTimeUsers)
+		if err != nil {
+			return nil, errs.WrapMsgErr("序列化已签到人员数据失败", err)
+		}
+
+		record.NotArrivedIDs = string(notArrivedBytes)
+		record.OnTimeIDs = string(onTimeBytes)
+
+		if err := s.attendanceRecordRepo.Upsert(ctx, record); err != nil {
+			return nil, errs.WrapMsgErr("更新考勤记录失败", err)
+		}
+	}
+
+	return &dto.SignForUserResponse{
+		SuccessIDs: successIDs,
+		FailedIDs:  failedIDs,
+	}, nil
+}

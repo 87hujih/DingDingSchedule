@@ -72,6 +72,23 @@ func (h *AttendanceRecordHandler) GetAttendanceDetail(ctx *gin.Context) {
 	response.OK(ctx, result)
 }
 
+// SignForUser 代签
+func (h *AttendanceRecordHandler) SignForUser(ctx *gin.Context) {
+	var req dto.SignForUserRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		response.Fail(ctx, response.CodeInvalidParam, response.TranslateValidationError(err))
+		return
+	}
+
+	resp, err := h.attendanceRecordSrv.SignForUsers(ctx.Request.Context(), &req)
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	response.OK(ctx, resp)
+}
+
 // TriggerAttendanceStatistics 手动触发考勤统计
 // POST /api/admin/attendance/record/trigger
 func (h *AttendanceRecordHandler) TriggerAttendanceStatistics(ctx *gin.Context) {

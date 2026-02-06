@@ -23,6 +23,9 @@ type AttendanceRecordRepository interface {
 
 	// ListByDateRange 查询日期范围内的考勤记录
 	ListByDateRange(ctx context.Context, startDate, endDate time.Time) ([]model.AttendanceRecord, error)
+
+	// FindLatest 查询最近的一条考勤记录
+	FindLatest(ctx context.Context) (*model.AttendanceRecord, error)
 }
 
 type attendanceRecordRepository struct {
@@ -94,4 +97,16 @@ func (r *attendanceRecordRepository) ListByDateRange(ctx context.Context, startD
 		return nil, err
 	}
 	return records, nil
+}
+
+// FindLatest 查询最近的一条考勤记录
+func (r *attendanceRecordRepository) FindLatest(ctx context.Context) (*model.AttendanceRecord, error) {
+	var record model.AttendanceRecord
+	err := r.db.WithContext(ctx).
+		Order("date DESC, section DESC").
+		First(&record).Error
+	if err != nil {
+		return nil, err
+	}
+	return &record, nil
 }
