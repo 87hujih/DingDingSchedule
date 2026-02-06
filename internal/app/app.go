@@ -162,7 +162,6 @@ func startAttendanceScheduler() *scheduler.AttendanceScheduler {
 		dingMgr,
 		schedulePeriodSrv,
 		global.AppConfig.Schedule,
-		schedulePeriodSrv,
 		global.Log,
 	)
 	semesterSrv := service.NewSemesterService(repo.SemesterRepo)
