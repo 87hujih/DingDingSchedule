@@ -717,3 +717,120 @@ func (s *AttendanceRecordService) buildUserMapWithDeptFilter(
 
 	return userMap, nil
 }
+
+// GetAttendanceText 获取考勤文本（用于复制到群里）
+// 生成简洁的文本格式，只包含姓名和考勤状态
+func (s *AttendanceRecordService) GetAttendanceText(
+	ctx context.Context,
+	req *dto.AttendanceTextRequest,
+) (*dto.AttendanceTextResponse, error) {
+	// 1. 先获取详细的考勤数据
+	detailReq := &dto.AttendanceDetailRequest{
+		Date:    req.Date,
+		Week:    req.Week,
+		Section: req.Section,
+		DeptIDs: req.DeptIDs,
+	}
+
+	detail, err := s.GetAttendanceDetail(ctx, detailReq)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. 生成文本格式
+	return s.formatAttendanceText(detail), nil
+}
+
+// formatAttendanceText 将考勤详情格式化为文本
+func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDetailResponse) *dto.AttendanceTextResponse {
+	// 构建标题
+	title := "📅 " + detail.Date + " 第" + intToString(detail.Week) + "周 第" + intToString(detail.Section) + "节 考勤"
+
+	// 构建统计信息
+	statistics := "📊 应到" + intToString(detail.Statistics.ShouldAttend) + "人，" +
+		"正常打卡" + intToString(detail.Statistics.OnTime) + "人，" +
+		"请假" + intToString(detail.Statistics.Leave) + "人，" +
+		"未到" + intToString(detail.Statistics.NotArrived) + "人"
+
+	// 构建分类人员列表
+	content := make([]string, 0, 3)
+
+	// 正常打卡
+	if len(detail.Users.OnTime) > 0 {
+		names := make([]string, 0, len(detail.Users.OnTime))
+		for _, u := range detail.Users.OnTime {
+			names = append(names, u.Name)
+		}
+		line := "✅ 正常打卡(" + intToString(len(detail.Users.OnTime)) + "人)：\n" + joinNames(names)
+		content = append(content, line)
+	}
+
+	// 请假
+	if len(detail.Users.Leave) > 0 {
+		names := make([]string, 0, len(detail.Users.Leave))
+		for _, u := range detail.Users.Leave {
+			// 简洁版只显示姓名和请假类型
+			nameWithType := u.Name + "（" + u.LeaveType + "）"
+			names = append(names, nameWithType)
+		}
+		line := "🏥 请假(" + intToString(len(detail.Users.Leave)) + "人)：\n" + joinNames(names)
+		content = append(content, line)
+	}
+
+	// 未到
+	if len(detail.Users.NotArrived) > 0 {
+		names := make([]string, 0, len(detail.Users.NotArrived))
+		for _, u := range detail.Users.NotArrived {
+			names = append(names, u.Name)
+		}
+		line := "❌ 未到(" + intToString(len(detail.Users.NotArrived)) + "人)：\n" + joinNames(names)
+		content = append(content, line)
+	}
+
+	// 构建完整文本
+	fullText := title + "\n" + statistics + "\n\n"
+	for i, line := range content {
+		fullText += line
+		if i < len(content)-1 {
+			fullText += "\n\n"
+		}
+	}
+
+	return &dto.AttendanceTextResponse{
+		Title:      title,
+		Statistics: statistics,
+		Content:    content,
+		FullText:   fullText,
+	}
+}
+
+// joinNames 将姓名数组用顿号连接
+func joinNames(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	result := ""
+	for i, name := range names {
+		if i > 0 {
+			result += "、"
+		}
+		result += name
+	}
+	return result
+}
+
+// intToString 将整数转为字符串（简单实现）
+func intToString(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	if n < 0 {
+		return "-" + intToString(-n)
+	}
+	digits := []byte{}
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
+}

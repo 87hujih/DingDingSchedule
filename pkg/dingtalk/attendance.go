@@ -316,11 +316,9 @@ type CheckRecord struct {
 }
 
 type attendanceRecordResponse struct {
-	ErrCode int    `json:"errcode"`
-	ErrMsg  string `json:"errmsg"`
-	Result  struct {
-		RecordResult []attendanceRecordItem `json:"recordresult"`
-	} `json:"result"`
+	ErrCode      int                    `json:"errcode"`
+	ErrMsg       string                 `json:"errmsg"`
+	RecordResult []attendanceRecordItem `json:"recordresult"` // 直接在根级别，不是嵌套在result中
 }
 
 type attendanceRecordItem struct {
@@ -402,8 +400,8 @@ func (c *Client) getAttendanceRecordsByChunkWithRetry(ctx context.Context, userI
 		return nil, fmt.Errorf("钉钉打卡查询失败: code=%d, msg=%s", resp.ErrCode, resp.ErrMsg)
 	}
 
-	records := make([]CheckRecord, 0, len(resp.Result.RecordResult))
-	for _, r := range resp.Result.RecordResult {
+	records := make([]CheckRecord, 0, len(resp.RecordResult))
+	for _, r := range resp.RecordResult {
 		userID := r.UserID
 		if userID == "" {
 			userID = r.UserID2

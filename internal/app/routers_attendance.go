@@ -21,6 +21,7 @@ func registerAttendanceRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 			record.GET("/snapshot", h.AttendanceRecordHdl.GetAttendanceSnapshot)       // 获取考勤快照（已保存记录）
 			record.POST("/trigger", h.AttendanceRecordHdl.TriggerAttendanceStatistics) // 手动触发统计
 			record.GET("/list", h.AttendanceRecordHdl.GetAttendanceRecords)            // 获取某天所有记录
+			record.GET("/text", h.AttendanceRecordHdl.GetAttendanceText)               // 获取考勤文本（用于复制到群里）
 		}
 	}
 }

@@ -14,7 +14,6 @@ import (
 	"schedule_server/internal/repository"
 	"schedule_server/internal/scheduler"
 	"schedule_server/internal/service"
-	"schedule_server/pkg/dingtalk"
 )
 
 // RunServer 启动 HTTP 服务器并支持优雅关闭
@@ -100,7 +99,7 @@ func RunServer() {
 	global.Log.Info("服务已退出")
 }
 
-// startDingTalkStream 启动钉钉 Stream 客户端
+// startDingTalkStream 启动钉钉 Stream 客户端（多租户模式）
 func startDingTalkStream(ctx context.Context) {
 	// 捕获 SDK 内部 goroutine 可能的 panic（如关闭时的 "send on closed channel"）
 	defer func() {
@@ -109,34 +108,36 @@ func startDingTalkStream(ctx context.Context) {
 		}
 	}()
 
-	cfg := global.AppConfig.DingTalk
-	if cfg.AppKey == "" || cfg.AppSecret == "" {
-		global.Log.Warn("钉钉 Stream 模式未配置 AppKey/AppSecret，跳过启动")
-		return
-	}
-
 	// 创建依赖
 	repo := repository.NewRepository(global.DB)
 	dingMgr := service.NewDingTalkClientManager(repo.TenantRepo)
 	leaveSyncSrv := service.NewLeaveSyncService(repo.LeaveRepo, repo.UserRepo, dingMgr, global.Log)
 
-	// 创建 Stream 客户端
-	streamClient := dingtalk.NewStreamClient(cfg.AppKey, cfg.AppSecret, cfg.CorpID, global.Log)
+	// 创建多租户 Stream 客户端管理器
+	streamMgr := service.NewStreamClientManager(repo.TenantRepo, global.Log)
 
-	// 设置审批事件处理器
-	streamClient.SetBpmsEventHandler(func(ctx context.Context, corpID, processInstanceID, eventType string) error {
+	// 定义事件处理器
+	eventHandler := func(ctx context.Context, corpID, processInstanceID, eventType string) error {
 		global.Log.Infow("处理审批事件",
 			"corpId", corpID,
 			"processInstanceId", processInstanceID,
 			"eventType", eventType,
 		)
 		return leaveSyncSrv.SyncProcessInstance(ctx, corpID, processInstanceID)
-	})
-
-	// 启动（阻塞，使用传入的可取消 context）
-	if err := streamClient.Start(ctx); err != nil && err != context.Canceled {
-		global.Log.Errorw("钉钉 Stream 客户端启动失败", "err", err)
 	}
+
+	// 启动所有活跃租户的 Stream 客户端
+	if err := streamMgr.StartAll(ctx, eventHandler); err != nil {
+		global.Log.Errorw("启动 Stream 客户端管理器失败", "err", err)
+		return
+	}
+
+	// 等待 context 取消
+	<-ctx.Done()
+	global.Log.Info("收到停止信号，正在关闭所有 Stream 客户端")
+
+	// 停止所有客户端
+	streamMgr.StopAll()
 }
 
 // startAttendanceScheduler 启动考勤调度器

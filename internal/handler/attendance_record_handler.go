@@ -188,3 +188,44 @@ func (h *AttendanceRecordHandler) GetAttendanceRecords(ctx *gin.Context) {
 
 	response.OK(ctx, result)
 }
+
+// GetAttendanceText 获取考勤文本（用于复制到群里）
+// GET /api/attendance/record/text?date=2026-01-18&week=1&section=1&dept_ids=1,2,3
+func (h *AttendanceRecordHandler) GetAttendanceText(ctx *gin.Context) {
+	// 1. 解析公共参数 (Date, Week, Section)
+	params, err := ParseAttendanceQueryParams(ctx)
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	// 2. 校验周数与日期一致性
+	if err := ValidateWeekDate(ctx, h.semesterSrv, params.Date, params.Week); err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	// 3. 解析部门ID过滤参数
+	deptIDs, err := ParseDeptIDsQuery(ctx.Query("dept_ids"))
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	// 4. 构建请求
+	req := &dto.AttendanceTextRequest{
+		Date:    params.DateStr,
+		Week:    params.Week,
+		Section: params.Section,
+		DeptIDs: deptIDs,
+	}
+
+	// 5. 调用服务获取考勤文本
+	result, err := h.attendanceRecordSrv.GetAttendanceText(ctx.Request.Context(), req)
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	response.OK(ctx, result)
+}

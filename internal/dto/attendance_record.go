@@ -24,6 +24,14 @@ type AttendanceTriggerRequest struct {
 	DeptIDs []int64 `json:"dept_ids"`                         // 部门ID列表（可选过滤）
 }
 
+// AttendanceTextRequest 考勤文本查询请求（用于复制到群里）
+type AttendanceTextRequest struct {
+	Date    string  `form:"date" binding:"required"`          // YYYY-MM-DD
+	Week    int     `form:"week" binding:"required,min=1"`    // 周次
+	Section int     `form:"section" binding:"required,min=1"` // 节次
+	DeptIDs []int64 `form:"-"`                                // 部门ID列表（可选过滤）
+}
+
 // ========== 响应 ==========
 
 // AttendanceDetailResponse 考勤详情响应
@@ -80,6 +88,14 @@ type AttendanceUserLeave struct {
 	DeptName  string `json:"dept_name"`
 	LeaveType string `json:"leave_type"`
 	Reason    string `json:"reason"`
+}
+
+// AttendanceTextResponse 考勤文本响应（用于复制到群里）
+type AttendanceTextResponse struct {
+	Title      string   `json:"title"`      // 标题（如：2026-02-05 第3周 第1节 考勤）
+	Statistics string   `json:"statistics"` // 统计信息（如：应到30人，正常打卡25人，请假3人，未到2人）
+	Content    []string `json:"content"`    // 分类人员列表（每行一个分类）
+	FullText   string   `json:"full_text"`  // 完整文本（可直接复制）
 }
 
 // ========== 存储结构（用于JSON序列化到数据库） ==========
