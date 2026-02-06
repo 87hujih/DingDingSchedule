@@ -129,6 +129,17 @@ func (h *AttendanceRecordHandler) TriggerAttendanceStatistics(ctx *gin.Context) 
 	response.OK(ctx, result)
 }
 
+// GetWeeklyRanking 获取本周考勤排行
+// GET /api/admin/attendance/record/ranking/weekly
+func (h *AttendanceRecordHandler) GetWeeklyRanking(ctx *gin.Context) {
+	result, err := h.attendanceRecordSrv.GetWeeklyRanking(ctx.Request.Context())
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+	response.OK(ctx, result)
+}
+
 // GetAttendanceSnapshot 获取考勤统计快照（从数据库读取已保存的记录）
 // GET /api/admin/attendance/record/snapshot?date=2026-01-18&week=1&section=1&dept_ids=1,2,3
 func (h *AttendanceRecordHandler) GetAttendanceSnapshot(ctx *gin.Context) {

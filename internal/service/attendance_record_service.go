@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"schedule_server/config"
@@ -707,6 +708,89 @@ func (s *AttendanceRecordService) extractAllUserIDs(record *model.AttendanceReco
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// GetWeeklyRanking 获取本周考勤迟到排行（迟到次数从大到小）
+func (s *AttendanceRecordService) GetWeeklyRanking(ctx context.Context) (*dto.WeeklyAttendanceRankingResponse, error) {
+	// 1. 计算本周起止时间（周一到周日）
+	now := time.Now()
+	// Weekday(): Sunday=0, Monday=1...
+	offset := int(time.Monday - now.Weekday())
+	if offset > 0 {
+		offset = -6 // 如果今天是周日(0)，则周一是6天前
+	}
+	// 本周一 00:00:00
+	weekStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, offset)
+	// 本周日 00:00:00 (查询包含周日全天的话，ListByDateRange需要支持或者我们用下周一0点作为exclude end)
+	// Repository ListByDateRange 实现是 date >= ? AND date <= ?。如果date存的是日期（时间为0），则 <= weekEnd (Sunday) 是对的。
+	weekEnd := weekStart.AddDate(0, 0, 6)
+
+	// 2. 查询本周所有考勤记录
+	records, err := s.attendanceRecordRepo.ListByDateRange(ctx, weekStart, weekEnd)
+	if err != nil {
+		return nil, errs.WrapMsgErr("获取本周考勤记录失败", err)
+	}
+
+	// 3. 统计迟到/未到次数
+	lateCounts := make(map[uint]int)
+	for _, r := range records {
+		if r.NotArrivedIDs == "" || r.NotArrivedIDs == "[]" {
+			continue
+		}
+		var ids []uint
+		if err := json.Unmarshal([]byte(r.NotArrivedIDs), &ids); err != nil {
+			s.logger.Warnw("反序列化未到人员失败", "id", r.ID, "error", err)
+			continue
+		}
+		for _, uid := range ids {
+			lateCounts[uid]++
+		}
+	}
+
+	if len(lateCounts) == 0 {
+		return &dto.WeeklyAttendanceRankingResponse{Items: []dto.AttendanceRankingItem{}}, nil
+	}
+
+	// 4. 获取用户信息
+	userIDs := make([]uint, 0, len(lateCounts))
+	for uid := range lateCounts {
+		userIDs = append(userIDs, uid)
+	}
+
+	users, err := s.userRepo.ListByIDs(ctx, userIDs)
+	if err != nil {
+		return nil, errs.WrapMsgErr("获取用户信息失败", err)
+	}
+
+	userMap := make(map[uint]model.User)
+	for _, u := range users {
+		userMap[u.ID] = u
+	}
+
+	// 5. 构建结果项
+	items := make([]dto.AttendanceRankingItem, 0, len(lateCounts))
+	for uid, count := range lateCounts {
+		user, ok := userMap[uid]
+		name := "未知用户"
+		avatar := ""
+		if ok {
+			name = user.Name
+			avatar = user.Avatar
+		}
+		items = append(items, dto.AttendanceRankingItem{
+			UserID:    uid,
+			Name:      name,
+			Avatar:    avatar,
+			LateCount: count,
+		})
+	}
+
+	// 6. 排序：迟到次数从大到小
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].LateCount > items[j].LateCount
+	})
+
+	return &dto.WeeklyAttendanceRankingResponse{Items: items}, nil
 }
 
 // buildUserMapWithDeptFilter 构建用户映射（支持部门过滤）
