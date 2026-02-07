@@ -23,7 +23,6 @@ func registerAttendanceRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 			record.GET("/list", h.AttendanceRecordHdl.GetAttendanceRecords)            // 获取某天所有记录
 			record.GET("/text", h.AttendanceRecordHdl.GetAttendanceText)               // 获取考勤文本（用于复制到群里）
 			record.POST("/sign", h.AttendanceRecordHdl.SignForUser)                    // 代签（补签）
-
 		}
 	}
 }
