@@ -2,6 +2,7 @@ package inits
 
 import (
 	"fmt"
+	"os"
 
 	"schedule_server/global"
 
@@ -10,7 +11,13 @@ import (
 
 // ConfigInit 初始化配置文件并解析到全局变量
 func ConfigInit() {
-	viper.SetConfigName("dev")       // 配置文件名（不含扩展名）
+	// 从环境变量读取配置文件名，默认为 dev
+	configName := os.Getenv("CONFIG_ENV")
+	if configName == "" {
+		configName = "dev"
+	}
+
+	viper.SetConfigName(configName)  // 配置文件名（不含扩展名）
 	viper.SetConfigType("yaml")      // 配置文件类型
 	viper.AddConfigPath("./configs") // 查找配置文件所在路径
 	viper.AddConfigPath(".")         // 工作目录备选

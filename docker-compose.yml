@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  schedule-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: schedule-server
+    restart: unless-stopped
+    ports:
+      - "26665:26665"
+    environment:
+      - ENV=prod
+    volumes:
+      # 持久化日志
+      - ./logs:/app/logs
+      # 持久化上传文件
+      - ./uploads:/app/uploads
+      # 如果需要覆盖配置，可以挂载配置文件
+      # - ./configs/prod.yaml:/app/configs/prod.yaml:ro
+    networks:
+      - schedule-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:26665/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+networks:
+  schedule-network:
+    driver: bridge

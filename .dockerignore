@@ -1,0 +1,47 @@
+# Git 相关
+.git
+.gitignore
+.gitattributes
+
+# IDE 相关
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# 构建产物
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+schedule_server
+bin/
+dist/
+
+# 测试相关
+*.test
+*.out
+coverage.txt
+test/
+
+# 日志和临时文件
+logs/
+*.log
+tmp/
+temp/
+
+# 上传文件（生产环境应使用对象存储）
+uploads/
+
+# 文档
+docs/
+*.md
+README.md
+
+# 开发配置（只打包生产配置）
+configs/dev.yaml
+
+# 依赖缓存（已在 go.mod/go.sum 中）
+vendor/

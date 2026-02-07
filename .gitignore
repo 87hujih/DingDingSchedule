@@ -24,12 +24,14 @@ logs/
 
 # Local config (contains secrets)
 configs/local.yaml
+configs/dev.yaml
+.env
 .claude/settings.local.json
 .claude/settings.json
 
 # Uploads
 uploads/
 
-configs
-
-configs/dev.yaml
+# Docker volumes
+logs/
+*.tar.gz
