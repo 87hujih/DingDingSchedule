@@ -885,12 +885,12 @@ func (s *AttendanceRecordService) buildUserMapWithDeptFilter(
 }
 
 // GetAttendanceText 获取考勤文本（用于复制到群里）
-// 生成简洁的文本格式，只包含姓名和考勤状态
+// 从数据库获取已保存的考勤记录，生成简洁的文本格式
 func (s *AttendanceRecordService) GetAttendanceText(
 	ctx context.Context,
 	req *dto.AttendanceTextRequest,
 ) (*dto.AttendanceTextResponse, error) {
-	// 1. 先获取详细的考勤数据
+	// 1. 从数据库获取已保存的考勤数据
 	detailReq := &dto.AttendanceDetailRequest{
 		Date:    req.Date,
 		Week:    req.Week,
@@ -898,7 +898,7 @@ func (s *AttendanceRecordService) GetAttendanceText(
 		DeptIDs: req.DeptIDs,
 	}
 
-	detail, err := s.GetAttendanceDetail(ctx, detailReq)
+	detail, err := s.GetAttendanceRecordFromDB(ctx, detailReq)
 	if err != nil {
 		return nil, err
 	}
