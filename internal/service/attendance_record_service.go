@@ -1003,8 +1003,8 @@ func intToString(n int) string {
 
 // SignForUsers 代签（将指定用户从迟到列表移动到正常签到列表）
 func (s *AttendanceRecordService) SignForUsers(ctx context.Context, req *dto.SignForUserRequest) (*dto.SignForUserResponse, error) {
-	// 1. 获取最近一次考勤记录
-	record, err := s.attendanceRecordRepo.FindLatest(ctx)
+	// 1. 获取指定考勤记录
+	record, err := s.attendanceRecordRepo.FindByID(ctx, req.RecordID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, response.ErrNotFoundWithMsg("未找到考勤记录")

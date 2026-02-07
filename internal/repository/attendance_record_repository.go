@@ -26,6 +26,9 @@ type AttendanceRecordRepository interface {
 
 	// FindLatest 查询最近的一条考勤记录
 	FindLatest(ctx context.Context) (*model.AttendanceRecord, error)
+
+	// FindByID 根据ID查询考勤记录
+	FindByID(ctx context.Context, id uint) (*model.AttendanceRecord, error)
 }
 
 type attendanceRecordRepository struct {
@@ -104,6 +107,18 @@ func (r *attendanceRecordRepository) FindLatest(ctx context.Context) (*model.Att
 	var record model.AttendanceRecord
 	err := r.db.WithContext(ctx).
 		Order("date DESC, section DESC").
+		First(&record).Error
+	if err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+// FindByID 根据ID查询考勤记录
+func (r *attendanceRecordRepository) FindByID(ctx context.Context, id uint) (*model.AttendanceRecord, error) {
+	var record model.AttendanceRecord
+	err := r.db.WithContext(ctx).
+		Where("id = ?", id).
 		First(&record).Error
 	if err != nil {
 		return nil, err

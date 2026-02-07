@@ -3,6 +3,7 @@ package dto
 // SignForUserRequest 代签请求
 type SignForUserRequest struct {
 	TargetUserIDs []uint `json:"target_user_ids" binding:"required,min=1"` // 目标用户ID列表
+	RecordID      uint   `json:"record_id" binding:"required"`             // 考勤记录ID
 }
 
 // SignForUserResponse 代签响应
