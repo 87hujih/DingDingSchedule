@@ -764,24 +764,26 @@ func (s *AttendanceRecordService) extractAllUserIDs(record *model.AttendanceReco
 }
 
 // GetWeeklyRanking 获取本周考勤迟到排行（迟到次数从大到小）
-func (s *AttendanceRecordService) GetWeeklyRanking(ctx context.Context) (*dto.WeeklyAttendanceRankingResponse, error) {
-	// 1. 计算本周起止时间（周一到周日）
+func (s *AttendanceRecordService) GetWeeklyRanking(ctx context.Context, req *dto.WeeklyAttendanceRankingRequest) (*dto.WeeklyAttendanceRankingResponse, error) {
+	// 1. 计算周起止时间（周一到周日）
 	now := time.Now()
 	// Weekday(): Sunday=0, Monday=1...
 	offset := int(time.Monday - now.Weekday())
 	if offset > 0 {
 		offset = -6 // 如果今天是周日(0)，则周一是6天前
 	}
-	// 本周一 00:00:00
-	weekStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, offset)
-	// 本周日 00:00:00 (查询包含周日全天的话，ListByDateRange需要支持或者我们用下周一0点作为exclude end)
-	// Repository ListByDateRange 实现是 date >= ? AND date <= ?。如果date存的是日期（时间为0），则 <= weekEnd (Sunday) 是对的。
+	// 应用偏移量：0=本周，1=上周，2=上上周
+	totalOffset := offset - (req.WeekOffset * 7)
+
+	// 周一 00:00:00
+	weekStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, totalOffset)
+	// 周日 00:00:00
 	weekEnd := weekStart.AddDate(0, 0, 6)
 
-	// 2. 查询本周所有考勤记录
+	// 2. 查询指定周所有考勤记录
 	records, err := s.attendanceRecordRepo.ListByDateRange(ctx, weekStart, weekEnd)
 	if err != nil {
-		return nil, errs.WrapMsgErr("获取本周考勤记录失败", err)
+		return nil, errs.WrapMsgErr("获取考勤记录失败", err)
 	}
 
 	// 3. 统计迟到/未到次数
@@ -804,36 +806,43 @@ func (s *AttendanceRecordService) GetWeeklyRanking(ctx context.Context) (*dto.We
 		return &dto.WeeklyAttendanceRankingResponse{Items: []dto.AttendanceRankingItem{}}, nil
 	}
 
-	// 4. 获取用户信息
-	userIDs := make([]uint, 0, len(lateCounts))
-	for uid := range lateCounts {
-		userIDs = append(userIDs, uid)
-	}
+	// 4. 获取用户信息（支持部门过滤）
+	var users []model.User
 
-	users, err := s.userRepo.ListByIDs(ctx, userIDs)
-	if err != nil {
-		return nil, errs.WrapMsgErr("获取用户信息失败", err)
-	}
+	if len(req.DeptIDs) > 0 {
+		// 如果指定了部门，先获取部门下的所有用户，然后与迟到列表取交集
+		deptUsers, err := s.userRepo.ListByScope(ctx, req.DeptIDs, nil)
+		if err != nil {
+			return nil, errs.WrapMsgErr("获取部门用户失败", err)
+		}
 
-	userMap := make(map[uint]model.User)
-	for _, u := range users {
-		userMap[u.ID] = u
+		// 过滤：只保留在迟到列表中的用户
+		users = make([]model.User, 0)
+		for _, u := range deptUsers {
+			if _, ok := lateCounts[u.ID]; ok {
+				users = append(users, u)
+			}
+		}
+	} else {
+		// 未指定部门，获取所有迟到用户
+		userIDs := make([]uint, 0, len(lateCounts))
+		for uid := range lateCounts {
+			userIDs = append(userIDs, uid)
+		}
+		users, err = s.userRepo.ListByIDs(ctx, userIDs)
+		if err != nil {
+			return nil, errs.WrapMsgErr("获取用户信息失败", err)
+		}
 	}
 
 	// 5. 构建结果项
-	items := make([]dto.AttendanceRankingItem, 0, len(lateCounts))
-	for uid, count := range lateCounts {
-		user, ok := userMap[uid]
-		name := "未知用户"
-		avatar := ""
-		if ok {
-			name = user.Name
-			avatar = user.Avatar
-		}
+	items := make([]dto.AttendanceRankingItem, 0, len(users))
+	for _, u := range users {
+		count := lateCounts[u.ID]
 		items = append(items, dto.AttendanceRankingItem{
-			UserID:    uid,
-			Name:      name,
-			Avatar:    avatar,
+			UserID:    u.ID,
+			Name:      u.Name,
+			Avatar:    u.Avatar,
 			LateCount: count,
 		})
 	}

@@ -149,7 +149,21 @@ func (h *AttendanceRecordHandler) TriggerAttendanceStatistics(ctx *gin.Context) 
 // GetWeeklyRanking 获取本周考勤排行
 // GET /api/admin/attendance/record/ranking/weekly
 func (h *AttendanceRecordHandler) GetWeeklyRanking(ctx *gin.Context) {
-	result, err := h.attendanceRecordSrv.GetWeeklyRanking(ctx.Request.Context())
+	var req dto.WeeklyAttendanceRankingRequest
+	if err := ctx.ShouldBindQuery(&req); err != nil {
+		response.Fail(ctx, response.CodeInvalidParam, response.TranslateValidationError(err))
+		return
+	}
+
+	// 解析部门ID过滤参数
+	deptIDs, err := ParseDeptIDsQuery(ctx.Query("dept_ids"))
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+	req.DeptIDs = deptIDs
+
+	result, err := h.attendanceRecordSrv.GetWeeklyRanking(ctx.Request.Context(), &req)
 	if err != nil {
 		response.FailWithError(ctx, err)
 		return

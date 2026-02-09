@@ -16,6 +16,12 @@ type AttendanceDetailRequest struct {
 	DeptIDs []int64 `form:"-"`                                // 部门ID列表（可选过滤）
 }
 
+// WeeklyAttendanceRankingRequest 周考勤排行请求
+type WeeklyAttendanceRankingRequest struct {
+	WeekOffset int     `form:"week_offset"` // 周偏移量：0=本周，1=上周，2=上上周
+	DeptIDs    []int64 `form:"-"`           // 部门ID列表（可选过滤）
+}
+
 // AttendanceTriggerRequest 手动触发考勤统计请求
 type AttendanceTriggerRequest struct {
 	Date    string  `json:"date" binding:"required"`          // YYYY-MM-DD
@@ -106,6 +112,123 @@ type AttendanceRankingItem struct {
 	LateCount int    `json:"late_count"`
 }
 
+// NewAttendanceDetailResponseFromRecord 从数据库记录构造响应
+func NewAttendanceDetailResponseFromRecord(
+	record *model.AttendanceRecord,
+	slotStart, slotEnd string,
+	userMap map[uint]*model.User,
+	userDeptNames map[uint]string,
+) *AttendanceDetailResponse {
+	// Helper to safe get user info
+	getUserInfo := func(id uint) (string, string) {
+		name := "Unknown"
+		dept := ""
+		if u, ok := userMap[id]; ok {
+			name = u.Name
+		}
+		if d, ok := userDeptNames[id]; ok {
+			dept = d
+		}
+		return name, dept
+	}
+
+	// Parse OnTime
+	var onTimeUsers []StoredUserCheck
+	if record.OnTimeIDs != "" && record.OnTimeIDs != "[]" {
+		_ = json.Unmarshal([]byte(record.OnTimeIDs), &onTimeUsers)
+	}
+	onTimeList := make([]AttendanceUserCheck, 0, len(onTimeUsers))
+	for _, u := range onTimeUsers {
+		name, dept := getUserInfo(u.ID)
+		onTimeList = append(onTimeList, AttendanceUserCheck{
+			ID:        u.ID,
+			Name:      name,
+			DeptName:  dept,
+			CheckTime: time.Unix(u.CheckTime, 0),
+		})
+	}
+
+	// Parse Leave
+	var leaveUsers []StoredUserLeave
+	if record.LeaveIDs != "" && record.LeaveIDs != "[]" {
+		_ = json.Unmarshal([]byte(record.LeaveIDs), &leaveUsers)
+	}
+	leaveList := make([]AttendanceUserLeave, 0, len(leaveUsers))
+	for _, u := range leaveUsers {
+		name, dept := getUserInfo(u.ID)
+		leaveList = append(leaveList, AttendanceUserLeave{
+			ID:        u.ID,
+			Name:      name,
+			DeptName:  dept,
+			LeaveType: u.LeaveType,
+			Reason:    u.Reason,
+		})
+	}
+
+	// Parse NotArrived
+	var notArrivedIDs []uint
+	if record.NotArrivedIDs != "" && record.NotArrivedIDs != "[]" {
+		_ = json.Unmarshal([]byte(record.NotArrivedIDs), &notArrivedIDs)
+	}
+	notArrivedList := make([]AttendanceUserBasic, 0, len(notArrivedIDs))
+	for _, id := range notArrivedIDs {
+		name, dept := getUserInfo(id)
+		notArrivedList = append(notArrivedList, AttendanceUserBasic{
+			ID:       id,
+			Name:     name,
+			DeptName: dept,
+		})
+	}
+
+	// ShouldAttend = OnTime + Leave + NotArrived
+	shouldAttendList := make([]AttendanceUserBasic, 0)
+	seen := make(map[uint]bool)
+
+	add := func(id uint) {
+		if !seen[id] {
+			name, dept := getUserInfo(id)
+			shouldAttendList = append(shouldAttendList, AttendanceUserBasic{
+				ID:       id,
+				Name:     name,
+				DeptName: dept,
+			})
+			seen[id] = true
+		}
+	}
+
+	for _, u := range onTimeUsers {
+		add(u.ID)
+	}
+	for _, u := range leaveUsers {
+		add(u.ID)
+	}
+	for _, id := range notArrivedIDs {
+		add(id)
+	}
+
+	return &AttendanceDetailResponse{
+		Date:    record.Date.Format("2006-01-02"),
+		Week:    record.Week,
+		Section: record.Section,
+		SlotTime: SlotTimeInfo{
+			Start: slotStart,
+			End:   slotEnd,
+		},
+		Statistics: AttendanceStatistics{
+			ShouldAttend: len(shouldAttendList),
+			OnTime:       len(onTimeList),
+			Leave:        len(leaveList),
+			NotArrived:   len(notArrivedList),
+		},
+		Users: AttendanceUserLists{
+			ShouldAttend: shouldAttendList,
+			OnTime:       onTimeList,
+			Leave:        leaveList,
+			NotArrived:   notArrivedList,
+		},
+	}
+}
+
 // WeeklyAttendanceRankingResponse 周考勤排行响应
 type WeeklyAttendanceRankingResponse struct {
 	Items []AttendanceRankingItem `json:"items"`
@@ -147,6 +270,7 @@ func NewAttendanceDetailResponse(
 		})
 	}
 
+	// 其他列表由调用方填充
 	return &AttendanceDetailResponse{
 		Date:    date,
 		Week:    week,
@@ -166,107 +290,6 @@ func NewAttendanceDetailResponse(
 			OnTime:       onTime,
 			Leave:        leave,
 			NotArrived:   notArrived,
-		},
-	}
-}
-
-// NewAttendanceDetailResponseFromRecord 从数据库记录构造响应
-func NewAttendanceDetailResponseFromRecord(
-	record *model.AttendanceRecord,
-	slotStart, slotEnd string,
-	userMap map[uint]*model.User,
-	userDeptNames map[uint]string,
-) *AttendanceDetailResponse {
-	// 解析存储的JSON数据
-	var onTimeStored []StoredUserCheck
-	var leaveStored []StoredUserLeave
-	var notArrivedIDs []uint
-
-	json.Unmarshal([]byte(record.OnTimeIDs), &onTimeStored)
-	json.Unmarshal([]byte(record.LeaveIDs), &leaveStored)
-	json.Unmarshal([]byte(record.NotArrivedIDs), &notArrivedIDs)
-
-	// 构建应到人员（所有出现在记录中的人员）
-	shouldAttendMap := make(map[uint]bool)
-	for _, u := range onTimeStored {
-		shouldAttendMap[u.ID] = true
-	}
-	for _, u := range leaveStored {
-		shouldAttendMap[u.ID] = true
-	}
-	for _, id := range notArrivedIDs {
-		shouldAttendMap[id] = true
-	}
-
-	shouldAttendList := make([]AttendanceUserBasic, 0)
-	for id := range shouldAttendMap {
-		if user, ok := userMap[id]; ok {
-			shouldAttendList = append(shouldAttendList, AttendanceUserBasic{
-				ID:       user.ID,
-				Name:     user.Name,
-				DeptName: userDeptNames[user.ID],
-			})
-		}
-	}
-
-	// 构建正常打卡列表
-	onTimeList := make([]AttendanceUserCheck, 0, len(onTimeStored))
-	for _, u := range onTimeStored {
-		if user, ok := userMap[u.ID]; ok {
-			onTimeList = append(onTimeList, AttendanceUserCheck{
-				ID:        user.ID,
-				Name:      user.Name,
-				DeptName:  userDeptNames[user.ID],
-				CheckTime: time.Unix(u.CheckTime, 0),
-			})
-		}
-	}
-
-	// 构建请假列表
-	leaveList := make([]AttendanceUserLeave, 0, len(leaveStored))
-	for _, u := range leaveStored {
-		if user, ok := userMap[u.ID]; ok {
-			leaveList = append(leaveList, AttendanceUserLeave{
-				ID:        user.ID,
-				Name:      user.Name,
-				DeptName:  userDeptNames[user.ID],
-				LeaveType: u.LeaveType,
-				Reason:    u.Reason,
-			})
-		}
-	}
-
-	// 构建未到列表
-	notArrivedList := make([]AttendanceUserBasic, 0, len(notArrivedIDs))
-	for _, id := range notArrivedIDs {
-		if user, ok := userMap[id]; ok {
-			notArrivedList = append(notArrivedList, AttendanceUserBasic{
-				ID:       user.ID,
-				Name:     user.Name,
-				DeptName: userDeptNames[user.ID],
-			})
-		}
-	}
-
-	return &AttendanceDetailResponse{
-		Date:    record.Date.Format("2006-01-02"),
-		Week:    record.Week,
-		Section: record.Section,
-		SlotTime: SlotTimeInfo{
-			Start: slotStart,
-			End:   slotEnd,
-		},
-		Statistics: AttendanceStatistics{
-			ShouldAttend: len(shouldAttendMap),
-			OnTime:       len(onTimeStored),
-			Leave:        len(leaveStored),
-			NotArrived:   len(notArrivedIDs),
-		},
-		Users: AttendanceUserLists{
-			ShouldAttend: shouldAttendList,
-			OnTime:       onTimeList,
-			Leave:        leaveList,
-			NotArrived:   notArrivedList,
 		},
 	}
 }
