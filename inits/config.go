@@ -17,10 +17,11 @@ func ConfigInit() {
 		configName = "dev"
 	}
 
-	viper.SetConfigName(configName)  // 配置文件名（不含扩展名）
-	viper.SetConfigType("yaml")      // 配置文件类型
-	viper.AddConfigPath("./configs") // 查找配置文件所在路径
-	viper.AddConfigPath(".")         // 工作目录备选
+	viper.SetConfigName(configName)   // 配置文件名（不含扩展名）
+	viper.SetConfigType("yaml")       // 配置文件类型
+	viper.AddConfigPath("./configs")  // 查找配置文件所在路径
+	viper.AddConfigPath("../configs") // 向上级目录查找（用于在 cmd 目录下运行的情况）
+	viper.AddConfigPath(".")          // 工作目录备选
 
 	if err := viper.ReadInConfig(); err != nil {
 		panic(fmt.Sprintf("读取配置文件失败: %v", err))
