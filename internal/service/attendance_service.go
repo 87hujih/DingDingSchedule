@@ -25,16 +25,18 @@ type AttendanceService struct {
 	leaveApprovalRepo repository.LeaveApprovalRepository
 	dingMgr           *DingTalkClientManager
 	schedulePeriodSrv *SchedulePeriodService // 从数据库读取作息时间
+	semesterSrv       *SemesterService       // 学期服务
 	scheduleCfg       config.Schedule        // 配置文件作为回退
 	logger            *zap.SugaredLogger
 }
 
-func NewAttendanceService(repo repository.AttendanceRepository, leaveApprovalRepo repository.LeaveApprovalRepository, dingMgr *DingTalkClientManager, schedulePeriodSrv *SchedulePeriodService, scheduleCfg config.Schedule, logger *zap.SugaredLogger) *AttendanceService {
+func NewAttendanceService(repo repository.AttendanceRepository, leaveApprovalRepo repository.LeaveApprovalRepository, dingMgr *DingTalkClientManager, schedulePeriodSrv *SchedulePeriodService, semesterSrv *SemesterService, scheduleCfg config.Schedule, logger *zap.SugaredLogger) *AttendanceService {
 	return &AttendanceService{
 		repo:              repo,
 		leaveApprovalRepo: leaveApprovalRepo,
 		dingMgr:           dingMgr,
 		schedulePeriodSrv: schedulePeriodSrv,
+		semesterSrv:       semesterSrv,
 		scheduleCfg:       scheduleCfg,
 		logger:            logger,
 	}
@@ -72,15 +74,29 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 		return nil, response.NewBizError(response.CodeInternalError, err.Error())
 	}
 
-	shouldArriveUsers, shouldArriveItems, err := s.computeShouldArriveUsersByDeptFilter(
-		ctx,
-		dayOfWeek,
-		section,
-		week,
-		deptIDs,
-	)
-	if err != nil {
-		return nil, err
+	// 判断是否使用"全体应到"模式（假期模式或超出学期时间）
+	var shouldArriveUsers []model.User
+	var shouldArriveItems []dto.CourseAttendanceUserItem
+
+	if s.shouldUseAllAttendMode(ctx, date) {
+		// 全体应到模式：不排除有课人员
+		shouldArriveUsers, err = s.listActiveUsersByDeptIDs(ctx, deptIDs)
+		if err != nil {
+			return nil, err
+		}
+		shouldArriveItems = toAttendanceUserItems(shouldArriveUsers, nil)
+	} else {
+		// 正常模式：应到 = 候选 - 有课
+		shouldArriveUsers, shouldArriveItems, err = s.computeShouldArriveUsersByDeptFilter(
+			ctx,
+			dayOfWeek,
+			section,
+			week,
+			deptIDs,
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	onLeaveItems, err := s.computeOnLeaveUserItems(ctx, shouldArriveUsers, sessionStart, sessionEnd)
@@ -427,4 +443,42 @@ func (s *AttendanceService) resolveActivePeriods(ctx context.Context) []config.P
 		}
 	}
 	return s.scheduleCfg.Periods
+}
+
+// shouldUseAllAttendMode 判断是否应该使用"全体应到"模式
+// 返回 true 的情况：
+// 1. 当前为假期模式
+// 2. 日期超出学期范围
+func (s *AttendanceService) shouldUseAllAttendMode(ctx context.Context, date time.Time) bool {
+	// 1. 检查是否为假期模式
+	if s.schedulePeriodSrv != nil {
+		currentMode, err := s.schedulePeriodSrv.GetCurrentMode(ctx)
+		if err == nil && currentMode == model.ScheduleModeHoliday {
+			s.logger.Infow("假期模式：使用全体应到模式", "date", date.Format("2006-01-02"))
+			return true
+		}
+	}
+
+	// 2. 检查日期是否超出学期范围
+	if s.semesterSrv != nil {
+		semester, err := s.semesterSrv.GetActiveSemester(ctx)
+		if err != nil {
+			// 没有学期配置，使用全体应到模式
+			s.logger.Infow("无学期配置：使用全体应到模式", "date", date.Format("2006-01-02"))
+			return true
+		}
+
+		_, err = s.semesterSrv.CalculateWeekFromDate(semester, date)
+		if err != nil {
+			// 日期超出学期范围
+			s.logger.Infow("日期超出学期范围：使用全体应到模式",
+				"date", date.Format("2006-01-02"),
+				"error", err.Error(),
+			)
+			return true
+		}
+	}
+
+	// 默认使用正常模式（应到 = 候选 - 有课）
+	return false
 }

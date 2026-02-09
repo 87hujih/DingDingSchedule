@@ -29,6 +29,9 @@ func NewService(repo *repository.Repository, dingMgr *DingTalkClientManager, jwt
 	// 先创建 SchedulePeriodService
 	schedulePeriodSrv := NewSchedulePeriodService(repo.SchedulePeriodRepo, repo.ScheduleSettingRepo, &scheduleCfg)
 
+	// 创建 SemesterService
+	semesterSrv := NewSemesterService(repo.SemesterRepo)
+
 	// 创建 AttendanceRecordService，注入 SchedulePeriodService
 	attendanceRecordSrv := NewAttendanceRecordService(
 		repo.UserRepo,
@@ -46,9 +49,9 @@ func NewService(repo *repository.Repository, dingMgr *DingTalkClientManager, jwt
 		DeptSrv:             NewDepartmentService(repo.DeptRepo, dingMgr),
 		AuthSrv:             NewAuthService(repo.UserRepo, dingMgr, jwtCfg),
 		ScheduleSrv:         NewScheduleService(repo.CourseRepo, repo.UserRepo, repo.SemesterRepo),
-		AttendanceSrv:       NewAttendanceService(attendanceRepo, repo.LeaveRepo, dingMgr, schedulePeriodSrv, scheduleCfg, logger),
+		AttendanceSrv:       NewAttendanceService(attendanceRepo, repo.LeaveRepo, dingMgr, schedulePeriodSrv, semesterSrv, scheduleCfg, logger),
 		LeaveSyncSrv:        leaveSyncSrv,
-		SemesterSrv:         NewSemesterService(repo.SemesterRepo),
+		SemesterSrv:         semesterSrv,
 		AttendanceRecordSrv: attendanceRecordSrv,
 		SchedulePeriodSrv:   schedulePeriodSrv,
 	}
