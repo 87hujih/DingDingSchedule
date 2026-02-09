@@ -17,7 +17,7 @@ func registerAttendanceRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 		record := attendance.Group("/record")
 		{
 			record.GET("/ranking/weekly", h.AttendanceRecordHdl.GetWeeklyRanking)      // 本周考勤排行
-			record.GET("/detail", h.AttendanceRecordHdl.GetAttendanceDetail)           // 获取考勤详情（实时计算）
+			record.GET("/detail", h.AttendanceRecordHdl.GetAttendanceDetail)           // 获取考勤详情（实时计算）（未使用）
 			record.GET("/snapshot", h.AttendanceRecordHdl.GetAttendanceSnapshot)       // 获取考勤快照（已保存记录）
 			record.POST("/trigger", h.AttendanceRecordHdl.TriggerAttendanceStatistics) // 手动触发统计
 			record.GET("/list", h.AttendanceRecordHdl.GetAttendanceRecords)            // 获取某天所有记录

@@ -22,12 +22,22 @@ func LogInit() {
 	}
 
 	// 2. 日志切割（Lumberjack）
-	writer := &lumberjack.Logger{
+	// 2.1 所有日志（info+）
+	allWriter := &lumberjack.Logger{
 		Filename:   cfg.Filename,
 		MaxSize:    cfg.MaxSize,    // MB
 		MaxAge:     cfg.MaxAge,     // 天
 		MaxBackups: cfg.MaxBackups, // 保留文件数
 		Compress:   cfg.Compress,   // 是否压缩
+	}
+
+	// 2.2 错误日志单独存储（warn+）
+	errorWriter := &lumberjack.Logger{
+		Filename:   filepath.Join(logDir, "error.log"),
+		MaxSize:    cfg.MaxSize,
+		MaxAge:     cfg.MaxAge,
+		MaxBackups: cfg.MaxBackups,
+		Compress:   cfg.Compress,
 	}
 
 	// 3. 解析日志级别
@@ -60,21 +70,26 @@ func LogInit() {
 	fileEncoder := zapcore.NewJSONEncoder(encoderConfig)
 
 	// 7. 日志输出目的地
-	fileSyncer := zapcore.AddSync(writer)
+	allSyncer := zapcore.AddSync(allWriter)
+	errorSyncer := zapcore.AddSync(errorWriter)
 	consoleSyncer := zapcore.AddSync(os.Stdout)
 
-	// 8. Dev / Prod 区分输出策略
+	// 8. Dev / Prod 区分输出策略（支持分级存储）
 	var core zapcore.Core
 
 	if global.AppConfig.Env == "dev" {
-		// 开发环境：日志输出到控制台 + 文件
+		// 开发环境：控制台 + 全量文件 + 错误文件
 		core = zapcore.NewTee(
 			zapcore.NewCore(consoleEncoder, consoleSyncer, level),
-			zapcore.NewCore(fileEncoder, fileSyncer, level),
+			zapcore.NewCore(fileEncoder, allSyncer, level),
+			zapcore.NewCore(fileEncoder, errorSyncer, zapcore.WarnLevel), // 只记录warn+
 		)
 	} else {
-		// 生产环境：只输出 JSON 到文件
-		core = zapcore.NewCore(fileEncoder, fileSyncer, level)
+		// 生产环境：全量文件 + 错误文件
+		core = zapcore.NewTee(
+			zapcore.NewCore(fileEncoder, allSyncer, level),
+			zapcore.NewCore(fileEncoder, errorSyncer, zapcore.WarnLevel), // 只记录warn+
+		)
 	}
 
 	// 9. 构建 Logger
@@ -92,7 +107,8 @@ func LogInit() {
 	global.Log = logger.Sugar()
 
 	global.Log.Infow("日志初始化完成",
-		"path", cfg.Filename,
+		"all_log", cfg.Filename,
+		"error_log", filepath.Join(logDir, "error.log"),
 		"level", cfg.Level,
 		"env", global.AppConfig.Env,
 	)

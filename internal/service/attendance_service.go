@@ -24,15 +24,17 @@ type AttendanceService struct {
 	repo              repository.AttendanceRepository
 	leaveApprovalRepo repository.LeaveApprovalRepository
 	dingMgr           *DingTalkClientManager
-	scheduleCfg       config.Schedule
+	schedulePeriodSrv *SchedulePeriodService // 从数据库读取作息时间
+	scheduleCfg       config.Schedule        // 配置文件作为回退
 	logger            *zap.SugaredLogger
 }
 
-func NewAttendanceService(repo repository.AttendanceRepository, leaveApprovalRepo repository.LeaveApprovalRepository, dingMgr *DingTalkClientManager, scheduleCfg config.Schedule, logger *zap.SugaredLogger) *AttendanceService {
+func NewAttendanceService(repo repository.AttendanceRepository, leaveApprovalRepo repository.LeaveApprovalRepository, dingMgr *DingTalkClientManager, schedulePeriodSrv *SchedulePeriodService, scheduleCfg config.Schedule, logger *zap.SugaredLogger) *AttendanceService {
 	return &AttendanceService{
 		repo:              repo,
 		leaveApprovalRepo: leaveApprovalRepo,
 		dingMgr:           dingMgr,
+		schedulePeriodSrv: schedulePeriodSrv,
 		scheduleCfg:       scheduleCfg,
 		logger:            logger,
 	}
@@ -57,8 +59,15 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 	if err := s.validateSlotParams(date, week, section); err != nil {
 		return nil, err
 	}
+
+	// 从数据库获取当前生效的作息时间配置
+	periods := s.resolveActivePeriods(ctx)
+	if len(periods) == 0 || section > len(periods) {
+		return nil, response.ErrInvalidParamWithMsg("节次无效或作息配置缺失")
+	}
+
 	dayOfWeek := scheduleutil.WeekdayMon1Sun7(date)
-	sessionStart, sessionEnd, err := scheduleutil.CalculateSlotTime(date, section, s.scheduleCfg.Periods)
+	sessionStart, sessionEnd, err := scheduleutil.CalculateSlotTime(date, section, periods)
 	if err != nil {
 		return nil, response.NewBizError(response.CodeInternalError, err.Error())
 	}
@@ -109,7 +118,14 @@ func (s *AttendanceService) GetSlotUserLeaveDetail(
 	if err := s.validateSlotParams(date, week, section); err != nil {
 		return nil, err
 	}
-	sessionStart, sessionEnd, err := scheduleutil.CalculateSlotTime(date, section, s.scheduleCfg.Periods)
+
+	// 从数据库获取当前生效的作息时间配置
+	periods := s.resolveActivePeriods(ctx)
+	if len(periods) == 0 || section > len(periods) {
+		return nil, response.ErrInvalidParamWithMsg("节次无效或作息配置缺失")
+	}
+
+	sessionStart, sessionEnd, err := scheduleutil.CalculateSlotTime(date, section, periods)
 	if err != nil {
 		return nil, response.NewBizError(response.CodeInternalError, err.Error())
 	}
@@ -400,4 +416,15 @@ func toLeaveRecordItems(records []model.LeaveApproval, sessionStart, sessionEnd 
 		})
 	}
 	return items
+}
+
+// resolveActivePeriods 获取当前生效的作息时间配置（优先从数据库，回退到配置文件）
+func (s *AttendanceService) resolveActivePeriods(ctx context.Context) []config.Period {
+	if s.schedulePeriodSrv != nil {
+		periods, err := s.schedulePeriodSrv.GetActivePeriods(ctx)
+		if err == nil && len(periods) > 0 {
+			return periods
+		}
+	}
+	return s.scheduleCfg.Periods
 }
