@@ -31,7 +31,7 @@ RUN apk add --no-cache ca-certificates tzdata
 # 设置时区为中国
 ENV TZ=Asia/Shanghai
 
-# 设置配置文件环境（生产环境使用 prod.yaml）
+# 设置配置文件环境（生产环境使用 dev.yaml）
 ENV CONFIG_ENV=prod
 
 # 创建非 root 用户运行应用（安全最佳实践）

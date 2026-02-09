@@ -17,7 +17,7 @@ services:
       # 持久化上传文件
       - ./uploads:/app/uploads
       # 如果需要覆盖配置，可以挂载配置文件
-      # - ./configs/prod.yaml:/app/configs/prod.yaml:ro
+      # - ./configs/dev.yaml:/app/configs/dev.yaml:ro
     networks:
       - schedule-network
     healthcheck:
