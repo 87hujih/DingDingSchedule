@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"schedule_server/global"
 	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
 	"schedule_server/internal/response"

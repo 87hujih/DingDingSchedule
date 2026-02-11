@@ -856,14 +856,40 @@ func (s *AttendanceRecordService) GetAttendanceText(
 		return nil, err
 	}
 
-	// 2. 生成文本格式
-	return s.formatAttendanceText(detail), nil
+	// 2. 获取当前模式（假期模式或上学模式）
+	mode, err := s.schedulePeriodSrv.GetCurrentMode(ctx)
+	if err != nil {
+		// 如果获取失败，默认使用上学模式
+		mode = model.ScheduleModeSchool
+	}
+
+	// 3. 生成文本格式
+	return s.formatAttendanceText(detail, mode), nil
 }
 
 // formatAttendanceText 将考勤详情格式化为文本
-func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDetailResponse) *dto.AttendanceTextResponse {
+func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDetailResponse, mode string) *dto.AttendanceTextResponse {
+	// 根据模式生成不同的节次标签
+	var periodLabel string
+	if mode == model.ScheduleModeHoliday {
+		// 假期模式：使用上午/下午/晚上
+		switch detail.Section {
+		case 1:
+			periodLabel = "上午"
+		case 2:
+			periodLabel = "下午"
+		case 3:
+			periodLabel = "晚上"
+		default:
+			periodLabel = "第" + intToString(detail.Section) + "次"
+		}
+	} else {
+		// 上学模式：使用第X节
+		periodLabel = "第" + intToString(detail.Section) + "节"
+	}
+
 	// 构建标题
-	title := "📅 " + detail.Date + " 第" + intToString(detail.Week) + "周 第" + intToString(detail.Section) + "节 考勤"
+	title := "📅 " + detail.Date + " 第" + intToString(detail.Week) + "周 " + periodLabel + " 考勤"
 
 	// 构建统计信息
 	statistics := "📊 应到" + intToString(detail.Statistics.ShouldAttend) + "人，" +
