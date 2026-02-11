@@ -41,7 +41,6 @@ func (s *DepartmentService) Sync(ctx context.Context) error {
 	}
 
 	if len(allDepts) == 0 {
-		global.Log.Warn("钉钉返回部门列表为空")
 		return nil
 	}
 
@@ -80,7 +79,6 @@ func (s *DepartmentService) Sync(ctx context.Context) error {
 		return fmt.Errorf("同步部门到数据库失败: %w", err)
 	}
 
-	global.Log.Infof("部门数据同步完成，共 %d 条，其中叶子部门 %d 个", len(depts), leafCount)
 	return nil
 }
 

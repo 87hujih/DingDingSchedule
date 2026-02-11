@@ -77,10 +77,6 @@ func (m *StreamClientManager) StartForTenant(parentCtx context.Context, tenant *
 	m.mu.RLock()
 	if _, exists := m.clients[tenant.ID]; exists {
 		m.mu.RUnlock()
-		m.logger.Infow("租户 Stream 客户端已存在，跳过启动",
-			"tenantID", tenant.ID,
-			"corpID", tenant.CorpID,
-		)
 		return nil
 	}
 	m.mu.RUnlock()
@@ -125,7 +121,6 @@ func (m *StreamClientManager) StartForTenant(parentCtx context.Context, tenant *
 		m.logger.Infow("启动租户 Stream 客户端",
 			"tenantID", tenant.ID,
 			"corpID", tenant.CorpID,
-			"appKey", tenant.AppKey,
 		)
 
 		if err := streamClient.Start(ctx); err != nil && err != context.Canceled {
@@ -154,7 +149,6 @@ func (m *StreamClientManager) StopForTenant(tenantID uint) {
 		cancel()
 		delete(m.cancels, tenantID)
 		delete(m.clients, tenantID)
-		m.logger.Infow("已停止租户 Stream 客户端", "tenantID", tenantID)
 	}
 }
 
@@ -163,11 +157,10 @@ func (m *StreamClientManager) StopAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.logger.Infof("正在停止 %d 个租户的 Stream 客户端", len(m.cancels))
-
 	for tenantID, cancel := range m.cancels {
 		cancel()
-		m.logger.Infow("已停止租户 Stream 客户端", "tenantID", tenantID)
+		delete(m.cancels, tenantID)
+		delete(m.clients, tenantID)
 	}
 
 	m.clients = make(map[uint]*streamClientEntry)

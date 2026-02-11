@@ -308,11 +308,6 @@ func (s *AttendanceRecordService) getShouldAttendUsers(
 	// 3. 判断是否使用"全体应到"模式（假期模式或超出学期时间）
 	if s.shouldUseAllAttendMode(ctx, date) {
 		// 全体应到模式：不排除有课人员
-		s.logger.Infow("使用全体应到模式",
-			"date", date.Format("2006-01-02"),
-			"week", week,
-			"section", section,
-		)
 		return activeUsers, nil
 	}
 
@@ -394,13 +389,6 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 	queryStart := windowStart
 	queryEnd := slotEnd
 
-	s.logger.Infow("查询钉钉打卡记录",
-		"用户数", len(dingUserIDs),
-		"查询开始", queryStart.Format("2006-01-02 15:04:05"),
-		"查询结束", queryEnd.Format("2006-01-02 15:04:05"),
-		"用户ID列表", dingUserIDs,
-	)
-
 	records, err := dingClient.GetAttendanceRecords(ctx, dingUserIDs, queryStart, queryEnd)
 	if err != nil {
 		s.logger.Errorw("获取钉钉打卡记录失败",
@@ -415,29 +403,14 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 	// 按用户ID去重，取最早的打卡记录
 	earliestCheck := make(map[string]time.Time)
 	for _, r := range records {
-		s.logger.Debugw("收到打卡记录",
-			"用户ID", r.DingUserID,
-			"打卡时间", r.CheckTime.Format("2006-01-02 15:04:05"),
-			"打卡类型", r.CheckType,
-		)
-
 		// 只统计上班打卡
 		if r.CheckType != "OnDuty" {
-			s.logger.Debugw("跳过非上班打卡", "用户ID", r.DingUserID, "类型", r.CheckType)
 			continue
 		}
 		if existing, ok := earliestCheck[r.DingUserID]; !ok || r.CheckTime.Before(existing) {
 			earliestCheck[r.DingUserID] = r.CheckTime
 		}
 	}
-
-	s.logger.Infow("打卡记录统计",
-		"应到人数", len(users),
-		"查询到的打卡记录数", len(records),
-		"有效打卡人数", len(earliestCheck),
-		"窗口开始", windowStart.Format("2006-01-02 15:04:05"),
-		"截止时间", deadline.Format("2006-01-02 15:04:05"),
-	)
 
 	// 【核心修改】只返回在有效窗口内打卡的人
 	onTime := make([]dto.AttendanceUserCheck, 0)
@@ -455,12 +428,6 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 		// 【新增】检查打卡时间是否在有效窗口内
 		if checkTime.Before(windowStart) {
 			tooEarlyCount++
-			s.logger.Infow("打卡时间早于有效窗口",
-				"用户", user.Name,
-				"打卡时间", checkTime.Format("2006-01-02 15:04:05"),
-				"窗口开始", windowStart.Format("2006-01-02 15:04:05"),
-				"提前了", windowStart.Sub(checkTime).String(),
-			)
 			continue // 跳过这条打卡记录
 		}
 
@@ -471,30 +438,11 @@ func (s *AttendanceRecordService) getOnTimeUsers(
 				Name:      user.Name,
 				CheckTime: checkTime,
 			})
-			s.logger.Debugw("正常打卡",
-				"用户", user.Name,
-				"打卡时间", checkTime.Format("2006-01-02 15:04:05"),
-				"窗口开始", windowStart.Format("2006-01-02 15:04:05"),
-				"截止时间", deadline.Format("2006-01-02 15:04:05"),
-			)
 		} else {
 			lateCount++
 			lateUsers = append(lateUsers, *user)
-			s.logger.Infow("打卡晚于截止时间",
-				"用户", user.Name,
-				"打卡时间", checkTime.Format("2006-01-02 15:04:05"),
-				"截止时间", deadline.Format("2006-01-02 15:04:05"),
-				"晚了", checkTime.Sub(deadline).String(),
-			)
 		}
 	}
-
-	s.logger.Infow("打卡统计结果",
-		"正常打卡", len(onTime),
-		"晚于截止时间", lateCount,
-		"早于窗口", tooEarlyCount,
-		"未打卡", len(users)-len(onTime)-lateCount,
-	)
 
 	return onTime, lateUsers, nil
 }
@@ -553,15 +501,6 @@ func (s *AttendanceRecordService) SendLateNotifications(
 	if err := dingClient.SendWorkNoticeText(ctx, tenant.AgentID, dingUserIDs, content); err != nil {
 		return errs.WrapMsgErr("发送钉钉迟到提醒失败", err)
 	}
-
-	s.logger.Infow("成功发送迟到提醒",
-		"tenantId", tenant.ID,
-		"lateUserIDs", dingUserIDs,
-		"lateUserNames", lateUserNames,
-		"date", date,
-		"section", section,
-		"content", content,
-	)
 
 	return nil
 }
@@ -1128,7 +1067,6 @@ func (s *AttendanceRecordService) shouldUseAllAttendMode(ctx context.Context, da
 	if s.schedulePeriodSrv != nil {
 		currentMode, err := s.schedulePeriodSrv.GetCurrentMode(ctx)
 		if err == nil && currentMode == model.ScheduleModeHoliday {
-			s.logger.Infow("假期模式：使用全体应到模式", "date", date.Format("2006-01-02"))
 			return true
 		}
 	}
@@ -1138,17 +1076,12 @@ func (s *AttendanceRecordService) shouldUseAllAttendMode(ctx context.Context, da
 		semester, err := s.semesterSrv.GetActiveSemester(ctx)
 		if err != nil {
 			// 没有学期配置，使用全体应到模式
-			s.logger.Infow("无学期配置：使用全体应到模式", "date", date.Format("2006-01-02"))
 			return true
 		}
 
 		_, err = s.semesterSrv.CalculateWeekFromDate(semester, date)
 		if err != nil {
 			// 日期超出学期范围
-			s.logger.Infow("日期超出学期范围：使用全体应到模式",
-				"date", date.Format("2006-01-02"),
-				"error", err.Error(),
-			)
 			return true
 		}
 	}

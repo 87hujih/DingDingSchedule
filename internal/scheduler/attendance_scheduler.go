@@ -72,7 +72,6 @@ func (s *AttendanceScheduler) Start() {
 
 	// 添加定时重载任务（每10秒检查一次配置变更）
 	_, err := s.cron.AddFunc("*/10 * * * * *", func() {
-		s.logger.Info("定时重载租户作息配置")
 		s.reloadAllTenantSchedules()
 	})
 	if err != nil {
@@ -111,7 +110,6 @@ func (s *AttendanceScheduler) reloadAllTenantSchedules() {
 	}
 
 	if len(tenants) == 0 {
-		s.logger.Warn("没有活跃的租户")
 		return
 	}
 
@@ -167,12 +165,6 @@ func (s *AttendanceScheduler) reloadTenantSchedule(tenantID uint) {
 		prd := period
 
 		entryID, err := s.cron.AddFunc(cronExpr, func() {
-			s.logger.Infow("触发考勤统计",
-				"tenantId", tid,
-				"section", sec,
-				"periodName", prd.Name,
-				"cronExpr", cronExpr,
-			)
 			s.triggerAttendanceForTenant(tid, sec, time.Now())
 		})
 
@@ -187,14 +179,6 @@ func (s *AttendanceScheduler) reloadTenantSchedule(tenantID uint) {
 		}
 
 		newEntryIDs = append(newEntryIDs, entryID)
-
-		s.logger.Infow("添加考勤定时任务",
-			"tenantId", tenantID,
-			"section", section,
-			"periodName", period.Name,
-			"startTime", period.StartTime,
-			"cronExpr", cronExpr,
-		)
 	}
 
 	// 4. 保存新任务ID
@@ -231,11 +215,6 @@ func (s *AttendanceScheduler) loadTenantScheduleFromConfig(tenantID uint) {
 		prd := period
 
 		entryID, err := s.cron.AddFunc(cronExpr, func() {
-			s.logger.Infow("触发考勤统计(配置文件)",
-				"tenantId", tid,
-				"section", sec,
-				"periodName", prd.Name,
-			)
 			s.triggerAttendanceForTenant(tid, sec, time.Now())
 		})
 
@@ -249,14 +228,6 @@ func (s *AttendanceScheduler) loadTenantScheduleFromConfig(tenantID uint) {
 		}
 
 		newEntryIDs = append(newEntryIDs, entryID)
-
-		s.logger.Infow("添加考勤定时任务(配置文件回退)",
-			"tenantId", tenantID,
-			"section", section,
-			"periodName", period.Name,
-			"startTime", period.Start,
-			"cronExpr", cronExpr,
-		)
 	}
 
 	s.tenantJobs[tenantID] = newEntryIDs
@@ -269,7 +240,6 @@ func (s *AttendanceScheduler) removeTenantJobs(tenantID uint) {
 			s.cron.Remove(entryID)
 		}
 		delete(s.tenantJobs, tenantID)
-		s.logger.Infow("移除租户旧任务", "tenantId", tenantID, "count", len(entryIDs))
 	}
 }
 
@@ -328,7 +298,6 @@ func (s *AttendanceScheduler) triggerAttendanceForTenant(tenantID uint, section 
 		// 检查失败时继续执行（保守策略）
 	}
 	if !enabled {
-		s.logger.Infow("考勤已全局关闭，跳过执行", "tenantId", tenantID, "section", section)
 		return
 	}
 
@@ -351,10 +320,6 @@ func (s *AttendanceScheduler) triggerAttendanceForTenant(tenantID uint, section 
 	if err != nil {
 		// 假期模式下，不受学期配置限制，使用周数 0 继续执行
 		if currentMode == "holiday" {
-			s.logger.Infow("假期模式：忽略学期配置，继续执行考勤",
-				"tenantId", tenantID,
-				"tenantName", tenant.Name,
-			)
 			week = 0
 		} else {
 			s.logger.Warnw("获取当前周数失败",
@@ -375,14 +340,6 @@ func (s *AttendanceScheduler) triggerAttendanceForTenant(tenantID uint, section 
 		Section: section,
 	}
 
-	s.logger.Infow("开始统计考勤",
-		"tenantId", tenantID,
-		"tenantName", tenant.Name,
-		"date", date,
-		"week", week,
-		"section", section,
-	)
-
 	// 获取考勤详情
 	result, lateUsers, err := s.attendanceRecordSrv.GetAttendanceDetailWithLateUsers(ctx, req)
 	if err != nil {
@@ -401,19 +358,6 @@ func (s *AttendanceScheduler) triggerAttendanceForTenant(tenantID uint, section 
 		)
 		return
 	}
-
-	//users := []model.User{}
-	//ids := []int{1, 2}
-	//
-	//res := global.DB.WithContext(ctx).Find(&users, ids)
-	//
-	//if res.Error != nil {
-	//	s.logger.Errorw("数据库报的错误", res.Error)
-	//}
-	//
-	//lateUsers = append(lateUsers, users...)
-	//
-	//s.logger.Infow("查询数据库之后lateusers", "数据库", lateUsers)
 
 	if err := s.attendanceRecordSrv.SendLateNotifications(ctx, result.Date, result.Section, result.SlotTime.Start, result.SlotTime.End, currentMode, lateUsers); err != nil {
 		s.logger.Errorw("发送迟到提醒失败",

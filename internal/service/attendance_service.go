@@ -454,7 +454,6 @@ func (s *AttendanceService) shouldUseAllAttendMode(ctx context.Context, date tim
 	if s.schedulePeriodSrv != nil {
 		currentMode, err := s.schedulePeriodSrv.GetCurrentMode(ctx)
 		if err == nil && currentMode == model.ScheduleModeHoliday {
-			s.logger.Infow("假期模式：使用全体应到模式", "date", date.Format("2006-01-02"))
 			return true
 		}
 	}
@@ -464,17 +463,12 @@ func (s *AttendanceService) shouldUseAllAttendMode(ctx context.Context, date tim
 		semester, err := s.semesterSrv.GetActiveSemester(ctx)
 		if err != nil {
 			// 没有学期配置，使用全体应到模式
-			s.logger.Infow("无学期配置：使用全体应到模式", "date", date.Format("2006-01-02"))
 			return true
 		}
 
 		_, err = s.semesterSrv.CalculateWeekFromDate(semester, date)
 		if err != nil {
 			// 日期超出学期范围
-			s.logger.Infow("日期超出学期范围：使用全体应到模式",
-				"date", date.Format("2006-01-02"),
-				"error", err.Error(),
-			)
 			return true
 		}
 	}

@@ -68,7 +68,6 @@ func RunServer() {
 
 	// 停止钉钉 Stream 客户端
 	streamCancel()
-	global.Log.Info("已发送 Stream 客户端关闭信号")
 
 	// 给 Stream 客户端 2 秒时间优雅关闭，避免 SDK 内部 goroutine 竞态
 	time.Sleep(2 * time.Second)
@@ -118,11 +117,6 @@ func startDingTalkStream(ctx context.Context) {
 
 	// 定义事件处理器
 	eventHandler := func(ctx context.Context, corpID, processInstanceID, eventType string) error {
-		global.Log.Infow("处理审批事件",
-			"corpId", corpID,
-			"processInstanceId", processInstanceID,
-			"eventType", eventType,
-		)
 		return leaveSyncSrv.SyncProcessInstance(ctx, corpID, processInstanceID)
 	}
 
@@ -134,7 +128,6 @@ func startDingTalkStream(ctx context.Context) {
 
 	// 等待 context 取消
 	<-ctx.Done()
-	global.Log.Info("收到停止信号，正在关闭所有 Stream 客户端")
 
 	// 停止所有客户端
 	streamMgr.StopAll()

@@ -52,7 +52,6 @@ func (s *StreamClient) Start(ctx context.Context) error {
 	)
 
 	s.client = cli
-	s.logger.Infow("钉钉 Stream 客户端启动中...", "appKey", s.appKey)
 
 	// Start 是阻塞的，会一直运行直到 context 取消
 	// 注意：SDK v0.9.1 在关闭时可能有 "send on closed channel" panic
@@ -62,15 +61,11 @@ func (s *StreamClient) Start(ctx context.Context) error {
 		return err
 	}
 
-	s.logger.Infow("钉钉 Stream 客户端已停止")
 	return ctx.Err()
 }
 
 // handleEvent 处理钉钉事件
 func (s *StreamClient) handleEvent(ctx context.Context, df *payload.DataFrame) (*payload.DataFrameResponse, error) {
-	// 打印原始数据用于调试
-	s.logger.Infow("收到钉钉原始事件", "data", df.Data)
-
 	// 解析事件数据
 	var evt bpmsEvent
 	if err := json.Unmarshal([]byte(df.Data), &evt); err != nil {
@@ -78,22 +73,37 @@ func (s *StreamClient) handleEvent(ctx context.Context, df *payload.DataFrame) (
 		return payload.NewSuccessDataFrameResponse(), nil
 	}
 
+	// 记录收到的事件（用于调试）
 	s.logger.Infow("收到钉钉事件",
 		"approveType", evt.ApproveType,
-		"status", evt.Status,
 		"processInstanceId", evt.ProcessInstanceID,
+		"status", evt.Status,
 	)
 
 	// 处理请假审批事件
 	if s.onBpmsEvent != nil && evt.ProcessInstanceID != "" && evt.ApproveType == "LEAVE" {
+		s.logger.Infow("开始处理请假审批事件",
+			"processInstanceId", evt.ProcessInstanceID,
+			"status", evt.Status,
+		)
 		go func() {
 			if err := s.onBpmsEvent(context.Background(), s.corpID, evt.ProcessInstanceID, evt.Status); err != nil {
 				s.logger.Errorw("处理审批事件失败",
 					"processInstanceId", evt.ProcessInstanceID,
 					"err", err,
 				)
+			} else {
+				s.logger.Infow("处理审批事件成功",
+					"processInstanceId", evt.ProcessInstanceID,
+				)
 			}
 		}()
+	} else {
+		s.logger.Debugw("跳过事件处理",
+			"approveType", evt.ApproveType,
+			"processInstanceId", evt.ProcessInstanceID,
+			"hasHandler", s.onBpmsEvent != nil,
+		)
 	}
 
 	return payload.NewSuccessDataFrameResponse(), nil
