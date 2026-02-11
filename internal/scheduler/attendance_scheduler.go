@@ -162,7 +162,6 @@ func (s *AttendanceScheduler) reloadTenantSchedule(tenantID uint) {
 		// 闭包捕获变量
 		tid := tenantID
 		sec := section
-		prd := period
 
 		entryID, err := s.cron.AddFunc(cronExpr, func() {
 			s.triggerAttendanceForTenant(tid, sec, time.Now())
@@ -212,7 +211,6 @@ func (s *AttendanceScheduler) loadTenantScheduleFromConfig(tenantID uint) {
 
 		tid := tenantID
 		sec := section
-		prd := period
 
 		entryID, err := s.cron.AddFunc(cronExpr, func() {
 			s.triggerAttendanceForTenant(tid, sec, time.Now())
