@@ -859,7 +859,8 @@ func (s *AttendanceRecordService) GetAttendanceText(
 	// 2. 获取当前模式（假期模式或上学模式）
 	mode, err := s.schedulePeriodSrv.GetCurrentMode(ctx)
 	if err != nil {
-		// 如果获取失败，默认使用上学模式
+		// 如果获取失败，记录警告并默认使用上学模式
+		s.logger.Warnw("获取作息模式失败，使用默认上学模式", "error", err)
 		mode = model.ScheduleModeSchool
 	}
 
@@ -869,6 +870,11 @@ func (s *AttendanceRecordService) GetAttendanceText(
 
 // formatAttendanceText 将考勤详情格式化为文本
 func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDetailResponse, mode string) *dto.AttendanceTextResponse {
+	// 解析日期以获取星期几
+	date, _ := time.ParseInLocation("2006-01-02", detail.Date, time.Local)
+	weekdayNum := scheduleutil.WeekdayMon1Sun7(date)
+	weekdayStr := getWeekdayName(weekdayNum)
+
 	// 根据模式生成不同的节次标签
 	var periodLabel string
 	if mode == model.ScheduleModeHoliday {
@@ -888,8 +894,15 @@ func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDet
 		periodLabel = "第" + intToString(detail.Section) + "节"
 	}
 
-	// 构建标题
-	title := "📅 " + detail.Date + " 第" + intToString(detail.Week) + "周 " + periodLabel + " 考勤"
+	// 构建标题：根据模式决定是否显示周次
+	var title string
+	if mode == model.ScheduleModeHoliday {
+		// 假期模式：日期 + 星期 + "假期" + 时段
+		title = "📅 " + detail.Date + " " + weekdayStr + " 假期 " + periodLabel + " 考勤"
+	} else {
+		// 上学模式：日期 + 星期 + 第X周 + 第X节
+		title = "📅 " + detail.Date + " " + weekdayStr + " 第" + intToString(detail.Week) + "周 " + periodLabel + " 考勤"
+	}
 
 	// 构建统计信息
 	statistics := "📊 应到" + intToString(detail.Statistics.ShouldAttend) + "人，" +
@@ -978,6 +991,16 @@ func intToString(n int) string {
 		n /= 10
 	}
 	return string(digits)
+}
+
+// getWeekdayName 将星期数字转换为中文名称
+// weekday: 1=周一, 2=周二, ..., 7=周日
+func getWeekdayName(weekday int) string {
+	weekdays := []string{"", "周一", "周二", "周三", "周四", "周五", "周六", "周日"}
+	if weekday >= 1 && weekday <= 7 {
+		return weekdays[weekday]
+	}
+	return "周?"
 }
 
 // SignForUsers 代签（将指定用户从迟到列表移动到正常签到列表）
