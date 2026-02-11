@@ -153,7 +153,10 @@ func startAttendanceScheduler() *scheduler.AttendanceScheduler {
 		&global.AppConfig.Schedule,
 	)
 
-	// 创建 AttendanceRecordService，注入 SchedulePeriodService
+	// 创建 SemesterService
+	semesterSrv := service.NewSemesterService(repo.SemesterRepo)
+
+	// 创建 AttendanceRecordService，注入 SchedulePeriodService 和 SemesterService
 	attendanceRecordSrv := service.NewAttendanceRecordService(
 		repo.UserRepo,
 		repo.CourseRepo,
@@ -161,10 +164,10 @@ func startAttendanceScheduler() *scheduler.AttendanceScheduler {
 		repo.AttendanceRecordRepo,
 		dingMgr,
 		schedulePeriodSrv,
+		semesterSrv,
 		global.AppConfig.Schedule,
 		global.Log,
 	)
-	semesterSrv := service.NewSemesterService(repo.SemesterRepo)
 
 	// 创建调度器（支持多租户动态配置）
 	attendanceScheduler := scheduler.NewAttendanceScheduler(

@@ -30,6 +30,7 @@ type AttendanceRecordService struct {
 	dingMgr              *DingTalkClientManager
 	scheduleCfg          config.Schedule        // 配置文件作为回退
 	schedulePeriodSrv    *SchedulePeriodService // 从数据库读取作息时间
+	semesterSrv          *SemesterService       // 学期服务（用于判断全体应到模式）
 	logger               *zap.SugaredLogger
 }
 
@@ -41,6 +42,7 @@ func NewAttendanceRecordService(
 	attendanceRecordRepo repository.AttendanceRecordRepository,
 	dingMgr *DingTalkClientManager,
 	schedulePeriodSrv *SchedulePeriodService,
+	semesterSrv *SemesterService,
 	scheduleCfg config.Schedule,
 	logger *zap.SugaredLogger,
 ) *AttendanceRecordService {
@@ -51,6 +53,7 @@ func NewAttendanceRecordService(
 		attendanceRecordRepo: attendanceRecordRepo,
 		dingMgr:              dingMgr,
 		schedulePeriodSrv:    schedulePeriodSrv,
+		semesterSrv:          semesterSrv,
 		scheduleCfg:          scheduleCfg,
 		logger:               logger,
 	}
@@ -302,7 +305,18 @@ func (s *AttendanceRecordService) getShouldAttendUsers(
 		return []model.User{}, nil
 	}
 
-	// 3. 获取该时段有课的人员
+	// 3. 判断是否使用"全体应到"模式（假期模式或超出学期时间）
+	if s.shouldUseAllAttendMode(ctx, date) {
+		// 全体应到模式：不排除有课人员
+		s.logger.Infow("使用全体应到模式",
+			"date", date.Format("2006-01-02"),
+			"week", week,
+			"section", section,
+		)
+		return activeUsers, nil
+	}
+
+	// 4. 正常模式：获取该时段有课的人员
 	dayOfWeek := scheduleutil.WeekdayMon1Sun7(date)
 	userIDs := make([]uint, 0, len(activeUsers))
 	for _, u := range activeUsers {
@@ -314,7 +328,7 @@ func (s *AttendanceRecordService) getShouldAttendUsers(
 		return nil, errs.WrapMsgErr("获取用户课表失败", err)
 	}
 
-	// 4. 过滤出本周有课的用户
+	// 5. 过滤出本周有课的用户
 	busyUserSet := make(map[uint]bool)
 	for _, c := range courses {
 		if weekutil.ContainsWeek(c.WeekList, week) {
@@ -322,7 +336,7 @@ func (s *AttendanceRecordService) getShouldAttendUsers(
 		}
 	}
 
-	// 5. 应到人员 = 候选人 - 有课人员
+	// 6. 应到人员 = 候选人 - 有课人员
 	shouldAttend := make([]model.User, 0, len(activeUsers))
 	for _, u := range activeUsers {
 		if !busyUserSet[u.ID] {
@@ -1102,4 +1116,43 @@ func (s *AttendanceRecordService) SignForUsers(ctx context.Context, req *dto.Sig
 		SuccessIDs: successIDs,
 		FailedIDs:  failedIDs,
 	}, nil
+}
+
+// shouldUseAllAttendMode 判断是否应该使用"全体应到"模式
+// 返回 true 的情况：
+// 1. 当前为假期模式
+// 2. 日期超出学期范围
+// 3. 无学期配置
+func (s *AttendanceRecordService) shouldUseAllAttendMode(ctx context.Context, date time.Time) bool {
+	// 1. 检查是否为假期模式
+	if s.schedulePeriodSrv != nil {
+		currentMode, err := s.schedulePeriodSrv.GetCurrentMode(ctx)
+		if err == nil && currentMode == model.ScheduleModeHoliday {
+			s.logger.Infow("假期模式：使用全体应到模式", "date", date.Format("2006-01-02"))
+			return true
+		}
+	}
+
+	// 2. 检查日期是否超出学期范围
+	if s.semesterSrv != nil {
+		semester, err := s.semesterSrv.GetActiveSemester(ctx)
+		if err != nil {
+			// 没有学期配置，使用全体应到模式
+			s.logger.Infow("无学期配置：使用全体应到模式", "date", date.Format("2006-01-02"))
+			return true
+		}
+
+		_, err = s.semesterSrv.CalculateWeekFromDate(semester, date)
+		if err != nil {
+			// 日期超出学期范围
+			s.logger.Infow("日期超出学期范围：使用全体应到模式",
+				"date", date.Format("2006-01-02"),
+				"error", err.Error(),
+			)
+			return true
+		}
+	}
+
+	// 默认使用正常模式（应到 = 候选 - 有课）
+	return false
 }
