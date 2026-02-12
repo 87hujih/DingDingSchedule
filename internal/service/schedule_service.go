@@ -319,7 +319,7 @@ func (s *ScheduleService) DeleteCourse(ctx context.Context, userID uint, userRol
 		return err
 	}
 
-	s.sendScheduleChangeNotification(ctx, userID, userRole, "删除", fmt.Sprintf("课程ID: %d", courseID))
+	s.sendScheduleChangeNotification(ctx, userID, userRole, "删除", fmt.Sprintf("课程: %s", existing.CourseName))
 
 	return nil
 }
