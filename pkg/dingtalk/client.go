@@ -202,6 +202,7 @@ type workNoticeResponse struct {
 	TaskID  int64  `json:"task_id"`
 }
 
+// SendWorkNoticeText 发送钉钉系统消息
 func (c *Client) SendWorkNoticeText(ctx context.Context, agentID string, userIDs []string, content string) error {
 	userIDs = trimStrings(userIDs)
 	if len(userIDs) == 0 {
