@@ -63,19 +63,19 @@ func (s *ScheduleService) ImportFromFile(ctx context.Context, userID uint, userR
 
 	tmpXlsx, err := os.CreateTemp("", "schedule-*.xlsx")
 	if err != nil {
-		return 0, fmt.Errorf("create temp xlsx: %w", err)
+		return 0, fmt.Errorf("创建临时xlsx文件失败: %w", err)
 	}
 	tmpXlsxPath := tmpXlsx.Name()
 	_ = tmpXlsx.Close()
 	defer os.Remove(tmpXlsxPath)
 
 	if err = scheduleparse.ConvertToXLSX(ctx, srcPath, tmpXlsxPath); err != nil {
-		return 0, fmt.Errorf("convert to xlsx: %w", err)
+		return 0, fmt.Errorf("转换为xlsx格式失败: %w", err)
 	}
 
 	parsedCourses, err := scheduleparse.ParseCourses(ctx, tmpXlsxPath)
 	if err != nil {
-		return 0, fmt.Errorf("parse courses: %w", err)
+		return 0, fmt.Errorf("解析课程数据失败: %w", err)
 	}
 	if len(parsedCourses) == 0 {
 		return 0, response.ErrInvalidParamWithMsg("未解析到任何课程数据")
@@ -96,7 +96,7 @@ func (s *ScheduleService) ImportFromFile(ctx context.Context, userID uint, userR
 	}
 
 	if err = s.courseRepo.ReplaceByUser(ctx, userID, courses); err != nil {
-		return 0, fmt.Errorf("replace courses: %w", err)
+		return 0, fmt.Errorf("替换课程失败: %w", err)
 	}
 
 	s.sendScheduleChangeNotification(ctx, userID, userRole, "导入", fmt.Sprintf("导入了 %d 门课程", len(courses)))
@@ -130,7 +130,7 @@ func (s *ScheduleService) ListByWeek(
 	// 1. 查询该用户所有课程
 	all, err := s.courseRepo.ListByUser(ctx, finalUserID)
 	if err != nil {
-		return nil, fmt.Errorf("list courses: %w", err)
+		return nil, fmt.Errorf("查询课程列表失败: %w", err)
 	}
 
 	// 2. 过滤出该周有课的课程
@@ -181,7 +181,7 @@ func (s *ScheduleService) ListAll(
 
 	courses, total, err := s.courseRepo.ListByUserPaged(ctx, userID, page, pageSize)
 	if err != nil {
-		return nil, fmt.Errorf("list courses: %w", err)
+		return nil, fmt.Errorf("查询课程列表失败: %w", err)
 	}
 
 	return &AllCoursesResult{
@@ -267,7 +267,7 @@ func (s *ScheduleService) UpdateCourse(ctx context.Context, userID uint, userRol
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return response.ErrNotFoundWithMsg("课程不存在")
 		}
-		return fmt.Errorf("get course: %w", err)
+		return fmt.Errorf("查询课程失败: %w", err)
 	}
 
 	// 2. 校验归属权限
@@ -306,7 +306,7 @@ func (s *ScheduleService) DeleteCourse(ctx context.Context, userID uint, userRol
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return response.ErrNotFoundWithMsg("课程不存在")
 		}
-		return fmt.Errorf("get course: %w", err)
+		return fmt.Errorf("查询课程失败: %w", err)
 	}
 
 	// 2. 校验归属权限
@@ -336,7 +336,7 @@ func (s *ScheduleService) GetCourseDetail(ctx context.Context, userID uint, cour
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, response.ErrNotFoundWithMsg("课程不存在")
 		}
-		return nil, fmt.Errorf("get course: %w", err)
+		return nil, fmt.Errorf("查询课程失败: %w", err)
 	}
 
 	// 2. 校验归属权限
