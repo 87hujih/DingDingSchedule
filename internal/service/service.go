@@ -49,7 +49,7 @@ func NewService(repo *repository.Repository, dingMgr *DingTalkClientManager, jwt
 		UserSrv:             NewUserService(repo.UserRepo, dingMgr),
 		DeptSrv:             NewDepartmentService(repo.DeptRepo, dingMgr),
 		AuthSrv:             NewAuthService(repo.UserRepo, dingMgr, jwtCfg),
-		ScheduleSrv:         NewScheduleService(repo.CourseRepo, repo.UserRepo, repo.SemesterRepo),
+		ScheduleSrv:         NewScheduleService(repo.CourseRepo, repo.UserRepo, repo.SemesterRepo, dingMgr, logger),
 		AttendanceSrv:       NewAttendanceService(attendanceRepo, repo.LeaveRepo, dingMgr, schedulePeriodSrv, semesterSrv, scheduleCfg, logger),
 		LeaveSyncSrv:        leaveSyncSrv,
 		SemesterSrv:         semesterSrv,

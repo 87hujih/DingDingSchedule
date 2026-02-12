@@ -897,8 +897,8 @@ func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDet
 	// 构建标题：根据模式决定是否显示周次
 	var title string
 	if mode == model.ScheduleModeHoliday {
-		// 假期模式：日期 + 星期 + "假期" + 时段
-		title = "📅 " + detail.Date + " " + weekdayStr + " 假期 " + periodLabel + " 考勤"
+		// 假期模式：日期 + 星期 + 时段（不显示周次和"假期"字样）
+		title = "📅 " + detail.Date + " " + weekdayStr + " " + periodLabel + " 考勤"
 	} else {
 		// 上学模式：日期 + 星期 + 第X周 + 第X节
 		title = "📅 " + detail.Date + " " + weekdayStr + " 第" + intToString(detail.Week) + "周 " + periodLabel + " 考勤"

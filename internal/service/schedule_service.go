@@ -11,12 +11,15 @@ import (
 
 	"schedule_server/internal/consts"
 	"schedule_server/internal/dto"
+	"schedule_server/internal/errs"
 	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
 	"schedule_server/internal/response"
+	"schedule_server/internal/tenantctx"
 	"schedule_server/pkg/scheduleparse"
 	"schedule_server/pkg/weekutil"
 
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -25,6 +28,8 @@ type ScheduleService struct {
 	userRepo     repository.UserRepository
 	courseRepo   repository.CourseRepository
 	semesterRepo repository.SemesterRepository
+	dingMgr      *DingTalkClientManager
+	logger       *zap.SugaredLogger
 }
 
 // NewScheduleService 创建课表服务
@@ -32,16 +37,20 @@ func NewScheduleService(
 	courseRepo repository.CourseRepository,
 	userRepo repository.UserRepository,
 	semesterRepo repository.SemesterRepository,
+	dingMgr *DingTalkClientManager,
+	logger *zap.SugaredLogger,
 ) *ScheduleService {
 	return &ScheduleService{
 		userRepo:     userRepo,
 		courseRepo:   courseRepo,
 		semesterRepo: semesterRepo,
+		dingMgr:      dingMgr,
+		logger:       logger,
 	}
 }
 
 // ImportFromFile 导入课表（覆盖同一用户全部数据），返回插入条数
-func (s *ScheduleService) ImportFromFile(ctx context.Context, userID uint, srcPath string) (int, error) {
+func (s *ScheduleService) ImportFromFile(ctx context.Context, userID uint, userRole int, srcPath string) (int, error) {
 	if userID == 0 {
 		return 0, response.ErrForbidden()
 	}
@@ -89,6 +98,8 @@ func (s *ScheduleService) ImportFromFile(ctx context.Context, userID uint, srcPa
 	if err = s.courseRepo.ReplaceByUser(ctx, userID, courses); err != nil {
 		return 0, fmt.Errorf("replace courses: %w", err)
 	}
+
+	s.sendScheduleChangeNotification(ctx, userID, userRole, "导入", fmt.Sprintf("导入了 %d 门课程", len(courses)))
 
 	return len(courses), nil
 }
@@ -213,7 +224,7 @@ func (s *ScheduleService) SaveUploadToTemp(
 }
 
 // CreateCourse 手动添加单条课程，返回课程ID
-func (s *ScheduleService) CreateCourse(ctx context.Context, userID uint, req *dto.CreateCourseRequest) (uint, error) {
+func (s *ScheduleService) CreateCourse(ctx context.Context, userID uint, userRole int, req *dto.CreateCourseRequest) (uint, error) {
 	if userID == 0 {
 		return 0, response.ErrForbidden()
 	}
@@ -238,11 +249,14 @@ func (s *ScheduleService) CreateCourse(ctx context.Context, userID uint, req *dt
 	if err := s.courseRepo.Create(ctx, course); err != nil {
 		return 0, err
 	}
+
+	s.sendScheduleChangeNotification(ctx, userID, userRole, "创建", fmt.Sprintf("课程: %s", req.CourseName))
+
 	return course.ID, nil
 }
 
 // UpdateCourse 更新课程，校验归属权限
-func (s *ScheduleService) UpdateCourse(ctx context.Context, userID uint, courseID uint, req *dto.UpdateCourseRequest) error {
+func (s *ScheduleService) UpdateCourse(ctx context.Context, userID uint, userRole int, courseID uint, req *dto.UpdateCourseRequest) error {
 	if userID == 0 {
 		return response.ErrForbidden()
 	}
@@ -271,11 +285,17 @@ func (s *ScheduleService) UpdateCourse(ctx context.Context, userID uint, courseI
 		Section:    req.Section,
 		WeekList:   req.WeekList,
 	}
-	return s.courseRepo.Update(ctx, updates)
+	if err := s.courseRepo.Update(ctx, updates); err != nil {
+		return err
+	}
+
+	s.sendScheduleChangeNotification(ctx, userID, userRole, "更新", fmt.Sprintf("课程: %s", req.CourseName))
+
+	return nil
 }
 
 // DeleteCourse 删除课程，校验归属权限
-func (s *ScheduleService) DeleteCourse(ctx context.Context, userID uint, courseID uint) error {
+func (s *ScheduleService) DeleteCourse(ctx context.Context, userID uint, userRole int, courseID uint) error {
 	if userID == 0 {
 		return response.ErrForbidden()
 	}
@@ -295,7 +315,13 @@ func (s *ScheduleService) DeleteCourse(ctx context.Context, userID uint, courseI
 	}
 
 	// 3. 执行删除
-	return s.courseRepo.Delete(ctx, courseID)
+	if err := s.courseRepo.Delete(ctx, courseID); err != nil {
+		return err
+	}
+
+	s.sendScheduleChangeNotification(ctx, userID, userRole, "删除", fmt.Sprintf("课程ID: %d", courseID))
+
+	return nil
 }
 
 // GetCourseDetail 获取课程详情，校验归属权限
@@ -322,7 +348,7 @@ func (s *ScheduleService) GetCourseDetail(ctx context.Context, userID uint, cour
 }
 
 // CopyFromUser 从指定用户复制全部课程到当前用户（覆盖）
-func (s *ScheduleService) CopyFromUser(ctx context.Context, currentUserID, sourceUserID uint) (int, error) {
+func (s *ScheduleService) CopyFromUser(ctx context.Context, currentUserID uint, currentUserRole int, sourceUserID uint) (int, error) {
 	// 1. 参数验证
 	if currentUserID == 0 {
 		return 0, response.ErrForbidden()
@@ -335,7 +361,7 @@ func (s *ScheduleService) CopyFromUser(ctx context.Context, currentUserID, sourc
 	}
 
 	// 2. 验证源用户存在（同租户校验由 GORM 插件自动处理）
-	_, err := s.userRepo.FindByID(ctx, sourceUserID)
+	sourceUser, err := s.userRepo.FindByID(ctx, sourceUserID)
 	if err != nil {
 		if errors.Is(err, repository.ErrUserNotFound) {
 			return 0, response.ErrNotFoundWithMsg("源用户不存在")
@@ -380,6 +406,8 @@ func (s *ScheduleService) CopyFromUser(ctx context.Context, currentUserID, sourc
 		return 0, fmt.Errorf("替换课程失败: %w", err)
 	}
 
+	s.sendScheduleChangeNotification(ctx, currentUserID, currentUserRole, "复制", fmt.Sprintf("从 %s 复制了 %d 门课程", sourceUser.Name, len(copiedCourses)))
+
 	return len(copiedCourses), nil
 }
 
@@ -420,4 +448,100 @@ func hasDeptIntersection(a, b []int64) bool {
 		}
 	}
 	return false
+}
+
+// sendScheduleChangeNotification 异步发送课表变更通知
+func (s *ScheduleService) sendScheduleChangeNotification(
+	ctx context.Context,
+	operatorID uint,
+	operatorRole int,
+	changeType string,
+	details string,
+) {
+	go func() {
+		bgCtx := context.Background()
+		if tenantID, ok := tenantctx.TenantIDFrom(ctx); ok {
+			bgCtx = tenantctx.WithTenantID(bgCtx, tenantID)
+		}
+
+		if err := s.doSendScheduleChangeNotification(bgCtx, operatorID, operatorRole, changeType, details); err != nil {
+			if s.logger != nil {
+				s.logger.Warnw("发送课表变更通知失败",
+					"operator_id", operatorID,
+					"change_type", changeType,
+					"error", err,
+				)
+			}
+		}
+	}()
+}
+
+// doSendScheduleChangeNotification 实际发送通知的逻辑
+func (s *ScheduleService) doSendScheduleChangeNotification(
+	ctx context.Context,
+	operatorID uint,
+	operatorRole int,
+	changeType string,
+	details string,
+) error {
+	if s.dingMgr == nil {
+		return fmt.Errorf("钉钉客户端管理器未初始化")
+	}
+
+	tenant, dingClient, err := s.dingMgr.FromContext(ctx)
+	if err != nil {
+		return fmt.Errorf("获取钉钉客户端失败: %w", err)
+	}
+
+	if tenant.AgentID == "" {
+		return fmt.Errorf("钉钉 AgentID 未配置")
+	}
+
+	operator, err := s.userRepo.FindByID(ctx, operatorID)
+	if err != nil {
+		return fmt.Errorf("查询操作者信息失败: %w", err)
+	}
+
+	var targetUsers []model.User
+	if operatorRole >= consts.RoleAdmin {
+		targetUsers = []model.User{*operator}
+	} else {
+		admins, err := s.userRepo.ListByRole(ctx, consts.RoleAdmin)
+		if err != nil {
+			return fmt.Errorf("查询管理员列表失败: %w", err)
+		}
+
+		userMap := make(map[uint]model.User)
+		userMap[operator.ID] = *operator
+		for _, admin := range admins {
+			userMap[admin.ID] = admin
+		}
+
+		targetUsers = make([]model.User, 0, len(userMap))
+		for _, user := range userMap {
+			targetUsers = append(targetUsers, user)
+		}
+	}
+
+	dingUserIDs := make([]string, 0, len(targetUsers))
+	for _, user := range targetUsers {
+		if user.DingUserID != "" {
+			dingUserIDs = append(dingUserIDs, user.DingUserID)
+		}
+	}
+
+	if len(dingUserIDs) == 0 {
+		return nil
+	}
+
+	content := fmt.Sprintf("【课表变更通知】\n用户 %s 进行了课表%s操作", operator.Name, changeType)
+	if details != "" {
+		content += fmt.Sprintf("\n详情: %s", details)
+	}
+
+	if err := dingClient.SendWorkNoticeText(ctx, tenant.AgentID, dingUserIDs, content); err != nil {
+		return errs.WrapMsgErr("发送钉钉通知失败", err)
+	}
+
+	return nil
 }

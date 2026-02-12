@@ -23,6 +23,17 @@ func NewScheduleHandler(scheduleSrv *service.ScheduleService) *ScheduleHandler {
 func (h *ScheduleHandler) Import(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
 
+	roleVal, exists := ctx.Get("user_role")
+	if !exists {
+		response.Fail(ctx, response.CodeUnauthorized, "用户角色信息缺失")
+		return
+	}
+	userRole, ok := roleVal.(int)
+	if !ok {
+		response.Fail(ctx, response.CodeUnauthorized, "用户角色格式错误")
+		return
+	}
+
 	fileHeader, err := ctx.FormFile("file")
 	if err != nil {
 		response.Fail(ctx, response.CodeMissingParam, "缺少文件参数")
@@ -38,7 +49,7 @@ func (h *ScheduleHandler) Import(ctx *gin.Context) {
 		return
 	}
 
-	count, err := h.scheduleSrv.ImportFromFile(ctx.Request.Context(), userID, tmpPath)
+	count, err := h.scheduleSrv.ImportFromFile(ctx.Request.Context(), userID, userRole, tmpPath)
 	if err != nil {
 		response.FailWithError(ctx, err)
 		return
@@ -127,13 +138,24 @@ func (h *ScheduleHandler) ListAll(ctx *gin.Context) {
 func (h *ScheduleHandler) Create(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
 
+	roleVal, exists := ctx.Get("user_role")
+	if !exists {
+		response.Fail(ctx, response.CodeUnauthorized, "用户角色信息缺失")
+		return
+	}
+	userRole, ok := roleVal.(int)
+	if !ok {
+		response.Fail(ctx, response.CodeUnauthorized, "用户角色格式错误")
+		return
+	}
+
 	var req dto.CreateCourseRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		response.Fail(ctx, response.CodeInvalidParam, err.Error())
 		return
 	}
 
-	courseID, err := h.scheduleSrv.CreateCourse(ctx.Request.Context(), userID, &req)
+	courseID, err := h.scheduleSrv.CreateCourse(ctx.Request.Context(), userID, userRole, &req)
 	if err != nil {
 		response.FailWithError(ctx, err)
 		return
@@ -148,6 +170,17 @@ func (h *ScheduleHandler) Create(ctx *gin.Context) {
 func (h *ScheduleHandler) Update(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
 
+	roleVal, exists := ctx.Get("user_role")
+	if !exists {
+		response.Fail(ctx, response.CodeUnauthorized, "用户角色信息缺失")
+		return
+	}
+	userRole, ok := roleVal.(int)
+	if !ok {
+		response.Fail(ctx, response.CodeUnauthorized, "用户角色格式错误")
+		return
+	}
+
 	courseID, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
 	if err != nil {
 		response.Fail(ctx, response.CodeInvalidParam, "无效的课程ID")
@@ -160,7 +193,7 @@ func (h *ScheduleHandler) Update(ctx *gin.Context) {
 		return
 	}
 
-	if err := h.scheduleSrv.UpdateCourse(ctx.Request.Context(), userID, uint(courseID), &req); err != nil {
+	if err := h.scheduleSrv.UpdateCourse(ctx.Request.Context(), userID, userRole, uint(courseID), &req); err != nil {
 		response.FailWithError(ctx, err)
 		return
 	}
@@ -173,13 +206,24 @@ func (h *ScheduleHandler) Update(ctx *gin.Context) {
 func (h *ScheduleHandler) Delete(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")
 
+	roleVal, exists := ctx.Get("user_role")
+	if !exists {
+		response.Fail(ctx, response.CodeUnauthorized, "用户角色信息缺失")
+		return
+	}
+	userRole, ok := roleVal.(int)
+	if !ok {
+		response.Fail(ctx, response.CodeUnauthorized, "用户角色格式错误")
+		return
+	}
+
 	courseID, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
 	if err != nil {
 		response.Fail(ctx, response.CodeInvalidParam, "无效的课程ID")
 		return
 	}
 
-	if err := h.scheduleSrv.DeleteCourse(ctx.Request.Context(), userID, uint(courseID)); err != nil {
+	if err := h.scheduleSrv.DeleteCourse(ctx.Request.Context(), userID, userRole, uint(courseID)); err != nil {
 		response.FailWithError(ctx, err)
 		return
 	}
@@ -216,13 +260,24 @@ func (h *ScheduleHandler) CopyFromUser(ctx *gin.Context) {
 		return
 	}
 
+	roleVal, exists := ctx.Get("user_role")
+	if !exists {
+		response.Fail(ctx, response.CodeUnauthorized, "用户角色信息缺失")
+		return
+	}
+	userRole, ok := roleVal.(int)
+	if !ok {
+		response.Fail(ctx, response.CodeUnauthorized, "用户角色格式错误")
+		return
+	}
+
 	var req dto.CopyFromUserRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		response.Fail(ctx, response.CodeInvalidParam, response.TranslateValidationError(err))
 		return
 	}
 
-	count, err := h.scheduleSrv.CopyFromUser(ctx.Request.Context(), userID, req.SourceUserID)
+	count, err := h.scheduleSrv.CopyFromUser(ctx.Request.Context(), userID, userRole, req.SourceUserID)
 	if err != nil {
 		response.FailWithError(ctx, err)
 		return

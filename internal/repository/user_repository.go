@@ -56,6 +56,8 @@ type UserRepository interface {
 	FindDepartments(ctx context.Context, userID uint) ([]model.Department, error)
 	// GetUserDepartmentNames 批量获取用户的部门名称（多个部门用逗号分隔）
 	GetUserDepartmentNames(ctx context.Context, userIDs []uint) (map[uint]string, error)
+	// ListByRole 根据角色查询用户
+	ListByRole(ctx context.Context, role int) ([]model.User, error)
 }
 
 type userRepository struct {
@@ -475,4 +477,16 @@ func (r *userRepository) GetUserDepartmentNames(ctx context.Context, userIDs []u
 	}
 
 	return result, nil
+}
+
+// ListByRole 根据角色查询用户
+func (r *userRepository) ListByRole(ctx context.Context, role int) ([]model.User, error) {
+	var users []model.User
+	if err := r.db.WithContext(ctx).
+		Where("role >= ?", role).
+		Order("id ASC").
+		Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
 }
