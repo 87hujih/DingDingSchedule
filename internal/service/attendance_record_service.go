@@ -864,12 +864,15 @@ func (s *AttendanceRecordService) GetAttendanceText(
 		mode = model.ScheduleModeSchool
 	}
 
-	// 3. 生成文本格式
-	return s.formatAttendanceText(detail, mode), nil
+	// 3. 获取当前生效的作息时间配置（用于获取节次名称）
+	periods := s.resolveActivePeriods(ctx)
+
+	// 4. 生成文本格式
+	return s.formatAttendanceText(detail, mode, periods), nil
 }
 
 // formatAttendanceText 将考勤详情格式化为文本
-func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDetailResponse, mode string) *dto.AttendanceTextResponse {
+func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDetailResponse, mode string, periods []config.Period) *dto.AttendanceTextResponse {
 	// 解析日期以获取星期几
 	date, _ := time.ParseInLocation("2006-01-02", detail.Date, time.Local)
 	weekdayNum := scheduleutil.WeekdayMon1Sun7(date)
@@ -890,8 +893,13 @@ func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDet
 			periodLabel = "第" + intToString(detail.Section) + "次"
 		}
 	} else {
-		// 上学模式：使用第X节
-		periodLabel = "第" + intToString(detail.Section) + "节"
+		// 上学模式：使用 schedule_periods 中的 name 字段
+		if detail.Section > 0 && detail.Section <= len(periods) {
+			periodLabel = periods[detail.Section-1].Name
+		} else {
+			// 回退到默认格式
+			periodLabel = "第" + intToString(detail.Section) + "节"
+		}
 	}
 
 	// 构建标题：根据模式决定是否显示周次
