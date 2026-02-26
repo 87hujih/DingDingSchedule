@@ -53,9 +53,9 @@ func RunServer() {
 
 	// 启动服务
 	go func() {
-		global.Log.Infof("服务启动，端口: %d", cfg.Port)
+		global.Log.Infow("服务启动", "port", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			global.Log.Fatalf("服务启动失败: %v", err)
+			global.Log.Fatalw("服务启动失败", "error", err)
 		}
 	}()
 
@@ -64,7 +64,7 @@ func RunServer() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	global.Log.Info("正在关闭服务...")
+	global.Log.Infow("正在关闭服务...")
 
 	// 停止钉钉 Stream 客户端
 	streamCancel()
@@ -82,20 +82,20 @@ func RunServer() {
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		global.Log.Errorf("服务强制关闭: %v", err)
+		global.Log.Errorw("服务强制关闭", "error", err)
 	}
 
 	// 关闭数据库连接
 	if goAdminEng != nil {
 		if errs := goAdminEng.DefaultConnection().Close(); len(errs) > 0 {
-			global.Log.Warnf("关闭 GoAdmin DB 连接失败: %v", errs)
+			global.Log.Warnw("关闭 GoAdmin DB 连接失败", "errors", errs)
 		}
 	}
 	if sqlDB, err := global.DB.DB(); err == nil {
 		_ = sqlDB.Close()
 	}
 
-	global.Log.Info("服务已退出")
+	global.Log.Infow("服务已退出")
 }
 
 // startDingTalkStream 启动钉钉 Stream 客户端（多租户模式）

@@ -17,6 +17,7 @@ var Generators = table.GeneratorList{
 	"semesters":         GetSemesterTable,
 	"schedule_periods":  GetSchedulePeriodTable,
 	"schedule_settings": GetScheduleSettingTable,
+	"audit_logs":        GetAuditLogTable,
 }
 
 // GetTenantTable tenants 表的 CRUD 配置

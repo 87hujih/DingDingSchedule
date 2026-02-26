@@ -45,11 +45,11 @@ func (m *StreamClientManager) StartAll(ctx context.Context, eventHandler func(ct
 	}
 
 	if len(tenants) == 0 {
-		m.logger.Warn("没有找到活跃的租户，跳过 Stream 客户端启动")
+		m.logger.Warnw("没有找到活跃的租户，跳过 Stream 客户端启动")
 		return nil
 	}
 
-	m.logger.Infof("准备启动 %d 个租户的 Stream 客户端", len(tenants))
+	m.logger.Infow("准备启动 Stream 客户端", "tenantCount", len(tenants))
 
 	// 为每个租户启动 Stream 客户端
 	for _, tenant := range tenants {
@@ -127,7 +127,7 @@ func (m *StreamClientManager) StartForTenant(parentCtx context.Context, tenant *
 			m.logger.Errorw("租户 Stream 客户端运行失败",
 				"tenantID", tenant.ID,
 				"corpID", tenant.CorpID,
-				"err", err,
+				"error", err,
 			)
 		}
 

@@ -27,6 +27,9 @@ func registerAdminRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 			users.POST("/:id/status", h.UserHdl.UpdateStatus) // 更新用户考勤状态
 			users.DELETE("/:id", h.UserHdl.Delete)            // 删除用户（软删除）
 		}
+
+		// 审计日志
+		registerAuditLogRoutes(admin, h)
 	}
 
 	// 超级管理员路由（需鉴权 + 超级管理员权限）

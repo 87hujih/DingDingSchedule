@@ -18,6 +18,7 @@ type Service struct {
 	SemesterSrv         *SemesterService
 	AttendanceRecordSrv *AttendanceRecordService
 	SchedulePeriodSrv   *SchedulePeriodService
+	AuditLogSrv         *AuditLogService
 }
 
 // NewService 创建服务层实例
@@ -55,5 +56,6 @@ func NewService(repo *repository.Repository, dingMgr *DingTalkClientManager, jwt
 		SemesterSrv:         semesterSrv,
 		AttendanceRecordSrv: attendanceRecordSrv,
 		SchedulePeriodSrv:   schedulePeriodSrv,
+		AuditLogSrv:         NewAuditLogService(repo.AuditLogRepo, logger),
 	}
 }

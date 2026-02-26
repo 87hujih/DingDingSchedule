@@ -9,8 +9,8 @@ require (
 	github.com/GoAdminGroup/themes v0.0.48
 	github.com/PuerkitoBio/goquery v1.8.1
 	github.com/extrame/xls v0.0.1
-	github.com/gin-gonic/gin v1.8.2
-	github.com/go-playground/validator/v10 v10.11.1
+	github.com/gin-gonic/gin v1.9.1
+	github.com/go-playground/validator/v10 v10.14.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/mozillazg/go-pinyin v0.21.0
 	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.1
@@ -32,11 +32,14 @@ require (
 	github.com/GoAdminGroup/html v0.0.1 // indirect
 	github.com/NebulousLabs/fastrand v0.0.0-20181203155948-6fb6489aac4e // indirect
 	github.com/andybalholm/cascadia v1.3.2 // indirect
+	github.com/bytedance/sonic v1.9.1 // indirect
+	github.com/chenzhuoyu/base64x v0.0.0-20221115062448-fe3a3abad311 // indirect
 	github.com/extrame/ole2 v0.0.0-20160812065207-d69429661ad7 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.2 // indirect
 	github.com/gin-contrib/sse v1.1.0 // indirect
-	github.com/go-playground/locales v0.14.0 // indirect
-	github.com/go-playground/universal-translator v0.18.0 // indirect
+	github.com/go-playground/locales v0.14.1 // indirect
+	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-sql-driver/mysql v1.9.3 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
@@ -46,6 +49,7 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.4 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/magiconair/properties v1.8.7 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -64,10 +68,12 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/syndtr/goleveldb v1.0.0 // indirect
+	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	github.com/xuri/efp v0.0.1 // indirect
 	github.com/xuri/nfp v0.0.2-0.20250530014748-2ddeb826f9a9 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
+	golang.org/x/arch v0.3.0 // indirect
 	golang.org/x/exp v0.0.0-20240112132812-db7319d0e0e3 // indirect
 	golang.org/x/sys v0.17.0 // indirect
 	google.golang.org/protobuf v1.35.2 // indirect
