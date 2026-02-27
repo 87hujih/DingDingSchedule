@@ -36,6 +36,7 @@ type AttendanceTextRequest struct {
 
 // AttendanceDetailResponse 考勤详情响应
 type AttendanceDetailResponse struct {
+	RecordID   uint                 `json:"record_id"`
 	Date       string               `json:"date"`
 	Week       int                  `json:"week"`
 	Section    int                  `json:"section"`
@@ -249,9 +250,10 @@ func NewAttendanceDetailResponseFromRecord(
 	}
 
 	return &AttendanceDetailResponse{
-		Date:    record.Date.Format("2006-01-02"),
-		Week:    record.Week,
-		Section: record.Section,
+		RecordID: record.ID,
+		Date:     record.Date.Format("2006-01-02"),
+		Week:     record.Week,
+		Section:  record.Section,
 		SlotTime: SlotTimeInfo{
 			Start: slotStart,
 			End:   slotEnd,
