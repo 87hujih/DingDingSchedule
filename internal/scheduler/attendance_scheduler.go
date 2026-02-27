@@ -3,10 +3,12 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"schedule_server/config"
 	"schedule_server/internal/dto"
+	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
 	"schedule_server/internal/service"
 	"schedule_server/internal/tenantctx"
@@ -35,6 +37,9 @@ type AttendanceScheduler struct {
 
 	// tenantJobs 存储每个租户的调度任务ID
 	tenantJobs map[uint][]cron.EntryID
+
+	// tenantPeriodKeys 存储每个租户当前作息配置的指纹，用于跳过无变化的重载
+	tenantPeriodKeys map[uint]string
 }
 
 // NewAttendanceScheduler 创建考勤调度器
@@ -55,8 +60,9 @@ func NewAttendanceScheduler(
 		attendanceRecordSrv:  attendanceRecordSrv,
 		semesterSrv:          semesterSrv,
 		logger:               logger,
-		delayAfterClassStart: 0,
+		delayAfterClassStart: scheduleCfg.TriggerDelayMinutes,
 		tenantJobs:           make(map[uint][]cron.EntryID),
+		tenantPeriodKeys:     make(map[uint]string),
 	}
 }
 
@@ -140,10 +146,17 @@ func (s *AttendanceScheduler) reloadTenantSchedule(tenantID uint) {
 		return
 	}
 
-	// 2. 移除该租户的旧任务
+	// 2. 计算作息配置指纹，配置未变化时跳过重建
+	newKey := buildPeriodsKey(periods)
+	if s.tenantPeriodKeys[tenantID] == newKey {
+		return
+	}
+	s.tenantPeriodKeys[tenantID] = newKey
+
+	// 3. 移除该租户的旧任务
 	s.removeTenantJobs(tenantID)
 
-	// 3. 为每个作息时段创建新任务
+	// 4. 为每个作息时段创建新任务
 	var newEntryIDs []cron.EntryID
 	for i, period := range periods {
 		section := i + 1
@@ -180,7 +193,7 @@ func (s *AttendanceScheduler) reloadTenantSchedule(tenantID uint) {
 		newEntryIDs = append(newEntryIDs, entryID)
 	}
 
-	// 4. 保存新任务ID
+	// 5. 保存新任务ID
 	s.tenantJobs[tenantID] = newEntryIDs
 }
 
@@ -190,6 +203,13 @@ func (s *AttendanceScheduler) loadTenantScheduleFromConfig(tenantID uint) {
 		s.logger.Warnw("配置文件中无作息配置", "tenantId", tenantID)
 		return
 	}
+
+	// 计算配置文件指纹，配置未变化时跳过重建
+	newKey := buildConfigPeriodsKey(s.scheduleCfg.Periods)
+	if s.tenantPeriodKeys[tenantID] == newKey {
+		return
+	}
+	s.tenantPeriodKeys[tenantID] = newKey
 
 	// 移除旧任务
 	s.removeTenantJobs(tenantID)
@@ -239,6 +259,25 @@ func (s *AttendanceScheduler) removeTenantJobs(tenantID uint) {
 		}
 		delete(s.tenantJobs, tenantID)
 	}
+}
+
+// buildPeriodsKey 根据数据库作息配置构建指纹字符串
+// 格式: "id1:startTime1,id2:startTime2,..."
+func buildPeriodsKey(periods []*model.SchedulePeriod) string {
+	parts := make([]string, len(periods))
+	for i, p := range periods {
+		parts[i] = fmt.Sprintf("%d:%s", p.ID, p.StartTime)
+	}
+	return strings.Join(parts, ",")
+}
+
+// buildConfigPeriodsKey 根据配置文件作息配置构建指纹字符串
+func buildConfigPeriodsKey(periods []config.Period) string {
+	parts := make([]string, len(periods))
+	for i, p := range periods {
+		parts[i] = "cfg:" + p.Start
+	}
+	return strings.Join(parts, ",")
 }
 
 // buildCronExpressionFromTime 从数据库时间格式构建cron表达式
@@ -316,17 +355,16 @@ func (s *AttendanceScheduler) triggerAttendanceForTenant(tenantID uint, section 
 	// 获取当前周数
 	week, err := s.semesterSrv.GetCurrentWeek(ctx)
 	if err != nil {
-		// 假期模式下，不受学期配置限制，使用周数 0 继续执行
-		if currentMode == "holiday" {
-			week = 0
-		} else {
-			s.logger.Warnw("获取当前周数失败",
+		// 无法获取周数（假期模式、学期未配置或日期超出学期范围）
+		// 统一使用 week=0 继续执行，服务层会自动切换为全体应到模式
+		if currentMode != "holiday" {
+			s.logger.Warnw("获取当前周数失败，切换全体应到模式执行考勤",
 				"tenantId", tenantID,
 				"tenantName", tenant.Name,
 				"err", err,
 			)
-			return
 		}
+		week = 0
 	}
 
 	date := now.Format("2006-01-02")

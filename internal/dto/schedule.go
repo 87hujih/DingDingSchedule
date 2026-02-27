@@ -165,10 +165,11 @@ type CopyFromUserResponse struct {
 
 // CourseAttendanceUserItem 课节考勤中的用户信息
 type CourseAttendanceUserItem struct {
-	ID     uint   `json:"id"`
-	Name   string `json:"name"`
-	Avatar string `json:"avatar"`
-	Phone  string `json:"phone"`
+	ID       uint   `json:"id"`
+	Name     string `json:"name"`
+	Avatar   string `json:"avatar"`
+	Phone    string `json:"phone"`
+	DeptName string `json:"dept_name,omitempty"`
 }
 
 // SlotAttendanceStatusResponse 时段考勤状态响应（不依赖课程ID）

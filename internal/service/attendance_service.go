@@ -23,6 +23,7 @@ import (
 type AttendanceService struct {
 	repo              repository.AttendanceRepository
 	leaveApprovalRepo repository.LeaveApprovalRepository
+	userRepo          repository.UserRepository
 	dingMgr           *DingTalkClientManager
 	schedulePeriodSrv *SchedulePeriodService // 从数据库读取作息时间
 	semesterSrv       *SemesterService       // 学期服务
@@ -30,10 +31,11 @@ type AttendanceService struct {
 	logger            *zap.SugaredLogger
 }
 
-func NewAttendanceService(repo repository.AttendanceRepository, leaveApprovalRepo repository.LeaveApprovalRepository, dingMgr *DingTalkClientManager, schedulePeriodSrv *SchedulePeriodService, semesterSrv *SemesterService, scheduleCfg config.Schedule, logger *zap.SugaredLogger) *AttendanceService {
+func NewAttendanceService(repo repository.AttendanceRepository, leaveApprovalRepo repository.LeaveApprovalRepository, userRepo repository.UserRepository, dingMgr *DingTalkClientManager, schedulePeriodSrv *SchedulePeriodService, semesterSrv *SemesterService, scheduleCfg config.Schedule, logger *zap.SugaredLogger) *AttendanceService {
 	return &AttendanceService{
 		repo:              repo,
 		leaveApprovalRepo: leaveApprovalRepo,
+		userRepo:          userRepo,
 		dingMgr:           dingMgr,
 		schedulePeriodSrv: schedulePeriodSrv,
 		semesterSrv:       semesterSrv,
@@ -102,6 +104,23 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 	onLeaveItems, err := s.computeOnLeaveUserItems(ctx, shouldArriveUsers, sessionStart, sessionEnd)
 	if err != nil {
 		return nil, err
+	}
+
+	// 批量查询部门名称并填充
+	userIDs := make([]uint, 0, len(shouldArriveUsers))
+	for _, u := range shouldArriveUsers {
+		userIDs = append(userIDs, u.ID)
+	}
+	deptNameMap, err := s.userRepo.GetUserDepartmentNames(ctx, userIDs)
+	if err != nil {
+		s.logger.Warnw("查询部门名称失败，部门信息将为空", "error", err)
+		deptNameMap = make(map[uint]string)
+	}
+	for i := range shouldArriveItems {
+		shouldArriveItems[i].DeptName = deptNameMap[shouldArriveItems[i].ID]
+	}
+	for i := range onLeaveItems {
+		onLeaveItems[i].DeptName = deptNameMap[onLeaveItems[i].ID]
 	}
 
 	return &dto.SlotAttendanceStatusResponse{

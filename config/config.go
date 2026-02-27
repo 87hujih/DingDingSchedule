@@ -113,7 +113,9 @@ type WiFi struct {
 
 // Schedule 作息表配置
 type Schedule struct {
-	Periods []Period `mapstructure:"periods" yaml:"periods"`
+	Periods             []Period `mapstructure:"periods" yaml:"periods"`
+	LateGraceMinutes    int      `mapstructure:"late_grace_minutes" yaml:"late_grace_minutes"`       // 宽限分钟数：上课后多少分钟内到不算迟到（deadline = slotStart + grace）
+	TriggerDelayMinutes int      `mapstructure:"trigger_delay_minutes" yaml:"trigger_delay_minutes"` // 触发延迟（分钟）：上课后多少分钟执行考勤统计，须 >= late_grace_minutes
 }
 type Period struct {
 	Name  string `mapstructure:"name" yaml:"name"`

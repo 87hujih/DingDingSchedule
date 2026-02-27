@@ -119,8 +119,8 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 	}
 
 	// 6. 获取打卡记录（只返回正常打卡的人）
-	// 【修改】传入 section 参数用于计算打卡窗口
-	onTime, lateUsers, err := s.getOnTimeUsers(ctx, shouldAttend, date, req.Section, slotStart, slotEnd)
+	lateDeadline := slotStart.Add(time.Duration(s.scheduleCfg.LateGraceMinutes) * time.Minute)
+	onTime, _, err := s.getOnTimeUsers(ctx, shouldAttend, date, req.Section, lateDeadline, slotEnd)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -134,13 +134,16 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 	// 8. 计算未到人员（应到 - 正常打卡 - 请假）
 	notArrived := s.calculateNotArrived(shouldAttend, onTime, leave)
 
-	// 9. 构建响应
+	// 9. 需要通知的人员：应到但未正常打卡且未请假（含迟到和缺勤）
+	notifyUsers := buildNotifyList(shouldAttend, onTime, leave)
+
+	// 10. 构建响应
 	return dto.NewAttendanceDetailResponse(
 		req.Date, req.Week, req.Section,
 		periods[req.Section-1].Start,
 		periods[req.Section-1].End,
 		shouldAttend, onTime, leave, notArrived,
-	), lateUsers, nil
+	), notifyUsers, nil
 }
 
 // SaveAttendanceRecord 保存考勤记录到数据库
@@ -497,7 +500,7 @@ func (s *AttendanceRecordService) SendLateNotifications(
 			periodLabel = fmt.Sprintf("第%d次", section)
 		}
 	}
-	content := fmt.Sprintf("你在%s %s考勤(%s-%s)迟到，请及时补签或联系管理员。", date, periodLabel, slotStart, slotEnd)
+	content := fmt.Sprintf("你在%s %s考勤(%s-%s)未正常打卡，请及时补签或联系管理员。", date, periodLabel, slotStart, slotEnd)
 	if err := dingClient.SendWorkNoticeText(ctx, tenant.AgentID, dingUserIDs, content); err != nil {
 		return errs.WrapMsgErr("发送钉钉迟到提醒失败", err)
 	}
@@ -581,6 +584,25 @@ func (s *AttendanceRecordService) calculateNotArrived(
 	}
 
 	return notArrived
+}
+
+// buildNotifyList 返回需要发送通知的人员：应到但未正常打卡且未请假（含迟到和缺勤）
+// 逻辑与 calculateNotArrived 相同，但保留完整 model.User（含 DingUserID）
+func buildNotifyList(shouldAttend []model.User, onTime []dto.AttendanceUserCheck, leave []dto.AttendanceUserLeave) []model.User {
+	processed := make(map[uint]bool, len(onTime)+len(leave))
+	for _, u := range onTime {
+		processed[u.ID] = true
+	}
+	for _, u := range leave {
+		processed[u.ID] = true
+	}
+	result := make([]model.User, 0)
+	for _, u := range shouldAttend {
+		if !processed[u.ID] {
+			result = append(result, u)
+		}
+	}
+	return result
 }
 
 // 序列化方法
