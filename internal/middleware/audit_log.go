@@ -28,8 +28,11 @@ func AuditLog(auditSvc *service.AuditLogService) gin.HandlerFunc {
 		start := time.Now()
 
 		// 读取 body（限 4KB），然后恢复，让后续 handler 能正常读取
+		// multipart/form-data（文件上传）不读取 body，避免截断导致解析失败
 		var bodyStr string
-		if c.Request.Body != nil {
+		contentType := c.Request.Header.Get("Content-Type")
+		isMultipart := len(contentType) >= 9 && contentType[:9] == "multipart"
+		if c.Request.Body != nil && !isMultipart {
 			bodyBytes, _ := io.ReadAll(io.LimitReader(c.Request.Body, maxBodySize))
 			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 			bodyStr = string(bodyBytes)
