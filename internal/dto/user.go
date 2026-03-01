@@ -18,6 +18,7 @@ type GetUserResponse struct {
 	ID        uint             `json:"id"`
 	Name      string           `json:"name"`
 	Role      string           `json:"role"`
+	Status    int              `json:"status"`
 	Avatar    string           `json:"avatar"`
 	Phone     string           `json:"phone"`
 	Depts     []DepartmentItem `json:"departments"`
@@ -46,6 +47,7 @@ func NewGetUserResponseWithTenant(u *model.User, depts []model.Department, tenan
 		ID:        u.ID,
 		Name:      u.Name,
 		Role:      consts.RoleName(u.Role),
+		Status:    u.Status,
 		Avatar:    u.Avatar,
 		Phone:     u.Phone,
 		Depts:     items,
