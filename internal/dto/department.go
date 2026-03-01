@@ -7,6 +7,7 @@ type DepartmentItem struct {
 	DeptID   int64  `json:"dept_id"`
 	Name     string `json:"name"`
 	ParentID int64  `json:"parent_id"`
+	Status   int    `json:"status"` // 部门是否参与考勤(1:参与;0:不参与)
 }
 
 // DepartmentListResponse 部门列表响应
@@ -22,6 +23,7 @@ func NewDepartmentListResponse(depts []model.Department) *DepartmentListResponse
 			DeptID:   d.DeptID,
 			Name:     d.Name,
 			ParentID: d.ParentID,
+			Status:   d.Status,
 		})
 	}
 	return &DepartmentListResponse{Items: items}
