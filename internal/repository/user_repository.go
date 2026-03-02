@@ -131,7 +131,7 @@ func (r *userRepository) ListByScope(ctx context.Context, deptIDs []int64, onlyU
 	switch {
 	case hasDeptIDs && hasUserIDs:
 		q = q.Joins("LEFT JOIN user_departments ud ON ud.user_id = users.id AND ud.tenant_id = users.tenant_id").
-			Where("(ud.dept_id IN ? OR users.id IN ?)", cleanDeptIDs, onlyUserIDs)
+			Where("ud.dept_id IN ? AND users.id IN ?", cleanDeptIDs, onlyUserIDs)
 	case hasDeptIDs:
 		q = q.Joins("LEFT JOIN user_departments ud ON ud.user_id = users.id AND ud.tenant_id = users.tenant_id").
 			Where("ud.dept_id IN ?", cleanDeptIDs)

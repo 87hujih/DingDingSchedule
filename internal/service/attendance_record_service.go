@@ -810,18 +810,15 @@ func (s *AttendanceRecordService) GetWeeklyRanking(ctx context.Context, req *dto
 	var users []model.User
 
 	if len(req.DeptIDs) > 0 {
-		// 如果指定了部门，先获取部门下的所有用户，然后与迟到列表取交集
-		deptUsers, err := s.userRepo.ListByScope(ctx, req.DeptIDs, nil)
+		// 构造迟到用户ID集合，结合部门进行交集过滤
+		onlyIDs := make([]uint, 0, len(lateCounts))
+		for uid := range lateCounts {
+			onlyIDs = append(onlyIDs, uid)
+		}
+		var err error
+		users, err = s.userRepo.ListByScope(ctx, req.DeptIDs, onlyIDs)
 		if err != nil {
 			return nil, errs.WrapMsgErr("获取部门用户失败", err)
-		}
-
-		// 过滤：只保留在迟到列表中的用户
-		users = make([]model.User, 0)
-		for _, u := range deptUsers {
-			if _, ok := lateCounts[u.ID]; ok {
-				users = append(users, u)
-			}
 		}
 	} else {
 		// 未指定部门，获取所有迟到用户
