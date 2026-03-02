@@ -27,6 +27,7 @@ type AttendanceRecordService struct {
 	courseRepo           repository.CourseRepository
 	leaveRepo            repository.LeaveApprovalRepository
 	attendanceRecordRepo repository.AttendanceRecordRepository
+	scheduleSettingRepo  repository.ScheduleSettingRepository
 	dingMgr              *DingTalkClientManager
 	scheduleCfg          config.Schedule        // 配置文件作为回退
 	schedulePeriodSrv    *SchedulePeriodService // 从数据库读取作息时间
@@ -40,6 +41,7 @@ func NewAttendanceRecordService(
 	courseRepo repository.CourseRepository,
 	leaveRepo repository.LeaveApprovalRepository,
 	attendanceRecordRepo repository.AttendanceRecordRepository,
+	scheduleSettingRepo repository.ScheduleSettingRepository,
 	dingMgr *DingTalkClientManager,
 	schedulePeriodSrv *SchedulePeriodService,
 	semesterSrv *SemesterService,
@@ -51,6 +53,7 @@ func NewAttendanceRecordService(
 		courseRepo:           courseRepo,
 		leaveRepo:            leaveRepo,
 		attendanceRecordRepo: attendanceRecordRepo,
+		scheduleSettingRepo:  scheduleSettingRepo,
 		dingMgr:              dingMgr,
 		schedulePeriodSrv:    schedulePeriodSrv,
 		semesterSrv:          semesterSrv,
@@ -461,6 +464,12 @@ func (s *AttendanceRecordService) SendLateNotifications(
 ) error {
 	if len(lateUsers) == 0 {
 		return nil
+	}
+	if s.scheduleSettingRepo != nil {
+		enabled, _ := s.scheduleSettingRepo.IsLateNotifyEnabled(ctx)
+		if !enabled {
+			return nil
+		}
 	}
 	if s.dingMgr == nil {
 		return response.NewBizError(response.CodeInternalError, "钉钉租户管理器未初始化")

@@ -115,6 +115,26 @@ func (s *SchedulePeriodService) IsAttendanceEnabled(ctx context.Context) (bool, 
 	return s.settingRepo.IsAttendanceEnabled(ctx)
 }
 
+// SetScheduleChangeNotifyEnabled 设置课表变更通知开关
+func (s *SchedulePeriodService) SetScheduleChangeNotifyEnabled(ctx context.Context, enabled bool) error {
+	return s.settingRepo.SetScheduleChangeNotifyEnabled(ctx, enabled)
+}
+
+// IsScheduleChangeNotifyEnabled 检查课表变更通知是否启用
+func (s *SchedulePeriodService) IsScheduleChangeNotifyEnabled(ctx context.Context) (bool, error) {
+	return s.settingRepo.IsScheduleChangeNotifyEnabled(ctx)
+}
+
+// SetLateNotifyEnabled 设置迟到提醒通知开关
+func (s *SchedulePeriodService) SetLateNotifyEnabled(ctx context.Context, enabled bool) error {
+	return s.settingRepo.SetLateNotifyEnabled(ctx, enabled)
+}
+
+// IsLateNotifyEnabled 检查迟到提醒通知是否启用
+func (s *SchedulePeriodService) IsLateNotifyEnabled(ctx context.Context) (bool, error) {
+	return s.settingRepo.IsLateNotifyEnabled(ctx)
+}
+
 // GetScheduleInfo 获取完整的作息配置信息
 func (s *SchedulePeriodService) GetScheduleInfo(ctx context.Context) (*ScheduleInfo, error) {
 	setting, _ := s.settingRepo.GetByTenantID(ctx)

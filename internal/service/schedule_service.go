@@ -25,11 +25,12 @@ import (
 
 // ScheduleService 课表服务
 type ScheduleService struct {
-	userRepo     repository.UserRepository
-	courseRepo   repository.CourseRepository
-	semesterRepo repository.SemesterRepository
-	dingMgr      *DingTalkClientManager
-	logger       *zap.SugaredLogger
+	userRepo            repository.UserRepository
+	courseRepo          repository.CourseRepository
+	semesterRepo        repository.SemesterRepository
+	scheduleSettingRepo repository.ScheduleSettingRepository
+	dingMgr             *DingTalkClientManager
+	logger              *zap.SugaredLogger
 }
 
 // NewScheduleService 创建课表服务
@@ -37,15 +38,17 @@ func NewScheduleService(
 	courseRepo repository.CourseRepository,
 	userRepo repository.UserRepository,
 	semesterRepo repository.SemesterRepository,
+	scheduleSettingRepo repository.ScheduleSettingRepository,
 	dingMgr *DingTalkClientManager,
 	logger *zap.SugaredLogger,
 ) *ScheduleService {
 	return &ScheduleService{
-		userRepo:     userRepo,
-		courseRepo:   courseRepo,
-		semesterRepo: semesterRepo,
-		dingMgr:      dingMgr,
-		logger:       logger,
+		userRepo:            userRepo,
+		courseRepo:          courseRepo,
+		semesterRepo:        semesterRepo,
+		scheduleSettingRepo: scheduleSettingRepo,
+		dingMgr:             dingMgr,
+		logger:              logger,
 	}
 }
 
@@ -492,6 +495,13 @@ func (s *ScheduleService) doSendScheduleChangeNotification(
 	changeType string,
 	details string,
 ) error {
+	if s.scheduleSettingRepo != nil {
+		enabled, _ := s.scheduleSettingRepo.IsScheduleChangeNotifyEnabled(ctx)
+		if !enabled {
+			return nil
+		}
+	}
+
 	if s.dingMgr == nil {
 		return fmt.Errorf("钉钉客户端管理器未初始化")
 	}

@@ -24,6 +24,18 @@ type ScheduleSettingRepository interface {
 
 	// IsAttendanceEnabled 检查考勤是否启用
 	IsAttendanceEnabled(ctx context.Context) (bool, error)
+
+	// SetScheduleChangeNotifyEnabled 设置课表变更通知开关
+	SetScheduleChangeNotifyEnabled(ctx context.Context, enabled bool) error
+
+	// IsScheduleChangeNotifyEnabled 检查课表变更通知是否启用
+	IsScheduleChangeNotifyEnabled(ctx context.Context) (bool, error)
+
+	// SetLateNotifyEnabled 设置迟到提醒通知开关
+	SetLateNotifyEnabled(ctx context.Context, enabled bool) error
+
+	// IsLateNotifyEnabled 检查迟到提醒通知是否启用
+	IsLateNotifyEnabled(ctx context.Context) (bool, error)
 }
 
 type scheduleSettingRepository struct {
@@ -67,4 +79,32 @@ func (r *scheduleSettingRepository) IsAttendanceEnabled(ctx context.Context) (bo
 		return true, err // 默认启用
 	}
 	return setting.AttendanceEnabled, nil
+}
+
+func (r *scheduleSettingRepository) SetScheduleChangeNotifyEnabled(ctx context.Context, enabled bool) error {
+	return r.db.WithContext(ctx).
+		Model(&model.ScheduleSetting{}).
+		Update("schedule_change_notify_enabled", enabled).Error
+}
+
+func (r *scheduleSettingRepository) IsScheduleChangeNotifyEnabled(ctx context.Context) (bool, error) {
+	setting, err := r.GetByTenantID(ctx)
+	if err != nil {
+		return true, err // 默认启用
+	}
+	return setting.ScheduleChangeNotifyEnabled, nil
+}
+
+func (r *scheduleSettingRepository) SetLateNotifyEnabled(ctx context.Context, enabled bool) error {
+	return r.db.WithContext(ctx).
+		Model(&model.ScheduleSetting{}).
+		Update("late_notify_enabled", enabled).Error
+}
+
+func (r *scheduleSettingRepository) IsLateNotifyEnabled(ctx context.Context) (bool, error) {
+	setting, err := r.GetByTenantID(ctx)
+	if err != nil {
+		return true, err // 默认启用
+	}
+	return setting.LateNotifyEnabled, nil
 }
