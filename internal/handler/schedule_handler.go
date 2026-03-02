@@ -251,7 +251,23 @@ func (h *ScheduleHandler) GetDetail(ctx *gin.Context) {
 	response.OK(ctx, dto.NewCourseDetailResponse(course))
 }
 
-// CopyFromUser 从其他用户复制课表
+// DeleteAllCoursesByUser 删除指定用户的全部课程（管理员操作）
+// DELETE /admin/users/:id/courses
+func (h *ScheduleHandler) DeleteAllCoursesByUser(ctx *gin.Context) {
+	targetID, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
+	if err != nil || targetID == 0 {
+		response.Fail(ctx, response.CodeInvalidParam, "无效的用户ID")
+		return
+	}
+
+	if err := h.scheduleSrv.DeleteAllCoursesByUser(ctx.Request.Context(), uint(targetID)); err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	response.OKWithMessage(ctx, "删除成功", nil)
+}
+
 // POST /schedules/copy-from-user
 func (h *ScheduleHandler) CopyFromUser(ctx *gin.Context) {
 	userID := ctx.GetUint("user_id")

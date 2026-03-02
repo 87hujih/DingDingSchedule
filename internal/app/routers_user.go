@@ -20,4 +20,9 @@ func registerUserRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 		// 普通用户搜索 (用于导入他人课表)
 		search.GET("", h.UserHdl.List)
 	}
+	// 部门列表（普通用户可见，用于筛选）
+	departments := rg.Group("/departments")
+	{
+		departments.GET("", h.DeptHdl.List)
+	}
 }

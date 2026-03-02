@@ -411,24 +411,32 @@ func (s *ScheduleService) CopyFromUser(ctx context.Context, currentUserID uint, 
 	return len(copiedCourses), nil
 }
 
+// DeleteAllCoursesByUser 管理员删除指定用户的全部课程
+func (s *ScheduleService) DeleteAllCoursesByUser(ctx context.Context, targetUserID uint) error {
+	if targetUserID == 0 {
+		return response.ErrInvalidParamWithMsg("用户ID不能为空")
+	}
+
+	if err := s.courseRepo.DeleteByUser(ctx, targetUserID); err != nil {
+		return fmt.Errorf("删除课程失败: %w", err)
+	}
+
+	return nil
+}
+
 // resolveTargetUserID 校验访问权限并返回实际查询的用户ID
 func (s *ScheduleService) resolveTargetUserID(ctx context.Context, viewerID uint, viewerRole int, targetUserID uint) (uint, error) {
 	if viewerID == 0 {
 		return 0, response.ErrForbidden()
 	}
 
-	// 未指定目标或目标即为自己
-	if targetUserID == 0 || targetUserID == viewerID {
+	// 未指定目标则查自己
+	if targetUserID == 0 {
 		return viewerID, nil
 	}
 
-	// 管理员及以上可直接查看任意用户
-	if viewerRole >= consts.RoleAdmin {
-		return targetUserID, nil
-	}
-
-	// 普通成员无权查看他人
-	return 0, response.ErrForbidden()
+	// 任何已登录用户均可查看任意用户课表
+	return targetUserID, nil
 }
 
 // hasDeptIntersection 判断两个部门ID列表是否有交集
