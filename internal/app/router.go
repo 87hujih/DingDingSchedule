@@ -81,10 +81,5 @@ func registerScheduleSettingRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 		// 考勤开关
 		schedule.GET("/attendance/status", h.ScheduleSettingHdl.GetAttendanceStatus)
 		schedule.POST("/attendance/toggle", h.ScheduleSettingHdl.ToggleAttendance)
-
-		// 通知开关
-		schedule.POST("/notify/schedule-change/toggle", h.ScheduleSettingHdl.ToggleScheduleChangeNotify)
-		schedule.POST("/notify/late-reminder/toggle", h.ScheduleSettingHdl.ToggleLateNotify)
-		schedule.GET("/notify/status", h.ScheduleSettingHdl.GetNotifyStatus)
 	}
 }
