@@ -133,7 +133,7 @@ func (r *userRepository) ListByScope(ctx context.Context, deptIDs []int64, onlyU
 	switch {
 	case hasDeptIDs && hasUserIDs:
 		q = q.Joins("LEFT JOIN user_departments ud ON ud.user_id = users.id AND ud.tenant_id = users.tenant_id").
-			Where("(ud.dept_id IN ? OR users.id IN ?)", cleanDeptIDs, onlyUserIDs)
+			Where("ud.dept_id IN ? AND users.id IN ?", cleanDeptIDs, onlyUserIDs)
 	case hasDeptIDs:
 		q = q.Joins("LEFT JOIN user_departments ud ON ud.user_id = users.id AND ud.tenant_id = users.tenant_id").
 			Where("ud.dept_id IN ?", cleanDeptIDs)
@@ -141,7 +141,7 @@ func (r *userRepository) ListByScope(ctx context.Context, deptIDs []int64, onlyU
 		q = q.Where("users.id IN ?", onlyUserIDs)
 	}
 
-	q = q.Distinct("users.id").Order("users.id ASC")
+	q = q.Select("DISTINCT users.*").Order("users.id ASC")
 
 	var users []model.User
 	if err := q.Find(&users).Error; err != nil {
@@ -407,15 +407,13 @@ func (r *userRepository) SearchWithScope(
 		q = q.Where("users.id IN ?", onlyUserIDs)
 	}
 
-	q = q.Distinct("users.id")
-
 	var total int64
-	if err := q.Count(&total).Error; err != nil {
+	if err := q.Distinct("users.id").Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	var users []model.User
-	if err := q.Order("users.id DESC").
+	if err := q.Select("DISTINCT users.*").Order("users.id DESC").
 		Limit(pageSize).
 		Offset((page - 1) * pageSize).
 		Find(&users).Error; err != nil {
