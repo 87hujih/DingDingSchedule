@@ -383,30 +383,16 @@ func (s *AttendanceScheduler) triggerAttendanceForTenant(tenantID uint, section 
 			"tenantId", tenantID,
 			"err", err,
 		)
-		// return
+		return
 	}
 
-	// // 保存到数据库
-	// if err := s.attendanceRecordSrv.SaveAttendanceRecord(ctx, result); err != nil {
-	// 	s.logger.Errorw("保存考勤记录失败",
-	// 		"tenantId", tenantID,
-	// 		"err", err,
-	// 	)
-	// return
-	// }
-
-	// users := []model.User{}
-	// ids := []int{1, 2, 5}
-
-	// res := global.DB.WithContext(ctx).Find(&users, ids)
-
-	// if res.Error != nil {
-	// 	s.logger.Errorw("数据库报的错误", res.Error)
-	// }
-
-	// lateUsers = append(lateUsers, users...)
-
-	s.logger.Infow("查询数据库之后lateusers", "数据库", lateUsers)
+	// 保存到数据库
+	if err := s.attendanceRecordSrv.SaveAttendanceRecord(ctx, result); err != nil {
+		s.logger.Errorw("保存考勤记录失败",
+			"tenantId", tenantID,
+			"err", err,
+		)
+	}
 
 	if err := s.attendanceRecordSrv.SendLateNotifications(ctx, result.Date, result.Section, result.SlotTime.Start, result.SlotTime.End, currentMode, lateUsers); err != nil {
 		s.logger.Errorw("发送迟到提醒失败",
