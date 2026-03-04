@@ -140,6 +140,9 @@ func NewAttendanceDetailResponseFromRecord(
 	}
 	onTimeList := make([]AttendanceUserCheck, 0, len(onTimeUsers))
 	for _, u := range onTimeUsers {
+		if _, ok := userMap[u.ID]; !ok {
+			continue
+		}
 		name, dept := getUserInfo(u.ID)
 		onTimeList = append(onTimeList, AttendanceUserCheck{
 			ID:        u.ID,
@@ -156,6 +159,9 @@ func NewAttendanceDetailResponseFromRecord(
 	}
 	leaveList := make([]AttendanceUserLeave, 0, len(leaveUsers))
 	for _, u := range leaveUsers {
+		if _, ok := userMap[u.ID]; !ok {
+			continue
+		}
 		name, dept := getUserInfo(u.ID)
 		leaveList = append(leaveList, AttendanceUserLeave{
 			ID:        u.ID,
@@ -173,6 +179,9 @@ func NewAttendanceDetailResponseFromRecord(
 	}
 	notArrivedList := make([]AttendanceUserBasic, 0, len(notArrivedIDs))
 	for _, id := range notArrivedIDs {
+		if _, ok := userMap[id]; !ok {
+			continue
+		}
 		name, dept := getUserInfo(id)
 		notArrivedList = append(notArrivedList, AttendanceUserBasic{
 			ID:       id,
@@ -186,15 +195,19 @@ func NewAttendanceDetailResponseFromRecord(
 	seen := make(map[uint]bool)
 
 	add := func(id uint) {
-		if !seen[id] {
-			name, dept := getUserInfo(id)
-			shouldAttendList = append(shouldAttendList, AttendanceUserBasic{
-				ID:       id,
-				Name:     name,
-				DeptName: dept,
-			})
-			seen[id] = true
+		if seen[id] {
+			return
 		}
+		if _, ok := userMap[id]; !ok {
+			return
+		}
+		name, dept := getUserInfo(id)
+		shouldAttendList = append(shouldAttendList, AttendanceUserBasic{
+			ID:       id,
+			Name:     name,
+			DeptName: dept,
+		})
+		seen[id] = true
 	}
 
 	for _, u := range onTimeUsers {
