@@ -77,6 +77,7 @@ type AttendanceUserLists struct {
 type AttendanceUserBasic struct {
 	ID       uint   `json:"id"`
 	Name     string `json:"name"`
+	Avatar   string `json:"avatar"`
 	DeptName string `json:"dept_name"`
 }
 
@@ -84,6 +85,7 @@ type AttendanceUserBasic struct {
 type AttendanceUserCheck struct {
 	ID        uint      `json:"id"`
 	Name      string    `json:"name"`
+	Avatar    string    `json:"avatar"`
 	DeptName  string    `json:"dept_name"`
 	CheckTime time.Time `json:"check_time"`
 }
@@ -92,6 +94,7 @@ type AttendanceUserCheck struct {
 type AttendanceUserLeave struct {
 	ID        uint   `json:"id"`
 	Name      string `json:"name"`
+	Avatar    string `json:"avatar"`
 	DeptName  string `json:"dept_name"`
 	LeaveType string `json:"leave_type"`
 	Reason    string `json:"reason"`
@@ -121,16 +124,16 @@ func NewAttendanceDetailResponseFromRecord(
 	userDeptNames map[uint]string,
 ) *AttendanceDetailResponse {
 	// Helper to safe get user info
-	getUserInfo := func(id uint) (string, string) {
-		name := "Unknown"
-		dept := ""
+	getUserInfo := func(id uint) (name, avatar, dept string) {
+		name = "Unknown"
 		if u, ok := userMap[id]; ok {
 			name = u.Name
+			avatar = u.Avatar
 		}
 		if d, ok := userDeptNames[id]; ok {
 			dept = d
 		}
-		return name, dept
+		return name, avatar, dept
 	}
 
 	// Parse OnTime
@@ -143,10 +146,11 @@ func NewAttendanceDetailResponseFromRecord(
 		if _, ok := userMap[u.ID]; !ok {
 			continue
 		}
-		name, dept := getUserInfo(u.ID)
+		name, avatar, dept := getUserInfo(u.ID)
 		onTimeList = append(onTimeList, AttendanceUserCheck{
 			ID:        u.ID,
 			Name:      name,
+			Avatar:    avatar,
 			DeptName:  dept,
 			CheckTime: time.Unix(u.CheckTime, 0),
 		})
@@ -162,10 +166,11 @@ func NewAttendanceDetailResponseFromRecord(
 		if _, ok := userMap[u.ID]; !ok {
 			continue
 		}
-		name, dept := getUserInfo(u.ID)
+		name, avatar, dept := getUserInfo(u.ID)
 		leaveList = append(leaveList, AttendanceUserLeave{
 			ID:        u.ID,
 			Name:      name,
+			Avatar:    avatar,
 			DeptName:  dept,
 			LeaveType: u.LeaveType,
 			Reason:    u.Reason,
@@ -182,10 +187,11 @@ func NewAttendanceDetailResponseFromRecord(
 		if _, ok := userMap[id]; !ok {
 			continue
 		}
-		name, dept := getUserInfo(id)
+		name, avatar, dept := getUserInfo(id)
 		notArrivedList = append(notArrivedList, AttendanceUserBasic{
 			ID:       id,
 			Name:     name,
+			Avatar:   avatar,
 			DeptName: dept,
 		})
 	}
@@ -201,10 +207,11 @@ func NewAttendanceDetailResponseFromRecord(
 		if _, ok := userMap[id]; !ok {
 			return
 		}
-		name, dept := getUserInfo(id)
+		name, avatar, dept := getUserInfo(id)
 		shouldAttendList = append(shouldAttendList, AttendanceUserBasic{
 			ID:       id,
 			Name:     name,
+			Avatar:   avatar,
 			DeptName: dept,
 		})
 		seen[id] = true
@@ -221,9 +228,10 @@ func NewAttendanceDetailResponseFromRecord(
 	}
 
 	return &AttendanceDetailResponse{
-		Date:    record.Date.Format("2006-01-02"),
-		Week:    record.Week,
-		Section: record.Section,
+		RecordID: record.ID,
+		Date:     record.Date.Format("2006-01-02"),
+		Week:     record.Week,
+		Section:  record.Section,
 		SlotTime: SlotTimeInfo{
 			Start: slotStart,
 			End:   slotEnd,
