@@ -179,11 +179,10 @@ func (s *UserService) Refresh(ctx context.Context, dingUserID string) (*RefreshU
 		return nil, fmt.Errorf("查询本地用户失败: %w", err)
 	}
 
-	// 更新基础信息（保留角色等本地字段）
+	// 更新基础信息（保留角色、考勤状态等本地字段）
 	user.Name = detail.Name
 	user.Phone = detail.Mobile
 	user.Avatar = detail.Avatar
-	user.Status = 1
 
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return nil, fmt.Errorf("更新用户失败: %w", err)

@@ -31,38 +31,36 @@ func NewAttendanceRecordHandler(
 	}
 }
 
-// GetAttendanceDetail 获取考勤详情
-// GET /api/admin/attendance/record/detail?date=2026-01-18&week=1&section=1&dept_ids=1,2,3
-func (h *AttendanceRecordHandler) GetAttendanceDetail(ctx *gin.Context) {
-	// 1. 解析公共参数 (Date, Week, Section)
+// parseDetailRequest 解析考勤详情公共参数（Date, Week, Section, DeptIDs）
+func (h *AttendanceRecordHandler) parseDetailRequest(ctx *gin.Context) (*dto.AttendanceDetailRequest, error) {
 	params, err := ParseAttendanceQueryParams(ctx)
 	if err != nil {
-		response.FailWithError(ctx, err)
-		return
+		return nil, err
 	}
-
-	// 2. 校验周数与日期一致性
 	if err := ValidateWeekDate(ctx, h.semesterSrv, params.Date, params.Week); err != nil {
-		response.FailWithError(ctx, err)
-		return
+		return nil, err
 	}
-
-	// 3. 解析部门ID过滤参数
 	deptIDs, err := ParseDeptIDsQuery(ctx.Query("dept_ids"))
 	if err != nil {
-		response.FailWithError(ctx, err)
-		return
+		return nil, err
 	}
-
-	// 4. 构建请求
-	req := &dto.AttendanceDetailRequest{
+	return &dto.AttendanceDetailRequest{
 		Date:    params.DateStr,
 		Week:    params.Week,
 		Section: params.Section,
 		DeptIDs: deptIDs,
+	}, nil
+}
+
+// GetAttendanceDetail 获取考勤详情
+// GET /api/admin/attendance/record/detail?date=2026-01-18&week=1&section=1&dept_ids=1,2,3
+func (h *AttendanceRecordHandler) GetAttendanceDetail(ctx *gin.Context) {
+	req, err := h.parseDetailRequest(ctx)
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
 	}
 
-	// 5. 调用服务获取考勤详情
 	result, err := h.attendanceRecordSrv.GetAttendanceDetail(ctx.Request.Context(), req)
 	if err != nil {
 		response.FailWithError(ctx, err)
@@ -174,35 +172,12 @@ func (h *AttendanceRecordHandler) GetWeeklyRanking(ctx *gin.Context) {
 // GetAttendanceSnapshot 获取考勤统计快照（从数据库读取已保存的记录）
 // GET /api/admin/attendance/record/snapshot?date=2026-01-18&week=1&section=1&dept_ids=1,2,3
 func (h *AttendanceRecordHandler) GetAttendanceSnapshot(ctx *gin.Context) {
-	// 1. 解析公共参数 (Date, Week, Section)
-	params, err := ParseAttendanceQueryParams(ctx)
+	req, err := h.parseDetailRequest(ctx)
 	if err != nil {
 		response.FailWithError(ctx, err)
 		return
 	}
 
-	// 2. 校验周数与日期一致性
-	if err := ValidateWeekDate(ctx, h.semesterSrv, params.Date, params.Week); err != nil {
-		response.FailWithError(ctx, err)
-		return
-	}
-
-	// 3. 解析部门ID过滤参数
-	deptIDs, err := ParseDeptIDsQuery(ctx.Query("dept_ids"))
-	if err != nil {
-		response.FailWithError(ctx, err)
-		return
-	}
-
-	// 4. 构建请求
-	req := &dto.AttendanceDetailRequest{
-		Date:    params.DateStr,
-		Week:    params.Week,
-		Section: params.Section,
-		DeptIDs: deptIDs,
-	}
-
-	// 5. 从数据库获取已保存的记录
 	result, err := h.attendanceRecordSrv.GetAttendanceRecordFromDB(ctx.Request.Context(), req)
 	if err != nil {
 		response.FailWithError(ctx, err)
@@ -247,35 +222,19 @@ func (h *AttendanceRecordHandler) GetAttendanceRecords(ctx *gin.Context) {
 // GetAttendanceText 获取考勤文本（用于复制到群里）
 // GET /api/attendance/record/text?date=2026-01-18&week=1&section=1&dept_ids=1,2,3
 func (h *AttendanceRecordHandler) GetAttendanceText(ctx *gin.Context) {
-	// 1. 解析公共参数 (Date, Week, Section)
-	params, err := ParseAttendanceQueryParams(ctx)
+	detailReq, err := h.parseDetailRequest(ctx)
 	if err != nil {
 		response.FailWithError(ctx, err)
 		return
 	}
 
-	// 2. 校验周数与日期一致性
-	if err := ValidateWeekDate(ctx, h.semesterSrv, params.Date, params.Week); err != nil {
-		response.FailWithError(ctx, err)
-		return
-	}
-
-	// 3. 解析部门ID过滤参数
-	deptIDs, err := ParseDeptIDsQuery(ctx.Query("dept_ids"))
-	if err != nil {
-		response.FailWithError(ctx, err)
-		return
-	}
-
-	// 4. 构建请求
 	req := &dto.AttendanceTextRequest{
-		Date:    params.DateStr,
-		Week:    params.Week,
-		Section: params.Section,
-		DeptIDs: deptIDs,
+		Date:    detailReq.Date,
+		Week:    detailReq.Week,
+		Section: detailReq.Section,
+		DeptIDs: detailReq.DeptIDs,
 	}
 
-	// 5. 调用服务获取考勤文本
 	result, err := h.attendanceRecordSrv.GetAttendanceText(ctx.Request.Context(), req)
 	if err != nil {
 		response.FailWithError(ctx, err)

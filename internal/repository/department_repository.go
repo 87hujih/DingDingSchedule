@@ -49,7 +49,7 @@ func (r *departmentRepository) SyncAll(ctx context.Context, depts []model.Depart
 					{Name: "tenant_id"},
 					{Name: "dept_id"},
 				},
-				DoUpdates: clause.AssignmentColumns([]string{"name", "parent_id", "is_leaf", "status", "deleted_at"}),
+				DoUpdates: clause.AssignmentColumns([]string{"name", "parent_id", "is_leaf", "deleted_at"}),
 			}).Create(&depts).Error; err != nil {
 				return err
 			}
