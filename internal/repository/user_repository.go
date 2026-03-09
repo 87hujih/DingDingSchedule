@@ -251,6 +251,7 @@ func (r *userRepository) Upsert(ctx context.Context, user *model.User) error {
 		user.ID = existing.ID
 		user.CreatedAt = existing.CreatedAt
 		user.Role = existing.Role
+		user.Status = existing.Status
 		return r.Update(ctx, user)
 	}
 

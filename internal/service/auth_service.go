@@ -92,7 +92,6 @@ func (s *AuthService) Login(ctx context.Context, corpID string, authCode string)
 		Name:       userDetail.Name,
 		Phone:      userDetail.Mobile,
 		Avatar:     userDetail.Avatar,
-		Status:     1,
 	}
 
 	if err := s.userRepo.Upsert(tenantCtx, user); err != nil {
