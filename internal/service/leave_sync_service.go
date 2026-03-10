@@ -88,6 +88,15 @@ func (s *LeaveSyncService) SyncProcessInstance(ctx context.Context, corpID, proc
 		// 不阻断，继续处理
 	}
 
+	// 如果解析不到有效的请假时间，说明这不是请假类审批（如报销、采购等），直接跳过
+	if startAt.IsZero() {
+		s.logger.Infow("leave_sync: 非请假类审批，跳过",
+			"processInstanceId", processInstanceID,
+			"processCode", pi.ProcessCode,
+		)
+		return nil
+	}
+
 	// 4. 创建带租户ID的上下文（用于后续数据库操作）
 	ctxWithTenant := tenantctx.WithTenantID(ctx, tenant.ID)
 

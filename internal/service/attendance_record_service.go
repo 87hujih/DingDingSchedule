@@ -107,7 +107,7 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 	}
 
 	// 5. 获取应到人员
-	shouldAttend, err := s.getShouldAttendUsers(ctx, date, req.Week, req.Section, req.DeptIDs)
+	shouldAttend, hasCourseUsers, err := s.getShouldAttendUsers(ctx, date, req.Week, req.Section, req.DeptIDs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -129,6 +129,8 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 		shouldAttend = filtered
 	}
 
+	hasCourseBasic := toBasicList(hasCourseUsers)
+
 	if len(shouldAttend) == 0 {
 		// 构建休息日用户基础信息
 		restDayBasic := toRestDayBasicList(restDayUsers)
@@ -141,6 +143,7 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 			[]dto.AttendanceUserLeave{},
 			[]dto.AttendanceUserBasic{},
 			restDayBasic,
+			hasCourseBasic,
 		), nil, nil
 	}
 
@@ -172,7 +175,7 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 		req.Date, req.Week, req.Section,
 		periods[req.Section-1].Start,
 		periods[req.Section-1].End,
-		shouldAttend, onTime, leave, notArrived, restDayBasic,
+		shouldAttend, onTime, leave, notArrived, restDayBasic, hasCourseBasic,
 	), notifyUsers, nil
 }
 
@@ -188,6 +191,7 @@ func (s *AttendanceRecordService) SaveAttendanceRecord(
 	leaveJSON, _ := s.serializeLeaveUsers(resp.Users.Leave)
 	notArrivedJSON, _ := s.serializeNotArrivedUsers(resp.Users.NotArrived)
 	restDayJSON, _ := s.serializeRestDayUsers(resp.Users.RestDay)
+	hasCourseJSON, _ := s.serializeBasicUsers(resp.Users.HasCourse)
 
 	record := &model.AttendanceRecord{
 		Date:          date,
@@ -197,6 +201,7 @@ func (s *AttendanceRecordService) SaveAttendanceRecord(
 		LeaveIDs:      leaveJSON,
 		NotArrivedIDs: notArrivedJSON,
 		RestDayIDs:    restDayJSON,
+		HasCourseIDs:  hasCourseJSON,
 	}
 
 	return s.attendanceRecordRepo.Upsert(ctx, record)
@@ -316,16 +321,17 @@ func (s *AttendanceRecordService) resolveActivePeriods(ctx context.Context) []co
 
 // getShouldAttendUsers 获取应到人员（候选人 - 有课人员）
 // deptIDs 为空时返回全部参与考勤用户，否则仅返回指定部门的用户
+// 返回值：应到用户列表、有课用户列表
 func (s *AttendanceRecordService) getShouldAttendUsers(
 	ctx context.Context,
 	date time.Time,
 	week, section int,
 	deptIDs []int64,
-) ([]model.User, error) {
+) ([]model.User, []model.User, error) {
 	// 1. 获取候选用户（按部门过滤或全部）
 	candidates, err := s.userRepo.ListByScope(ctx, deptIDs, nil)
 	if err != nil {
-		return nil, errs.WrapMsgErr("获取候选用户失败", err)
+		return nil, nil, errs.WrapMsgErr("获取候选用户失败", err)
 	}
 
 	// 2. 过滤出参与考勤的用户（status=1）
@@ -337,13 +343,13 @@ func (s *AttendanceRecordService) getShouldAttendUsers(
 	}
 
 	if len(activeUsers) == 0 {
-		return []model.User{}, nil
+		return []model.User{}, []model.User{}, nil
 	}
 
 	// 3. 判断是否使用"全体应到"模式（假期模式或超出学期时间）
 	if s.shouldUseAllAttendMode(ctx, date) {
 		// 全体应到模式：不排除有课人员
-		return activeUsers, nil
+		return activeUsers, []model.User{}, nil
 	}
 
 	// 4. 正常模式：获取该时段有课的人员
@@ -355,7 +361,7 @@ func (s *AttendanceRecordService) getShouldAttendUsers(
 
 	courses, err := s.courseRepo.ListByUsersDaySection(ctx, userIDs, dayOfWeek, section)
 	if err != nil {
-		return nil, errs.WrapMsgErr("获取用户课表失败", err)
+		return nil, nil, errs.WrapMsgErr("获取用户课表失败", err)
 	}
 
 	// 5. 过滤出本周有课的用户
@@ -368,13 +374,16 @@ func (s *AttendanceRecordService) getShouldAttendUsers(
 
 	// 6. 应到人员 = 候选人 - 有课人员
 	shouldAttend := make([]model.User, 0, len(activeUsers))
+	hasCourse := make([]model.User, 0, len(busyUserSet))
 	for _, u := range activeUsers {
-		if !busyUserSet[u.ID] {
+		if busyUserSet[u.ID] {
+			hasCourse = append(hasCourse, u)
+		} else {
 			shouldAttend = append(shouldAttend, u)
 		}
 	}
 
-	return shouldAttend, nil
+	return shouldAttend, hasCourse, nil
 }
 
 // getOnTimeUsers 获取正常打卡人员（在有效时间窗口内打卡的人）
@@ -687,6 +696,28 @@ func (s *AttendanceRecordService) serializeRestDayUsers(users []dto.AttendanceUs
 	return string(b), err
 }
 
+func (s *AttendanceRecordService) serializeBasicUsers(users []dto.AttendanceUserBasic) (string, error) {
+	ids := make([]uint, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.ID)
+	}
+	b, err := json.Marshal(ids)
+	return string(b), err
+}
+
+// toBasicList 将 model.User 列表转为 AttendanceUserBasic 列表（不含部门名）
+func toBasicList(users []model.User) []dto.AttendanceUserBasic {
+	list := make([]dto.AttendanceUserBasic, 0, len(users))
+	for _, u := range users {
+		list = append(list, dto.AttendanceUserBasic{
+			ID:     u.ID,
+			Name:   u.Name,
+			Avatar: u.Avatar,
+		})
+	}
+	return list
+}
+
 // filterRestDayUsers 从应到人员中筛出今日休息日的用户
 func (s *AttendanceRecordService) filterRestDayUsers(
 	ctx context.Context,
@@ -839,6 +870,16 @@ func (s *AttendanceRecordService) extractAllUserIDs(record *model.AttendanceReco
 		s.logger.Warnw("解析RestDayIDs失败", "recordID", record.ID, "error", err)
 	}
 	for _, id := range restDay {
+		idSet[id] = true
+	}
+
+	var hasCourse []uint
+	if record.HasCourseIDs != "" && record.HasCourseIDs != "null" {
+		if err := json.Unmarshal([]byte(record.HasCourseIDs), &hasCourse); err != nil {
+			s.logger.Warnw("解析HasCourseIDs失败", "recordID", record.ID, "error", err)
+		}
+	}
+	for _, id := range hasCourse {
 		idSet[id] = true
 	}
 

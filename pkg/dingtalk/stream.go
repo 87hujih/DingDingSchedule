@@ -3,6 +3,7 @@ package dingtalk
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/client"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/payload"
@@ -66,7 +67,17 @@ func (s *StreamClient) Start(ctx context.Context) error {
 
 // handleEvent 处理钉钉事件
 func (s *StreamClient) handleEvent(ctx context.Context, df *payload.DataFrame) (*payload.DataFrameResponse, error) {
-	// 解析事件数据
+	// 从 Header 获取事件类型和企业ID（这是钉钉 Stream SDK 的标准字段，比 Data 里的自定义字段更可靠）
+	eventType := df.GetHeader("eventType")
+	eventCorpID := df.GetHeader("eventCorpId")
+
+	// corpID 优先用事件 Header 里的，避免依赖 StreamClient 初始化时写死的值
+	corpID := eventCorpID
+	if corpID == "" {
+		corpID = s.corpID
+	}
+
+	// 解析事件 Data 获取 processInstanceId 等字段
 	var evt bpmsEvent
 	if err := json.Unmarshal([]byte(df.Data), &evt); err != nil {
 		s.logger.Warnw("解析事件数据失败", "data", df.Data, "err", err)
@@ -75,45 +86,50 @@ func (s *StreamClient) handleEvent(ctx context.Context, df *payload.DataFrame) (
 
 	// 记录收到的事件（用于调试）
 	s.logger.Infow("收到钉钉事件",
-		"approveType", evt.ApproveType,
+		"eventType", eventType,
+		"eventCorpId", eventCorpID,
 		"processInstanceId", evt.ProcessInstanceID,
 		"status", evt.Status,
 	)
 
-	// 处理请假审批事件
-	if s.onBpmsEvent != nil && evt.ProcessInstanceID != "" && evt.ApproveType == "LEAVE" {
-		s.logger.Infow("开始处理请假审批事件",
-			"processInstanceId", evt.ProcessInstanceID,
-			"status", evt.Status,
-		)
-		go func() {
-			if err := s.onBpmsEvent(context.Background(), s.corpID, evt.ProcessInstanceID, evt.Status); err != nil {
-				s.logger.Errorw("处理审批事件失败",
-					"processInstanceId", evt.ProcessInstanceID,
-					"err", err,
-				)
-			} else {
-				s.logger.Infow("处理审批事件成功",
-					"processInstanceId", evt.ProcessInstanceID,
-				)
-			}
-		}()
-	} else {
+	// 只处理审批实例变更事件。
+	// 注意：必须通过 Header 里的 eventType 来判断，不能依赖 df.Data 里的 approveType——
+	// approveType 是各企业在审批表单中自定义的字段，不同企业的值不同，不可作为统一过滤条件。
+	if s.onBpmsEvent == nil || evt.ProcessInstanceID == "" || !strings.Contains(eventType, "bpms_instance") {
 		s.logger.Debugw("跳过事件处理",
-			"approveType", evt.ApproveType,
+			"eventType", eventType,
 			"processInstanceId", evt.ProcessInstanceID,
 			"hasHandler", s.onBpmsEvent != nil,
 		)
+		return payload.NewSuccessDataFrameResponse(), nil
 	}
+
+	s.logger.Infow("开始处理审批实例变更事件",
+		"eventType", eventType,
+		"processInstanceId", evt.ProcessInstanceID,
+		"status", evt.Status,
+		"corpID", corpID,
+	)
+
+	go func() {
+		if err := s.onBpmsEvent(context.Background(), corpID, evt.ProcessInstanceID, evt.Status); err != nil {
+			s.logger.Errorw("处理审批事件失败",
+				"processInstanceId", evt.ProcessInstanceID,
+				"err", err,
+			)
+		} else {
+			s.logger.Infow("处理审批事件成功",
+				"processInstanceId", evt.ProcessInstanceID,
+			)
+		}
+	}()
 
 	return payload.NewSuccessDataFrameResponse(), nil
 }
 
 // bpmsEvent 审批事件结构（适配钉钉 Stream 推送格式）
 type bpmsEvent struct {
-	ApproveType       string `json:"approveType"`       // LEAVE=请假
 	ProcessInstanceID string `json:"processInstanceId"` // 审批实例ID
 	ProcessCode       string `json:"processCode"`       // 流程编码
 	Status            string `json:"status"`            // start/finish/terminate
-	EventID           string `json:"eventId"`           // 事件ID
 }

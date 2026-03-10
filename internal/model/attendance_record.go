@@ -17,6 +17,7 @@ type AttendanceRecord struct {
 	LeaveIDs      string         `gorm:"type:text" json:"leave_ids"`       // JSON数组：请假人员ID
 	NotArrivedIDs string         `gorm:"type:text" json:"not_arrived_ids"` // JSON数组：未到人员ID（含迟到和缺勤）
 	RestDayIDs    string         `gorm:"type:text" json:"rest_day_ids"`    // JSON数组：休息日人员ID
+	HasCourseIDs  string         `gorm:"type:text" json:"has_course_ids"`  // JSON数组：有课人员ID
 	CreatedAt     time.Time      `json:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at"`
 	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"` // 软删除

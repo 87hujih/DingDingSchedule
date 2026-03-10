@@ -81,6 +81,7 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 	// 判断是否使用"全体应到"模式（假期模式或超出学期时间）
 	var shouldArriveUsers []model.User
 	var shouldArriveItems []dto.CourseAttendanceUserItem
+	var hasCourseUsers []model.User
 
 	if s.shouldUseAllAttendMode(ctx, date) {
 		// 全体应到模式：不排除有课人员
@@ -91,7 +92,7 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 		shouldArriveItems = toAttendanceUserItems(shouldArriveUsers, nil)
 	} else {
 		// 正常模式：应到 = 候选 - 有课
-		shouldArriveUsers, shouldArriveItems, err = s.computeShouldArriveUsersByDeptFilter(
+		shouldArriveUsers, shouldArriveItems, hasCourseUsers, err = s.computeShouldArriveUsersByDeptFilter(
 			ctx,
 			dayOfWeek,
 			section,
@@ -124,12 +125,15 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 	}
 
 	// 批量查询部门名称并填充
-	userIDs := make([]uint, 0, len(shouldArriveUsers)+len(onRestDayItems))
+	userIDs := make([]uint, 0, len(shouldArriveUsers)+len(onRestDayItems)+len(hasCourseUsers))
 	for _, u := range shouldArriveUsers {
 		userIDs = append(userIDs, u.ID)
 	}
 	for _, item := range onRestDayItems {
 		userIDs = append(userIDs, item.ID)
+	}
+	for _, u := range hasCourseUsers {
+		userIDs = append(userIDs, u.ID)
 	}
 	deptNameMap, err := s.userRepo.GetUserDepartmentNames(ctx, userIDs)
 	if err != nil {
@@ -145,6 +149,10 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 	for i := range onRestDayItems {
 		onRestDayItems[i].DeptName = deptNameMap[onRestDayItems[i].ID]
 	}
+	hasCourseItems := toAttendanceUserItems(hasCourseUsers, nil)
+	for i := range hasCourseItems {
+		hasCourseItems[i].DeptName = deptNameMap[hasCourseItems[i].ID]
+	}
 
 	return &dto.SlotAttendanceStatusResponse{
 		Date:         date.Format("2006-01-02"),
@@ -154,6 +162,7 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 		ShouldArrive: shouldArriveItems,
 		OnLeave:      onLeaveItems,
 		OnRestDay:    onRestDayItems,
+		HasCourse:    hasCourseItems,
 	}, nil
 }
 
@@ -233,27 +242,37 @@ func (s *AttendanceService) validateSlotParams(date time.Time, week, section int
 // computeShouldArriveUsersByDeptFilter 计算应到名单（本节无课人员）。
 // - deptIDs 为空：不按部门筛选，使用全部参与考勤用户（status=1）
 // - deptIDs 非空：仅使用这些部门下参与考勤的用户
+// 返回值：应到用户列表、应到用户DTO列表、有课用户列表
 func (s *AttendanceService) computeShouldArriveUsersByDeptFilter(
 	ctx context.Context,
 	dayOfWeek int,
 	section int,
 	week int,
 	deptIDs []int64,
-) ([]model.User, []dto.CourseAttendanceUserItem, error) {
+) ([]model.User, []dto.CourseAttendanceUserItem, []model.User, error) {
 	// 候选人集合：全体 or 指定部门并集
 	activeUsers, err := s.listActiveUsersByDeptIDs(ctx, deptIDs)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	// 忙碌人集合：本周同一天同节次有课的人（会结合 weekList 二次过滤）
-	busyUsers, err := s.busyUserSetForSlot(ctx, activeUsers, dayOfWeek, section, week)
+	busySet, err := s.busyUserSetForSlot(ctx, activeUsers, dayOfWeek, section, week)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// 应到 = 候选 - 忙碌
-	shouldArriveUsers := filterUsersByExclude(activeUsers, busyUsers)
-	return shouldArriveUsers, toAttendanceUserItems(shouldArriveUsers, nil), nil
+	shouldArriveUsers := filterUsersByExclude(activeUsers, busySet)
+
+	// 有课用户列表
+	busyUsers := make([]model.User, 0, len(busySet))
+	for _, u := range activeUsers {
+		if _, ok := busySet[u.ID]; ok {
+			busyUsers = append(busyUsers, u)
+		}
+	}
+
+	return shouldArriveUsers, toAttendanceUserItems(shouldArriveUsers, nil), busyUsers, nil
 }
 
 // listActiveUsersByDeptIDs 获取候选用户（参与考勤 status=1）。
