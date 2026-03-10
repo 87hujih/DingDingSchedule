@@ -65,7 +65,7 @@ func (s *RestDayService) SetRestDay(ctx context.Context, userID uint, dayOfWeek 
 
 	record := &model.UserRestDay{
 		UserID:    userID,
-		DayOfWeek: dayOfWeek,
+		DayOfWeek: &dayOfWeek,
 	}
 	if err := s.restDayRepo.Upsert(ctx, record); err != nil {
 		s.logger.Errorw("设置休息日失败", "userID", userID, "dayOfWeek", dayOfWeek, "error", err)
@@ -84,7 +84,7 @@ func (s *RestDayService) RemoveRestDay(ctx context.Context, userID uint) error {
 		return err
 	}
 
-	if err := s.restDayRepo.Delete(ctx, userID); err != nil {
+	if err := s.restDayRepo.Unset(ctx, userID); err != nil {
 		s.logger.Errorw("取消休息日失败", "userID", userID, "error", err)
 		return response.NewBizError(response.CodeInternalError, "取消休息日失败")
 	}
@@ -110,10 +110,18 @@ func (s *RestDayService) GetMyRestDay(ctx context.Context, userID uint) (*dto.Us
 		return nil, response.NewBizError(response.CodeInternalError, "查询休息日失败")
 	}
 
+	if record.DayOfWeek == nil {
+		return &dto.UserRestDayResponse{
+			UserID:    userID,
+			DayOfWeek: 0,
+			DayName:   "",
+		}, nil
+	}
+
 	return &dto.UserRestDayResponse{
 		UserID:    userID,
-		DayOfWeek: record.DayOfWeek,
-		DayName:   dto.DayOfWeekName(record.DayOfWeek),
+		DayOfWeek: *record.DayOfWeek,
+		DayName:   dto.DayOfWeekName(*record.DayOfWeek),
 	}, nil
 }
 
@@ -164,8 +172,8 @@ func (s *RestDayService) ListAllRestDays(ctx context.Context) (*dto.UserRestDayL
 			UserName:  u.Name,
 			Avatar:    u.Avatar,
 			DeptName:  deptNames[r.UserID],
-			DayOfWeek: r.DayOfWeek,
-			DayName:   dto.DayOfWeekName(r.DayOfWeek),
+			DayOfWeek: *r.DayOfWeek,
+			DayName:   dto.DayOfWeekName(*r.DayOfWeek),
 		})
 	}
 

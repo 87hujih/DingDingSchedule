@@ -14,7 +14,6 @@ func registerRestDayRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 		// 用户自己的休息日
 		restDay.GET("/mine", h.RestDayHdl.GetMyRestDay)
 		restDay.POST("/mine", h.RestDayHdl.SetMyRestDay)
-		restDay.DELETE("/mine", h.RestDayHdl.RemoveMyRestDay)
 
 		// 管理员查看所有用户休息日
 		restDay.GET("/users", middleware.RequireAdmin(), h.RestDayHdl.ListAllRestDays)

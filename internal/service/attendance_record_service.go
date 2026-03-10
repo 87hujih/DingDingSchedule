@@ -707,7 +707,7 @@ func (s *AttendanceRecordService) filterRestDayUsers(
 
 	restDayUserSet := make(map[uint]struct{})
 	for _, rd := range restDays {
-		if rd.DayOfWeek == dayOfWeek {
+		if *rd.DayOfWeek == dayOfWeek {
 			restDayUserSet[rd.UserID] = struct{}{}
 		}
 	}

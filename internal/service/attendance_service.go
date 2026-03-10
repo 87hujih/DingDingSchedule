@@ -544,7 +544,7 @@ func (s *AttendanceService) computeOnRestDayUserItems(
 	// 筛出今天是休息日的用户ID
 	restDayUserSet := make(map[uint]struct{})
 	for _, rd := range restDays {
-		if rd.DayOfWeek == dayOfWeek {
+		if *rd.DayOfWeek == dayOfWeek {
 			restDayUserSet[rd.UserID] = struct{}{}
 		}
 	}
