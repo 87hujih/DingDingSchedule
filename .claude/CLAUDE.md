@@ -542,3 +542,11 @@ if !strings.HasSuffix(file.Filename, ".xlsx") && !strings.HasSuffix(file.Filenam
 - Expose internal error details (DB errors, stack traces) to client
 - Use panic for business logic errors
 - Return `nil` error when operation actually failed
+
+## Git Commit Rules
+
+**Before any `git commit`, you MUST:**
+1. Invoke the `go-reviewer` agent to review all modified `.go` files
+2. Wait for go-reviewer to complete and report results
+3. Fix any CRITICAL or HIGH issues before proceeding with the commit
+4. Only commit if go-reviewer approves (no CRITICAL/HIGH issues)
