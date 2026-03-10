@@ -3,7 +3,6 @@ package dingtalk
 import (
 	"context"
 	"encoding/json"
-	"strings"
 
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/client"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/payload"
@@ -67,45 +66,29 @@ func (s *StreamClient) Start(ctx context.Context) error {
 
 // handleEvent 处理钉钉事件
 func (s *StreamClient) handleEvent(ctx context.Context, df *payload.DataFrame) (*payload.DataFrameResponse, error) {
-	// topic 是事件主题（如 bpms_instance_change），存在 df.Headers["topic"]，通过 df.GetTopic() 读取。
-	// 注意：df.GetHeader("eventType") 读的是另一个字段，在直接订阅原始 DataFrame 时为空，不能用来判断事件类型。
-	topic := df.GetTopic()
+	// 从 Header 获取企业ID，fallback 到 StreamClient 初始化时的值。
+	// 注意：订阅 "*" 时 df.GetTopic() 返回的是 "*"（精确匹配订阅 key），不是实际事件名，不可用于判断事件类型。
 	eventCorpID := df.GetHeader("eventCorpId")
-
-	// corpID 优先用事件 Header 里的，避免依赖 StreamClient 初始化时写死的值
 	corpID := eventCorpID
 	if corpID == "" {
 		corpID = s.corpID
 	}
 
-	// 解析事件 Data 获取 processInstanceId 等字段
+	// 解析事件 Data
 	var evt bpmsEvent
 	if err := json.Unmarshal([]byte(df.Data), &evt); err != nil {
 		s.logger.Warnw("解析事件数据失败", "data", df.Data, "err", err)
 		return payload.NewSuccessDataFrameResponse(), nil
 	}
 
-	// 记录收到的事件（用于调试）
-	s.logger.Infow("收到钉钉事件",
-		"topic", topic,
-		"eventCorpId", eventCorpID,
-		"processInstanceId", evt.ProcessInstanceID,
-		"status", evt.Status,
-	)
-
-	// 只处理审批实例变更事件（通过 topic 判断，不依赖 df.Data 里的 approveType）。
-	// approveType 是各企业在审批表单中自定义的字段，不同企业的值不同，不可作为统一过滤条件。
-	if s.onBpmsEvent == nil || evt.ProcessInstanceID == "" || !strings.Contains(topic, "bpms_instance") {
-		s.logger.Debugw("跳过事件处理",
-			"topic", topic,
-			"processInstanceId", evt.ProcessInstanceID,
-			"hasHandler", s.onBpmsEvent != nil,
-		)
+	// 通过 processInstanceId 是否存在来判断是否为审批事件。
+	// 不依赖 df.Headers（topic 为 "*"，eventType 可能为空）和 df.Data 里的 approveType（各企业自定义字段，值不统一）。
+	// 非请假类审批（报销等）会在 LeaveSyncService 中通过表单字段解析结果过滤。
+	if s.onBpmsEvent == nil || evt.ProcessInstanceID == "" {
 		return payload.NewSuccessDataFrameResponse(), nil
 	}
 
-	s.logger.Infow("开始处理审批实例变更事件",
-		"topic", topic,
+	s.logger.Infow("收到审批事件",
 		"processInstanceId", evt.ProcessInstanceID,
 		"status", evt.Status,
 		"corpID", corpID,
