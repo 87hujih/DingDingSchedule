@@ -151,6 +151,9 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 		return nil, nil, err
 	}
 
+	// 6.5 连续节次打卡顺延
+	onTime = s.applyCarryForward(ctx, date, req.Section, periods, shouldAttend, onTime)
+
 	// 7. 获取请假人员
 	leave, err := s.getLeaveUsers(ctx, shouldAttend, slotStart, slotEnd)
 	if err != nil {
@@ -1294,4 +1297,86 @@ func (s *AttendanceRecordService) shouldUseAllAttendMode(ctx context.Context, da
 
 	// 默认使用正常模式（应到 = 候选 - 有课）
 	return false
+}
+
+// applyCarryForward 连续节次打卡顺延。
+// 若用户在第 section-1 节正常打卡，且该节下课到本节上课的间隔 <= MaxCarryForwardGapMinutes，
+// 则将上一节的打卡记录顺延到本节，视为本节正常打卡。
+func (s *AttendanceRecordService) applyCarryForward(
+	ctx context.Context,
+	date time.Time,
+	section int,
+	periods []config.Period,
+	shouldAttend []model.User,
+	onTime []dto.AttendanceUserCheck,
+) []dto.AttendanceUserCheck {
+	// 仅第 2 节及以上才可能顺延
+	if section <= 1 {
+		return onTime
+	}
+	// 未配置或关闭顺延功能
+	if s.scheduleCfg.MaxCarryForwardGapMinutes <= 0 {
+		return onTime
+	}
+	// 节次越界保护
+	if section > len(periods) {
+		return onTime
+	}
+
+	// 计算上一节下课到本节上课的间隔（分钟）
+	prevEnd, err1 := time.Parse("15:04", periods[section-2].End)
+	currStart, err2 := time.Parse("15:04", periods[section-1].Start)
+	if err1 != nil || err2 != nil {
+		return onTime
+	}
+	gapMinutes := (currStart.Hour()*60 + currStart.Minute()) - (prevEnd.Hour()*60 + prevEnd.Minute())
+	if gapMinutes > s.scheduleCfg.MaxCarryForwardGapMinutes {
+		return onTime // 间隔过大（如午休），不顺延
+	}
+
+	// 查询上一节的考勤记录
+	prevRecord, err := s.attendanceRecordRepo.FindByDateSection(ctx, date, section-1)
+	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			s.logger.Warnw("查询上一节考勤记录失败，跳过顺延",
+				"date", date, "prevSection", section-1, "error", err)
+		}
+		return onTime // 无上一节记录，不顺延
+	}
+
+	// 解析上一节正常打卡人员
+	var prevOnTime []dto.StoredUserCheck
+	if err := json.Unmarshal([]byte(prevRecord.OnTimeIDs), &prevOnTime); err != nil || len(prevOnTime) == 0 {
+		return onTime
+	}
+
+	// 构建索引
+	currentOnTimeSet := make(map[uint]bool, len(onTime))
+	for _, u := range onTime {
+		currentOnTimeSet[u.ID] = true
+	}
+	shouldAttendMap := make(map[uint]model.User, len(shouldAttend))
+	for _, u := range shouldAttend {
+		shouldAttendMap[u.ID] = u
+	}
+
+	// 顺延：上一节正常打卡 且 本节应到 且 本节尚未打卡
+	for _, prev := range prevOnTime {
+		if currentOnTimeSet[prev.ID] {
+			continue
+		}
+		u, inShouldAttend := shouldAttendMap[prev.ID]
+		if !inShouldAttend {
+			continue
+		}
+		onTime = append(onTime, dto.AttendanceUserCheck{
+			ID:        u.ID,
+			Name:      u.Name,
+			Avatar:    u.Avatar,
+			CheckTime: time.Unix(prev.CheckTime, 0),
+		})
+		currentOnTimeSet[u.ID] = true
+	}
+
+	return onTime
 }

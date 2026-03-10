@@ -113,9 +113,10 @@ type WiFi struct {
 
 // Schedule 作息表配置
 type Schedule struct {
-	Periods             []Period `mapstructure:"periods" yaml:"periods"`
-	LateGraceMinutes    int      `mapstructure:"late_grace_minutes" yaml:"late_grace_minutes"`       // 宽限分钟数：上课后多少分钟内到不算迟到（deadline = slotStart + grace）
-	TriggerDelayMinutes int      `mapstructure:"trigger_delay_minutes" yaml:"trigger_delay_minutes"` // 触发延迟（分钟）：上课后多少分钟执行考勤统计，须 >= late_grace_minutes
+	Periods                   []Period `mapstructure:"periods" yaml:"periods"`
+	LateGraceMinutes          int      `mapstructure:"late_grace_minutes" yaml:"late_grace_minutes"`                       // 宽限分钟数：上课后多少分钟内到不算迟到（deadline = slotStart + grace）
+	TriggerDelayMinutes       int      `mapstructure:"trigger_delay_minutes" yaml:"trigger_delay_minutes"`                 // 触发延迟（分钟）：上课后多少分钟执行考勤统计，须 >= late_grace_minutes
+	MaxCarryForwardGapMinutes int      `mapstructure:"max_carry_forward_gap_minutes" yaml:"max_carry_forward_gap_minutes"` // 连续节次顺延阈值（分钟）：两节间隔小于该值时，上一节正常打卡可顺延到本节；0 表示禁用
 }
 type Period struct {
 	Name  string `mapstructure:"name" yaml:"name"`
