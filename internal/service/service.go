@@ -19,6 +19,7 @@ type Service struct {
 	AttendanceRecordSrv *AttendanceRecordService
 	SchedulePeriodSrv   *SchedulePeriodService
 	AuditLogSrv         *AuditLogService
+	RestDaySrv          *RestDayService
 }
 
 // NewService 创建服务层实例
@@ -33,6 +34,9 @@ func NewService(repo *repository.Repository, dingMgr *DingTalkClientManager, jwt
 	// 创建 SemesterService
 	semesterSrv := NewSemesterService(repo.SemesterRepo)
 
+	// 创建 RestDayService
+	restDaySrv := NewRestDayService(repo.UserRestDayRepo, repo.ScheduleSettingRepo, repo.UserRepo, logger)
+
 	// 创建 AttendanceRecordService，注入 SchedulePeriodService 和 SemesterService
 	attendanceRecordSrv := NewAttendanceRecordService(
 		repo.UserRepo,
@@ -40,6 +44,7 @@ func NewService(repo *repository.Repository, dingMgr *DingTalkClientManager, jwt
 		repo.LeaveRepo,
 		repo.AttendanceRecordRepo,
 		repo.ScheduleSettingRepo,
+		repo.UserRestDayRepo,
 		dingMgr,
 		schedulePeriodSrv,
 		semesterSrv,
@@ -52,11 +57,12 @@ func NewService(repo *repository.Repository, dingMgr *DingTalkClientManager, jwt
 		DeptSrv:             NewDepartmentService(repo.DeptRepo, dingMgr),
 		AuthSrv:             NewAuthService(repo.UserRepo, dingMgr, jwtCfg),
 		ScheduleSrv:         NewScheduleService(repo.CourseRepo, repo.UserRepo, repo.SemesterRepo, repo.ScheduleSettingRepo, dingMgr, logger),
-		AttendanceSrv:       NewAttendanceService(attendanceRepo, repo.LeaveRepo, repo.UserRepo, dingMgr, schedulePeriodSrv, semesterSrv, scheduleCfg, logger),
+		AttendanceSrv:       NewAttendanceService(attendanceRepo, repo.LeaveRepo, repo.UserRepo, repo.UserRestDayRepo, dingMgr, schedulePeriodSrv, semesterSrv, scheduleCfg, logger),
 		LeaveSyncSrv:        leaveSyncSrv,
 		SemesterSrv:         semesterSrv,
 		AttendanceRecordSrv: attendanceRecordSrv,
 		SchedulePeriodSrv:   schedulePeriodSrv,
 		AuditLogSrv:         NewAuditLogService(repo.AuditLogRepo, logger),
+		RestDaySrv:          restDaySrv,
 	}
 }

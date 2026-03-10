@@ -24,6 +24,7 @@ type AttendanceService struct {
 	repo              repository.AttendanceRepository
 	leaveApprovalRepo repository.LeaveApprovalRepository
 	userRepo          repository.UserRepository
+	restDayRepo       repository.UserRestDayRepository
 	dingMgr           *DingTalkClientManager
 	schedulePeriodSrv *SchedulePeriodService // 从数据库读取作息时间
 	semesterSrv       *SemesterService       // 学期服务
@@ -31,11 +32,12 @@ type AttendanceService struct {
 	logger            *zap.SugaredLogger
 }
 
-func NewAttendanceService(repo repository.AttendanceRepository, leaveApprovalRepo repository.LeaveApprovalRepository, userRepo repository.UserRepository, dingMgr *DingTalkClientManager, schedulePeriodSrv *SchedulePeriodService, semesterSrv *SemesterService, scheduleCfg config.Schedule, logger *zap.SugaredLogger) *AttendanceService {
+func NewAttendanceService(repo repository.AttendanceRepository, leaveApprovalRepo repository.LeaveApprovalRepository, userRepo repository.UserRepository, restDayRepo repository.UserRestDayRepository, dingMgr *DingTalkClientManager, schedulePeriodSrv *SchedulePeriodService, semesterSrv *SemesterService, scheduleCfg config.Schedule, logger *zap.SugaredLogger) *AttendanceService {
 	return &AttendanceService{
 		repo:              repo,
 		leaveApprovalRepo: leaveApprovalRepo,
 		userRepo:          userRepo,
+		restDayRepo:       restDayRepo,
 		dingMgr:           dingMgr,
 		schedulePeriodSrv: schedulePeriodSrv,
 		semesterSrv:       semesterSrv,
@@ -106,10 +108,28 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 		return nil, err
 	}
 
+	// 新增：查询休息日用户，从应到名单中筛出今日休息的用户
+	onRestDayItems, err := s.computeOnRestDayUserItems(ctx, shouldArriveUsers, dayOfWeek)
+	if err != nil {
+		return nil, err
+	}
+	// 从 shouldArriveUsers/shouldArriveItems 中移除休息日用户
+	if len(onRestDayItems) > 0 {
+		restDaySet := make(map[uint]struct{}, len(onRestDayItems))
+		for _, item := range onRestDayItems {
+			restDaySet[item.ID] = struct{}{}
+		}
+		shouldArriveUsers = filterUsersByExclude(shouldArriveUsers, restDaySet)
+		shouldArriveItems = toAttendanceUserItems(shouldArriveUsers, nil)
+	}
+
 	// 批量查询部门名称并填充
-	userIDs := make([]uint, 0, len(shouldArriveUsers))
+	userIDs := make([]uint, 0, len(shouldArriveUsers)+len(onRestDayItems))
 	for _, u := range shouldArriveUsers {
 		userIDs = append(userIDs, u.ID)
+	}
+	for _, item := range onRestDayItems {
+		userIDs = append(userIDs, item.ID)
 	}
 	deptNameMap, err := s.userRepo.GetUserDepartmentNames(ctx, userIDs)
 	if err != nil {
@@ -122,6 +142,9 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 	for i := range onLeaveItems {
 		onLeaveItems[i].DeptName = deptNameMap[onLeaveItems[i].ID]
 	}
+	for i := range onRestDayItems {
+		onRestDayItems[i].DeptName = deptNameMap[onRestDayItems[i].ID]
+	}
 
 	return &dto.SlotAttendanceStatusResponse{
 		Date:         date.Format("2006-01-02"),
@@ -130,6 +153,7 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 		Section:      section,
 		ShouldArrive: shouldArriveItems,
 		OnLeave:      onLeaveItems,
+		OnRestDay:    onRestDayItems,
 	}, nil
 }
 
@@ -494,4 +518,51 @@ func (s *AttendanceService) shouldUseAllAttendMode(ctx context.Context, date tim
 
 	// 默认使用正常模式（应到 = 候选 - 有课）
 	return false
+}
+
+// computeOnRestDayUserItems 从应到人员中筛出今日休息日的用户
+func (s *AttendanceService) computeOnRestDayUserItems(
+	ctx context.Context,
+	users []model.User,
+	dayOfWeek int,
+) ([]dto.CourseAttendanceUserItem, error) {
+	if len(users) == 0 || s.restDayRepo == nil {
+		return []dto.CourseAttendanceUserItem{}, nil
+	}
+
+	userIDs := make([]uint, 0, len(users))
+	for _, u := range users {
+		userIDs = append(userIDs, u.ID)
+	}
+
+	restDays, err := s.restDayRepo.ListByUserIDs(ctx, userIDs)
+	if err != nil {
+		s.logger.Warnw("查询休息日记录失败", "error", err)
+		return []dto.CourseAttendanceUserItem{}, nil
+	}
+
+	// 筛出今天是休息日的用户ID
+	restDayUserSet := make(map[uint]struct{})
+	for _, rd := range restDays {
+		if rd.DayOfWeek == dayOfWeek {
+			restDayUserSet[rd.UserID] = struct{}{}
+		}
+	}
+
+	if len(restDayUserSet) == 0 {
+		return []dto.CourseAttendanceUserItem{}, nil
+	}
+
+	items := make([]dto.CourseAttendanceUserItem, 0, len(restDayUserSet))
+	for _, u := range users {
+		if _, ok := restDayUserSet[u.ID]; ok {
+			items = append(items, dto.CourseAttendanceUserItem{
+				ID:     u.ID,
+				Name:   u.Name,
+				Avatar: u.Avatar,
+				Phone:  u.Phone,
+			})
+		}
+	}
+	return items, nil
 }

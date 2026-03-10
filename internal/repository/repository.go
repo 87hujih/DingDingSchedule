@@ -14,6 +14,7 @@ type Repository struct {
 	SchedulePeriodRepo   SchedulePeriodRepository
 	ScheduleSettingRepo  ScheduleSettingRepository
 	AuditLogRepo         AuditLogRepository
+	UserRestDayRepo      UserRestDayRepository
 }
 
 // NewRepository 创建仓库实例
@@ -30,5 +31,6 @@ func NewRepository(db *gorm.DB) *Repository {
 		SchedulePeriodRepo:   NewSchedulePeriodRepository(db, scheduleSettingRepo),
 		ScheduleSettingRepo:  scheduleSettingRepo,
 		AuditLogRepo:         NewAuditLogRepository(db),
+		UserRestDayRepo:      NewUserRestDayRepository(db),
 	}
 }

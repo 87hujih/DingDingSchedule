@@ -63,6 +63,7 @@ type AttendanceStatistics struct {
 	OnTime       int `json:"on_time"`       // 正常打卡人数
 	Leave        int `json:"leave"`         // 请假人数
 	NotArrived   int `json:"not_arrived"`   // 未到人数（含迟到和缺勤）
+	RestDay      int `json:"rest_day"`      // 休息人数
 }
 
 // AttendanceUserLists 考勤人员列表
@@ -71,6 +72,7 @@ type AttendanceUserLists struct {
 	OnTime       []AttendanceUserCheck `json:"on_time"`
 	Leave        []AttendanceUserLeave `json:"leave"`
 	NotArrived   []AttendanceUserBasic `json:"not_arrived"` // 未到（含迟到和缺勤）
+	RestDay      []AttendanceUserBasic `json:"rest_day"`    // 休息日
 }
 
 // AttendanceUserBasic 基础用户信息
@@ -196,6 +198,25 @@ func NewAttendanceDetailResponseFromRecord(
 		})
 	}
 
+	// Parse RestDay
+	var restDayIDs []uint
+	if record.RestDayIDs != "" && record.RestDayIDs != "[]" {
+		_ = json.Unmarshal([]byte(record.RestDayIDs), &restDayIDs)
+	}
+	restDayList := make([]AttendanceUserBasic, 0, len(restDayIDs))
+	for _, id := range restDayIDs {
+		if _, ok := userMap[id]; !ok {
+			continue
+		}
+		name, avatar, dept := getUserInfo(id)
+		restDayList = append(restDayList, AttendanceUserBasic{
+			ID:       id,
+			Name:     name,
+			Avatar:   avatar,
+			DeptName: dept,
+		})
+	}
+
 	// ShouldAttend = OnTime + Leave + NotArrived
 	shouldAttendList := make([]AttendanceUserBasic, 0)
 	seen := make(map[uint]bool)
@@ -241,12 +262,14 @@ func NewAttendanceDetailResponseFromRecord(
 			OnTime:       len(onTimeList),
 			Leave:        len(leaveList),
 			NotArrived:   len(notArrivedList),
+			RestDay:      len(restDayList),
 		},
 		Users: AttendanceUserLists{
 			ShouldAttend: shouldAttendList,
 			OnTime:       onTimeList,
 			Leave:        leaveList,
 			NotArrived:   notArrivedList,
+			RestDay:      restDayList,
 		},
 	}
 }
@@ -282,6 +305,7 @@ func NewAttendanceDetailResponse(
 	onTime []AttendanceUserCheck,
 	leave []AttendanceUserLeave,
 	notArrived []AttendanceUserBasic,
+	restDay []AttendanceUserBasic,
 ) *AttendanceDetailResponse {
 	// 构建应到人员列表
 	shouldAttendList := make([]AttendanceUserBasic, 0, len(shouldAttend))
@@ -290,6 +314,10 @@ func NewAttendanceDetailResponse(
 			ID:   u.ID,
 			Name: u.Name,
 		})
+	}
+
+	if restDay == nil {
+		restDay = []AttendanceUserBasic{}
 	}
 
 	// 其他列表由调用方填充
@@ -306,12 +334,14 @@ func NewAttendanceDetailResponse(
 			OnTime:       len(onTime),
 			Leave:        len(leave),
 			NotArrived:   len(notArrived),
+			RestDay:      len(restDay),
 		},
 		Users: AttendanceUserLists{
 			ShouldAttend: shouldAttendList,
 			OnTime:       onTime,
 			Leave:        leave,
 			NotArrived:   notArrived,
+			RestDay:      restDay,
 		},
 	}
 }

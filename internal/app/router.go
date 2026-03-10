@@ -62,6 +62,7 @@ func registerRoutes(r *gin.Engine, h *handler.Handler, auditSvc *service.AuditLo
 	registerAttendanceRoutes(protected, h)      // 考勤相关
 	registerSemesterRoutes(protected, h)        // 学期相关
 	registerScheduleSettingRoutes(protected, h) // 作息设置相关
+	registerRestDayRoutes(protected, h)         // 休息日相关
 }
 
 // registerSemesterRoutes 学期相关路由
@@ -81,5 +82,9 @@ func registerScheduleSettingRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 		// 考勤开关
 		schedule.GET("/attendance/status", h.ScheduleSettingHdl.GetAttendanceStatus)
 		schedule.POST("/attendance/toggle", h.ScheduleSettingHdl.ToggleAttendance)
+
+		// 休息日编辑权限开关
+		schedule.GET("/rest-day-editing/status", h.ScheduleSettingHdl.GetRestDayEditingStatus)
+		schedule.POST("/rest-day-editing/toggle", middleware.RequireAdmin(), h.ScheduleSettingHdl.ToggleRestDayEditing)
 	}
 }

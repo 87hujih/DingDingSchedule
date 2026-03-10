@@ -28,6 +28,7 @@ type AttendanceRecordService struct {
 	leaveRepo            repository.LeaveApprovalRepository
 	attendanceRecordRepo repository.AttendanceRecordRepository
 	scheduleSettingRepo  repository.ScheduleSettingRepository
+	restDayRepo          repository.UserRestDayRepository
 	dingMgr              *DingTalkClientManager
 	scheduleCfg          config.Schedule        // 配置文件作为回退
 	schedulePeriodSrv    *SchedulePeriodService // 从数据库读取作息时间
@@ -42,6 +43,7 @@ func NewAttendanceRecordService(
 	leaveRepo repository.LeaveApprovalRepository,
 	attendanceRecordRepo repository.AttendanceRecordRepository,
 	scheduleSettingRepo repository.ScheduleSettingRepository,
+	restDayRepo repository.UserRestDayRepository,
 	dingMgr *DingTalkClientManager,
 	schedulePeriodSrv *SchedulePeriodService,
 	semesterSrv *SemesterService,
@@ -54,6 +56,7 @@ func NewAttendanceRecordService(
 		leaveRepo:            leaveRepo,
 		attendanceRecordRepo: attendanceRecordRepo,
 		scheduleSettingRepo:  scheduleSettingRepo,
+		restDayRepo:          restDayRepo,
 		dingMgr:              dingMgr,
 		schedulePeriodSrv:    schedulePeriodSrv,
 		semesterSrv:          semesterSrv,
@@ -109,7 +112,26 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 		return nil, nil, err
 	}
 
+	// 5.5 新增：查询休息日用户，从应到名单中移除
+	dayOfWeek := scheduleutil.WeekdayMon1Sun7(date)
+	restDayUsers := s.filterRestDayUsers(ctx, shouldAttend, dayOfWeek)
+	if len(restDayUsers) > 0 {
+		restDaySet := make(map[uint]bool, len(restDayUsers))
+		for _, u := range restDayUsers {
+			restDaySet[u.ID] = true
+		}
+		filtered := make([]model.User, 0, len(shouldAttend))
+		for _, u := range shouldAttend {
+			if !restDaySet[u.ID] {
+				filtered = append(filtered, u)
+			}
+		}
+		shouldAttend = filtered
+	}
+
 	if len(shouldAttend) == 0 {
+		// 构建休息日用户基础信息
+		restDayBasic := toRestDayBasicList(restDayUsers)
 		return dto.NewAttendanceDetailResponse(
 			req.Date, req.Week, req.Section,
 			periods[req.Section-1].Start,
@@ -118,6 +140,7 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 			[]dto.AttendanceUserCheck{},
 			[]dto.AttendanceUserLeave{},
 			[]dto.AttendanceUserBasic{},
+			restDayBasic,
 		), nil, nil
 	}
 
@@ -140,12 +163,13 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 	// 9. 需要通知的人员：应到但未正常打卡且未请假（含迟到和缺勤）
 	notifyUsers := buildNotifyList(shouldAttend, onTime, leave)
 
-	// 10. 构建响应
+	// 10. 构建响应（包含休息日用户）
+	restDayBasic := toRestDayBasicList(restDayUsers)
 	return dto.NewAttendanceDetailResponse(
 		req.Date, req.Week, req.Section,
 		periods[req.Section-1].Start,
 		periods[req.Section-1].End,
-		shouldAttend, onTime, leave, notArrived,
+		shouldAttend, onTime, leave, notArrived, restDayBasic,
 	), notifyUsers, nil
 }
 
@@ -160,6 +184,7 @@ func (s *AttendanceRecordService) SaveAttendanceRecord(
 	onTimeJSON, _ := s.serializeOnTimeUsers(resp.Users.OnTime)
 	leaveJSON, _ := s.serializeLeaveUsers(resp.Users.Leave)
 	notArrivedJSON, _ := s.serializeNotArrivedUsers(resp.Users.NotArrived)
+	restDayJSON, _ := s.serializeRestDayUsers(resp.Users.RestDay)
 
 	record := &model.AttendanceRecord{
 		Date:          date,
@@ -168,6 +193,7 @@ func (s *AttendanceRecordService) SaveAttendanceRecord(
 		OnTimeIDs:     onTimeJSON,
 		LeaveIDs:      leaveJSON,
 		NotArrivedIDs: notArrivedJSON,
+		RestDayIDs:    restDayJSON,
 	}
 
 	return s.attendanceRecordRepo.Upsert(ctx, record)
@@ -649,6 +675,71 @@ func (s *AttendanceRecordService) serializeNotArrivedUsers(users []dto.Attendanc
 	return string(b), err
 }
 
+func (s *AttendanceRecordService) serializeRestDayUsers(users []dto.AttendanceUserBasic) (string, error) {
+	ids := make([]uint, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.ID)
+	}
+	b, err := json.Marshal(ids)
+	return string(b), err
+}
+
+// filterRestDayUsers 从应到人员中筛出今日休息日的用户
+func (s *AttendanceRecordService) filterRestDayUsers(
+	ctx context.Context,
+	users []model.User,
+	dayOfWeek int,
+) []model.User {
+	if len(users) == 0 || s.restDayRepo == nil {
+		return nil
+	}
+
+	userIDs := make([]uint, 0, len(users))
+	for _, u := range users {
+		userIDs = append(userIDs, u.ID)
+	}
+
+	restDays, err := s.restDayRepo.ListByUserIDs(ctx, userIDs)
+	if err != nil {
+		s.logger.Warnw("查询休息日记录失败", "error", err)
+		return nil
+	}
+
+	restDayUserSet := make(map[uint]struct{})
+	for _, rd := range restDays {
+		if rd.DayOfWeek == dayOfWeek {
+			restDayUserSet[rd.UserID] = struct{}{}
+		}
+	}
+
+	if len(restDayUserSet) == 0 {
+		return nil
+	}
+
+	result := make([]model.User, 0, len(restDayUserSet))
+	for _, u := range users {
+		if _, ok := restDayUserSet[u.ID]; ok {
+			result = append(result, u)
+		}
+	}
+	return result
+}
+
+// toRestDayBasicList 将 model.User 列表转为 AttendanceUserBasic 列表
+func toRestDayBasicList(users []model.User) []dto.AttendanceUserBasic {
+	if len(users) == 0 {
+		return []dto.AttendanceUserBasic{}
+	}
+	result := make([]dto.AttendanceUserBasic, 0, len(users))
+	for _, u := range users {
+		result = append(result, dto.AttendanceUserBasic{
+			ID:   u.ID,
+			Name: u.Name,
+		})
+	}
+	return result
+}
+
 // GetAttendanceRecordsByDate 获取某天所有节次的考勤记录
 func (s *AttendanceRecordService) GetAttendanceRecordsByDate(
 	ctx context.Context,
@@ -737,6 +828,14 @@ func (s *AttendanceRecordService) extractAllUserIDs(record *model.AttendanceReco
 	var notArrived []uint
 	json.Unmarshal([]byte(record.NotArrivedIDs), &notArrived)
 	for _, id := range notArrived {
+		idSet[id] = true
+	}
+
+	var restDay []uint
+	if err := json.Unmarshal([]byte(record.RestDayIDs), &restDay); err != nil && record.RestDayIDs != "" && record.RestDayIDs != "null" {
+		s.logger.Warnw("解析RestDayIDs失败", "recordID", record.ID, "error", err)
+	}
+	for _, id := range restDay {
 		idSet[id] = true
 	}
 
@@ -954,6 +1053,9 @@ func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDet
 		"正常打卡" + intToString(detail.Statistics.OnTime) + "人，" +
 		"请假" + intToString(detail.Statistics.Leave) + "人，" +
 		"未到" + intToString(detail.Statistics.NotArrived) + "人"
+	if detail.Statistics.RestDay > 0 {
+		statistics += "，休息" + intToString(detail.Statistics.RestDay) + "人"
+	}
 
 	// 构建分类人员列表
 	content := make([]string, 0, 3)
@@ -987,6 +1089,16 @@ func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDet
 			names = append(names, u.Name)
 		}
 		line := "❌ 未到(" + intToString(len(detail.Users.NotArrived)) + "人)：\n" + joinNames(names)
+		content = append(content, line)
+	}
+
+	// 休息
+	if len(detail.Users.RestDay) > 0 {
+		names := make([]string, 0, len(detail.Users.RestDay))
+		for _, u := range detail.Users.RestDay {
+			names = append(names, u.Name)
+		}
+		line := "😴 休息(" + intToString(len(detail.Users.RestDay)) + "人)：\n" + joinNames(names)
 		content = append(content, line)
 	}
 

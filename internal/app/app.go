@@ -156,6 +156,7 @@ func startAttendanceScheduler() *scheduler.AttendanceScheduler {
 		repo.LeaveRepo,
 		repo.AttendanceRecordRepo,
 		repo.ScheduleSettingRepo,
+		repo.UserRestDayRepo,
 		dingMgr,
 		schedulePeriodSrv,
 		semesterSrv,

@@ -16,6 +16,7 @@ type Handler struct {
 	AttendanceRecordHdl *AttendanceRecordHandler
 	ScheduleSettingHdl  *ScheduleSettingHandler
 	AuditLogHdl         *AuditLogHandler
+	RestDayHdl          *RestDayHandler
 }
 
 // NewHandler 创建 API 处理器集合
@@ -30,5 +31,6 @@ func NewHandler(svc *service.Service, repo *repository.Repository) *Handler {
 		AttendanceRecordHdl: NewAttendanceRecordHandler(svc.AttendanceRecordSrv, svc.SemesterSrv, svc.SchedulePeriodSrv),
 		ScheduleSettingHdl:  NewScheduleSettingHandler(svc.SchedulePeriodSrv),
 		AuditLogHdl:         NewAuditLogHandler(svc.AuditLogSrv),
+		RestDayHdl:          NewRestDayHandler(svc.RestDaySrv),
 	}
 }

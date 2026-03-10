@@ -36,6 +36,12 @@ type ScheduleSettingRepository interface {
 
 	// IsLateNotifyEnabled 检查迟到提醒通知是否启用
 	IsLateNotifyEnabled(ctx context.Context) (bool, error)
+
+	// SetRestDayEditingAllowed 设置休息日编辑权限开关
+	SetRestDayEditingAllowed(ctx context.Context, allowed bool) error
+
+	// IsRestDayEditingAllowed 检查休息日编辑权限是否启用
+	IsRestDayEditingAllowed(ctx context.Context) (bool, error)
 }
 
 type scheduleSettingRepository struct {
@@ -107,4 +113,18 @@ func (r *scheduleSettingRepository) IsLateNotifyEnabled(ctx context.Context) (bo
 		return true, err // 默认启用
 	}
 	return setting.LateNotifyEnabled, nil
+}
+
+func (r *scheduleSettingRepository) SetRestDayEditingAllowed(ctx context.Context, allowed bool) error {
+	return r.db.WithContext(ctx).
+		Model(&model.ScheduleSetting{}).
+		Update("rest_day_editing_allowed", allowed).Error
+}
+
+func (r *scheduleSettingRepository) IsRestDayEditingAllowed(ctx context.Context) (bool, error) {
+	setting, err := r.GetByTenantID(ctx)
+	if err != nil {
+		return true, err // 默认允许
+	}
+	return setting.RestDayEditingAllowed, nil
 }

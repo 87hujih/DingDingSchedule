@@ -10,6 +10,7 @@ type ScheduleSetting struct {
 	AttendanceEnabled           bool      `gorm:"not null;default:true" json:"attendance_enabled"`             // 考勤总开关
 	ScheduleChangeNotifyEnabled bool      `gorm:"not null;default:true" json:"schedule_change_notify_enabled"` // 课表变更通知开关
 	LateNotifyEnabled           bool      `gorm:"not null;default:true" json:"late_notify_enabled"`            // 迟到提醒通知开关
+	RestDayEditingAllowed       bool      `gorm:"not null;default:true" json:"rest_day_editing_allowed"`       // 休息日编辑开关
 	CreatedAt                   time.Time `json:"created_at"`
 	UpdatedAt                   time.Time `json:"updated_at"`
 }

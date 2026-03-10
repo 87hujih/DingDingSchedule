@@ -83,3 +83,31 @@ func (h *ScheduleSettingHandler) GetAttendanceStatus(c *gin.Context) {
 	}
 	response.OK(c, dto.AttendanceStatusResponse{Enabled: enabled})
 }
+
+// ToggleRestDayEditing 切换休息日编辑权限开关
+// POST /api/schedule/rest-day-editing/toggle
+func (h *ScheduleSettingHandler) ToggleRestDayEditing(c *gin.Context) {
+	var req dto.ToggleRestDayEditingRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Fail(c, response.CodeInvalidParam, "请求参数错误")
+		return
+	}
+
+	if err := h.schedulePeriodSrv.SetRestDayEditingAllowed(c.Request.Context(), req.Allowed); err != nil {
+		response.FailWithError(c, err)
+		return
+	}
+
+	response.OK(c, gin.H{"allowed": req.Allowed})
+}
+
+// GetRestDayEditingStatus 获取休息日编辑权限状态
+// GET /api/schedule/rest-day-editing/status
+func (h *ScheduleSettingHandler) GetRestDayEditingStatus(c *gin.Context) {
+	allowed, err := h.schedulePeriodSrv.IsRestDayEditingAllowed(c.Request.Context())
+	if err != nil {
+		response.FailWithError(c, err)
+		return
+	}
+	response.OK(c, dto.RestDayEditingStatusResponse{Allowed: allowed})
+}
