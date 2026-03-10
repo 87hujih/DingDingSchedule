@@ -255,6 +255,27 @@ func (r *userRepository) Upsert(ctx context.Context, user *model.User) error {
 		return r.Update(ctx, user)
 	}
 
+	// 查询软删除记录（唯一索引冲突兜底：被删除的用户重新登录时恢复）
+	var deleted model.User
+	err = r.db.WithContext(ctx).Unscoped().
+		Where("ding_user_id = ?", user.DingUserID).
+		First(&deleted).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	if deleted.ID != 0 {
+		// 恢复软删除用户，保留原有角色和状态
+		user.ID = deleted.ID
+		user.CreatedAt = deleted.CreatedAt
+		user.Role = deleted.Role
+		user.Status = deleted.Status
+		return r.db.WithContext(ctx).Unscoped().
+			Model(&model.User{}).
+			Where("id = ?", user.ID).
+			Select("*").Omit("id").
+			Updates(user).Error
+	}
+
 	// 不存在，创建
 	return r.Create(ctx, user)
 }
