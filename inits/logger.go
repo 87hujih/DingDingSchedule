@@ -85,8 +85,9 @@ func LogInit() {
 			zapcore.NewCore(fileEncoder, errorSyncer, zapcore.WarnLevel), // 只记录warn+
 		)
 	} else {
-		// 生产环境：全量文件 + 错误文件
+		// 生产环境：控制台 + 全量文件 + 错误文件
 		core = zapcore.NewTee(
+			zapcore.NewCore(consoleEncoder, consoleSyncer, level),
 			zapcore.NewCore(fileEncoder, allSyncer, level),
 			zapcore.NewCore(fileEncoder, errorSyncer, zapcore.WarnLevel), // 只记录warn+
 		)
