@@ -18,6 +18,7 @@ var Generators = table.GeneratorList{
 	"schedule_periods":  GetSchedulePeriodTable,
 	"schedule_settings": GetScheduleSettingTable,
 	"audit_logs":        GetAuditLogTable,
+	"system_logs":       GetSystemLogTable,
 }
 
 // GetTenantTable tenants 表的 CRUD 配置

@@ -9,7 +9,18 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
+	"gorm.io/gorm"
 )
+
+// dbCore 持有延迟注入 DB 的日志 core，供 AttachDBToLogger 使用。
+var dbCore *dbLogCore
+
+// AttachDBToLogger 在 DB 初始化完成后调用，激活 Error+ 日志入库功能。
+func AttachDBToLogger(db *gorm.DB) {
+	if dbCore != nil {
+		dbCore.attachDB(db)
+	}
+}
 
 // LogInit 初始化 zap 日志
 func LogInit() {
@@ -74,24 +85,15 @@ func LogInit() {
 	errorSyncer := zapcore.AddSync(errorWriter)
 	consoleSyncer := zapcore.AddSync(os.Stdout)
 
-	// 8. Dev / Prod 区分输出策略（支持分级存储）
-	var core zapcore.Core
+	// 8. 构建多输出 core：控制台 + 全量文件 + 错误文件 + DB（Error+）
+	dbCore = newDBLogCore(zapcore.ErrorLevel)
 
-	if global.AppConfig.Env == "dev" {
-		// 开发环境：控制台 + 全量文件 + 错误文件
-		core = zapcore.NewTee(
-			zapcore.NewCore(consoleEncoder, consoleSyncer, level),
-			zapcore.NewCore(fileEncoder, allSyncer, level),
-			zapcore.NewCore(fileEncoder, errorSyncer, zapcore.WarnLevel), // 只记录warn+
-		)
-	} else {
-		// 生产环境：控制台 + 全量文件 + 错误文件
-		core = zapcore.NewTee(
-			zapcore.NewCore(consoleEncoder, consoleSyncer, level),
-			zapcore.NewCore(fileEncoder, allSyncer, level),
-			zapcore.NewCore(fileEncoder, errorSyncer, zapcore.WarnLevel), // 只记录warn+
-		)
-	}
+	core := zapcore.NewTee(
+		zapcore.NewCore(consoleEncoder, consoleSyncer, level),
+		zapcore.NewCore(fileEncoder, allSyncer, level),
+		zapcore.NewCore(fileEncoder, errorSyncer, zapcore.WarnLevel),
+		dbCore,
+	)
 
 	// 9. 构建 Logger
 	logger := zap.New(
