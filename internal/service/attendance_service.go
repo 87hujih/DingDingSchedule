@@ -154,6 +154,19 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 		hasCourseItems[i].DeptName = deptNameMap[hasCourseItems[i].ID]
 	}
 
+	if shouldArriveItems == nil {
+		shouldArriveItems = []dto.CourseAttendanceUserItem{}
+	}
+	if onLeaveItems == nil {
+		onLeaveItems = []dto.CourseAttendanceUserItem{}
+	}
+	if onRestDayItems == nil {
+		onRestDayItems = []dto.CourseAttendanceUserItem{}
+	}
+	if hasCourseItems == nil {
+		hasCourseItems = []dto.CourseAttendanceUserItem{}
+	}
+
 	return &dto.SlotAttendanceStatusResponse{
 		Date:         date.Format("2006-01-02"),
 		Week:         week,

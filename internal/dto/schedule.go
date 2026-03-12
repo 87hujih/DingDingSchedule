@@ -179,9 +179,9 @@ type SlotAttendanceStatusResponse struct {
 	DayOfWeek    int                        `json:"day_of_week"`
 	Section      int                        `json:"section"`
 	ShouldArrive []CourseAttendanceUserItem `json:"should_arrive"`
-	OnLeave      []CourseAttendanceUserItem `json:"on_leave,omitempty"`
-	OnRestDay    []CourseAttendanceUserItem `json:"on_rest_day,omitempty"`
-	HasCourse    []CourseAttendanceUserItem `json:"has_course,omitempty"`
+	OnLeave      []CourseAttendanceUserItem `json:"on_leave"`
+	OnRestDay    []CourseAttendanceUserItem `json:"on_rest_day"`
+	HasCourse    []CourseAttendanceUserItem `json:"has_course"`
 }
 
 // CourseLeaveRecordItem 请假记录明细（点击人员后展示）

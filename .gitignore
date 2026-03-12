@@ -17,7 +17,7 @@ ai_docs
 # Logs
 logs/
 *.log
-
+docs
 # Temp files
 *.tmp
 *.swp
