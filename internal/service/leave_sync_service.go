@@ -339,6 +339,24 @@ func normalizeStatus(s string) string {
 	}
 }
 
+// GetRecentLeaves 获取指定用户近期已通过的请假记录
+func (s *LeaveSyncService) GetRecentLeaves(ctx context.Context, userID uint, days int) ([]model.LeaveApproval, error) {
+	endAt := time.Now()
+	startAt := endAt.AddDate(0, 0, -days)
+	records, err := s.leaveRepo.ListApprovedByUserIDs(ctx, []uint{userID}, startAt, endAt)
+	if err != nil {
+		return nil, err
+	}
+	// repo 方法不过滤审批状态，需内存过滤
+	var approved []model.LeaveApproval
+	for _, r := range records {
+		if r.Result == "agree" {
+			approved = append(approved, r)
+		}
+	}
+	return approved, nil
+}
+
 // normalizeResult 归一化审批结果。
 func normalizeResult(s string) string {
 	s = strings.TrimSpace(s)

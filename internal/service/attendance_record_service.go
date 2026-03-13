@@ -163,6 +163,34 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 		return nil, nil, err
 	}
 
+	// 7.5 优先级处理：请假 > 已到，休息 > 已到，从 onTime 中移除对应用户
+	if len(leave) > 0 {
+		leaveSet := make(map[uint]bool, len(leave))
+		for _, u := range leave {
+			leaveSet[u.ID] = true
+		}
+		filtered := make([]dto.AttendanceUserCheck, 0, len(onTime))
+		for _, u := range onTime {
+			if !leaveSet[u.ID] {
+				filtered = append(filtered, u)
+			}
+		}
+		onTime = filtered
+	}
+	if len(restDayUsers) > 0 {
+		restSet := make(map[uint]bool, len(restDayUsers))
+		for _, u := range restDayUsers {
+			restSet[u.ID] = true
+		}
+		filtered := make([]dto.AttendanceUserCheck, 0, len(onTime))
+		for _, u := range onTime {
+			if !restSet[u.ID] {
+				filtered = append(filtered, u)
+			}
+		}
+		onTime = filtered
+	}
+
 	// 8. 计算未到人员（应到 - 正常打卡 - 请假）
 	notArrived := s.calculateNotArrived(shouldAttend, onTime, leave)
 
@@ -977,6 +1005,128 @@ func (s *AttendanceRecordService) GetWeeklyRanking(ctx context.Context, req *dto
 	})
 
 	return &dto.WeeklyAttendanceRankingResponse{Items: items}, nil
+}
+
+// GetWeeklyAttendanceRateRanking 获取本周出勤率排行（出勤率从高到低，取 Top 10）
+func (s *AttendanceRecordService) GetWeeklyAttendanceRateRanking(
+	ctx context.Context,
+	req *dto.WeeklyAttendanceRankingRequest,
+) (*dto.WeeklyAttendanceRateRankingResponse, error) {
+	// 1. 计算周起止时间（复用 GetWeeklyRanking 的逻辑）
+	now := time.Now()
+	offset := int(time.Monday - now.Weekday())
+	if offset > 0 {
+		offset = -6
+	}
+	totalOffset := offset - (req.WeekOffset * 7)
+	weekStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, totalOffset)
+	weekEnd := weekStart.AddDate(0, 0, 6)
+
+	// 2. 查询指定周所有考勤记录
+	records, err := s.attendanceRecordRepo.ListByDateRange(ctx, weekStart, weekEnd)
+	if err != nil {
+		return nil, errs.WrapMsgErr("获取考勤记录失败", err)
+	}
+
+	// 3. 统计每个用户的应到次数和正常签到次数
+	totalSlots := make(map[uint]int)
+	onTimeSlots := make(map[uint]int)
+
+	for _, r := range records {
+		// 解析正常签到人员
+		var onTime []dto.StoredUserCheck
+		if r.OnTimeIDs != "" && r.OnTimeIDs != "[]" {
+			json.Unmarshal([]byte(r.OnTimeIDs), &onTime)
+		}
+		onTimeSet := make(map[uint]bool, len(onTime))
+		for _, u := range onTime {
+			onTimeSet[u.ID] = true
+		}
+
+		// 解析未到人员
+		var notArrived []uint
+		if r.NotArrivedIDs != "" && r.NotArrivedIDs != "[]" {
+			json.Unmarshal([]byte(r.NotArrivedIDs), &notArrived)
+		}
+
+		// 解析请假人员
+		var leaveUsers []dto.StoredUserLeave
+		if r.LeaveIDs != "" && r.LeaveIDs != "[]" {
+			json.Unmarshal([]byte(r.LeaveIDs), &leaveUsers)
+		}
+
+		// 应到用户 = onTime + notArrived + leave（不含 hasCourse）
+		for _, u := range onTime {
+			totalSlots[u.ID]++
+			onTimeSlots[u.ID]++
+		}
+		for _, uid := range notArrived {
+			totalSlots[uid]++
+		}
+		for _, u := range leaveUsers {
+			totalSlots[u.ID]++
+		}
+	}
+
+	if len(totalSlots) == 0 {
+		return &dto.WeeklyAttendanceRateRankingResponse{Items: []dto.AttendanceRateRankingItem{}}, nil
+	}
+
+	// 4. 计算出勤率并排序
+	type rateEntry struct {
+		userID  uint
+		onTime  int
+		total   int
+		rate    float64
+	}
+	entries := make([]rateEntry, 0, len(totalSlots))
+	for uid, total := range totalSlots {
+		if total == 0 {
+			continue
+		}
+		onTime := onTimeSlots[uid]
+		rate := float64(onTime) / float64(total) * 100
+		entries = append(entries, rateEntry{userID: uid, onTime: onTime, total: total, rate: rate})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].rate > entries[j].rate
+	})
+	if len(entries) > 10 {
+		entries = entries[:10]
+	}
+
+	// 5. 获取用户信息
+	userIDs := make([]uint, len(entries))
+	for i, e := range entries {
+		userIDs[i] = e.userID
+	}
+	users, err := s.userRepo.ListByIDs(ctx, userIDs)
+	if err != nil {
+		return nil, errs.WrapMsgErr("获取用户信息失败", err)
+	}
+	userMap := make(map[uint]*model.User, len(users))
+	for i := range users {
+		userMap[users[i].ID] = &users[i]
+	}
+
+	// 6. 构建响应
+	items := make([]dto.AttendanceRateRankingItem, 0, len(entries))
+	for _, e := range entries {
+		u := userMap[e.userID]
+		if u == nil {
+			continue
+		}
+		items = append(items, dto.AttendanceRateRankingItem{
+			UserID:      u.ID,
+			Name:        u.Name,
+			Avatar:      u.Avatar,
+			OnTimeCount: e.onTime,
+			TotalCount:  e.total,
+			Rate:        fmt.Sprintf("%.0f%%", e.rate),
+		})
+	}
+
+	return &dto.WeeklyAttendanceRateRankingResponse{Items: items}, nil
 }
 
 // buildUserMapWithDeptFilter 构建用户映射（支持部门过滤）

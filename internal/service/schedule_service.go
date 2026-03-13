@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"schedule_server/config"
 	"schedule_server/internal/consts"
 	"schedule_server/internal/dto"
 	"schedule_server/internal/errs"
@@ -459,6 +460,72 @@ func hasDeptIntersection(a, b []int64) bool {
 		}
 	}
 	return false
+}
+
+// FreeUserSlot 某节次的无课人员
+type FreeUserSlot struct {
+	DayOfWeek int
+	Section   int
+	SlotStart string
+	SlotEnd   string
+	FreeUsers []model.User
+}
+
+// GetFreeUsersBySlot 返回指定周次、星期范围内各节次的无课人员
+func (s *ScheduleService) GetFreeUsersBySlot(
+	ctx context.Context,
+	week, dayStart, dayEnd int,
+	periods []config.Period,
+) ([]FreeUserSlot, error) {
+	// 1. 获取所有参与考勤的用户（status=1）
+	allUsers, err := s.userRepo.ListByScope(ctx, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	var activeUsers []model.User
+	for _, u := range allUsers {
+		if u.Status == 1 {
+			activeUsers = append(activeUsers, u)
+		}
+	}
+	if len(activeUsers) == 0 {
+		return nil, nil
+	}
+
+	userIDs := make([]uint, len(activeUsers))
+	for i, u := range activeUsers {
+		userIDs[i] = u.ID
+	}
+
+	var results []FreeUserSlot
+	for day := dayStart; day <= dayEnd; day++ {
+		for section := 1; section <= len(periods); section++ {
+			courses, err := s.courseRepo.ListByUsersDaySection(ctx, userIDs, day, section)
+			if err != nil {
+				return nil, err
+			}
+			busySet := make(map[uint]bool)
+			for _, c := range courses {
+				if weekutil.ContainsWeek(c.WeekList, week) {
+					busySet[c.UserID] = true
+				}
+			}
+			var freeUsers []model.User
+			for _, u := range activeUsers {
+				if !busySet[u.ID] {
+					freeUsers = append(freeUsers, u)
+				}
+			}
+			results = append(results, FreeUserSlot{
+				DayOfWeek: day,
+				Section:   section,
+				SlotStart: periods[section-1].Start,
+				SlotEnd:   periods[section-1].End,
+				FreeUsers: freeUsers,
+			})
+		}
+	}
+	return results, nil
 }
 
 // sendScheduleChangeNotification 异步发送课表变更通知
