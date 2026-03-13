@@ -124,6 +124,16 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 		shouldArriveItems = toAttendanceUserItems(shouldArriveUsers, nil)
 	}
 
+	// 优先级：请假 > 应到，从 shouldArrive 移除请假用户（与休息日处理保持一致）
+	if len(onLeaveItems) > 0 {
+		leaveSet := make(map[uint]struct{}, len(onLeaveItems))
+		for _, item := range onLeaveItems {
+			leaveSet[item.ID] = struct{}{}
+		}
+		shouldArriveUsers = filterUsersByExclude(shouldArriveUsers, leaveSet)
+		shouldArriveItems = toAttendanceUserItems(shouldArriveUsers, nil)
+	}
+
 	// 批量查询部门名称并填充
 	userIDs := make([]uint, 0, len(shouldArriveUsers)+len(onRestDayItems)+len(hasCourseUsers))
 	for _, u := range shouldArriveUsers {

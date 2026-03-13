@@ -27,8 +27,7 @@ configs/local.yaml
 configs/dev.yaml
 configs/prod.yaml
 .env
-.claude/settings.local.json
-.claude/settings.json
+.claude/
 
 # Uploads
 uploads/
