@@ -3,7 +3,12 @@ package dingtalk
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"regexp"
+	"strings"
+	"time"
 
+	"github.com/open-dingtalk/dingtalk-stream-sdk-go/chatbot"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/client"
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/payload"
 	"go.uber.org/zap"
@@ -19,6 +24,8 @@ type StreamClient struct {
 
 	// 事件处理回调
 	onBpmsEvent func(ctx context.Context, corpID, processInstanceID, eventType string) error
+	// 聊天消息处理回调
+	chatHandler func(ctx context.Context, msg *ChatMessage) (string, error)
 }
 
 // NewStreamClient 创建 Stream 客户端
@@ -36,6 +43,25 @@ func (s *StreamClient) SetBpmsEventHandler(handler func(ctx context.Context, cor
 	s.onBpmsEvent = handler
 }
 
+// ChatMessage 机器人收到的聊天消息（解析后的结构）
+type ChatMessage struct {
+	CorpID            string
+	SenderID          string
+	SenderNick        string
+	Content           string
+	ConversationID    string
+	ConversationType  string // "1"=单聊, "2"=群聊
+	ConversationTitle string
+	SessionWebhook    string
+}
+
+// SetChatMessageHandler 设置聊天消息处理器
+func (s *StreamClient) SetChatMessageHandler(handler func(ctx context.Context, msg *ChatMessage) (string, error)) {
+	s.chatHandler = handler
+}
+
+var mentionRegexp = regexp.MustCompile(`@\S+\s*`)
+
 // Start 启动 Stream 客户端（阻塞，使用 SDK 内置重连）
 func (s *StreamClient) Start(ctx context.Context) error {
 	defer func() {
@@ -45,23 +71,76 @@ func (s *StreamClient) Start(ctx context.Context) error {
 		}
 	}()
 
-	cli := client.NewStreamClient(
+	opts := []client.ClientOption{
 		client.WithAppCredential(client.NewAppCredentialConfig(s.appKey, s.appSecret)),
 		client.WithSubscription("EVENT", "*", s.handleEvent),
-		client.WithAutoReconnect(true), // 使用 SDK 内置重连机制
-	)
+		client.WithAutoReconnect(true),
+	}
+
+	// 注册机器人消息回调
+	if s.chatHandler != nil {
+		chatbotHandler := chatbot.NewDefaultChatBotFrameHandler(s.handleChatBotMessage)
+		opts = append(opts, client.WithSubscription("CALLBACK", "/v1.0/im/bot/messages/get", chatbotHandler.OnEventReceived))
+	}
+
+	cli := client.NewStreamClient(opts...)
 
 	s.client = cli
 
 	// Start 是阻塞的，会一直运行直到 context 取消
-	// 注意：SDK v0.9.1 在关闭时可能有 "send on closed channel" panic
-	// 这是 SDK 内部 goroutine 的竞态问题，无法在此捕获
 	if err := cli.Start(ctx); err != nil && err != context.Canceled {
 		s.logger.Errorw("Stream 客户端启动失败", "err", err)
 		return err
 	}
 
 	return ctx.Err()
+}
+
+// handleChatBotMessage 处理机器人聊天消息（SDK chatbot 框架回调）
+func (s *StreamClient) handleChatBotMessage(ctx context.Context, data *chatbot.BotCallbackDataModel) ([]byte, error) {
+	if s.chatHandler == nil {
+		return []byte(""), nil
+	}
+
+	content := strings.TrimSpace(data.Text.Content)
+	// 群聊时剥离 @mention
+	if data.ConversationType == "2" {
+		content = mentionRegexp.ReplaceAllString(content, "")
+		content = strings.TrimSpace(content)
+	}
+
+	msg := &ChatMessage{
+		CorpID:            data.SenderCorpId,
+		SenderID:          data.SenderStaffId,
+		SenderNick:        data.SenderNick,
+		Content:           content,
+		ConversationID:    data.ConversationId,
+		ConversationType:  data.ConversationType,
+		ConversationTitle: data.ConversationTitle,
+		SessionWebhook:    data.SessionWebhook,
+	}
+
+	// 25 秒超时保护
+	timeoutCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+
+	reply, err := s.chatHandler(timeoutCtx, msg)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			reply = "处理超时，请重试"
+		} else {
+			s.logger.Errorw("处理聊天消息失败", "senderID", data.SenderStaffId, "err", err)
+			reply = "处理出错，请重试"
+		}
+	}
+
+	// 通过 SessionWebhook 回复消息
+	replier := chatbot.NewChatbotReplier()
+	if err := replier.SimpleReplyText(timeoutCtx, data.SessionWebhook, []byte(reply)); err != nil {
+		s.logger.Errorw("回复聊天消息失败", "senderID", data.SenderStaffId, "err", err)
+	}
+
+	return []byte(""), nil
 }
 
 // handleEvent 处理钉钉事件

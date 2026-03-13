@@ -224,6 +224,26 @@ func (c *Client) SendWorkNoticeText(ctx context.Context, agentID string, userIDs
 	return nil
 }
 
+// SendGroupRobotMessage 机器人主动发文本消息到群聊
+func (c *Client) SendGroupRobotMessage(ctx context.Context, robotCode, conversationID, content string) error {
+	msgParam, err := json.Marshal(map[string]string{"content": content})
+	if err != nil {
+		return fmt.Errorf("钉钉: 序列化 msgParam 失败: %w", err)
+	}
+	body := map[string]string{
+		"robotCode":          robotCode,
+		"openConversationId": conversationID,
+		"msgKey":             "sampleText",
+		"msgParam":           string(msgParam),
+	}
+
+	_, err = c.Post(ctx, "https://api.dingtalk.com/v1.0/robot/groupMessages/send", body)
+	if err != nil {
+		return fmt.Errorf("钉钉: 发送群消息失败: %w", err)
+	}
+	return nil
+}
+
 func (c *Client) sendWorkNoticeTextByChunk(ctx context.Context, agentID string, userIDs []string, content string, isRetry bool) error {
 	token, err := c.GetAccessToken(ctx)
 	if err != nil {

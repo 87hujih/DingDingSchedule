@@ -13,8 +13,9 @@ import (
 
 // StreamClientManager 管理多租户的 Stream 客户端
 type StreamClientManager struct {
-	tenantRepo repository.TenantRepository
-	logger     *zap.SugaredLogger
+	tenantRepo  repository.TenantRepository
+	logger      *zap.SugaredLogger
+	chatHandler func(ctx context.Context, msg *dingtalk.ChatMessage) (string, error)
 
 	mu      sync.RWMutex
 	clients map[uint]*streamClientEntry // tenantID -> client entry
@@ -34,6 +35,13 @@ func NewStreamClientManager(tenantRepo repository.TenantRepository, logger *zap.
 		clients:    make(map[uint]*streamClientEntry),
 		cancels:    make(map[uint]context.CancelFunc),
 	}
+}
+
+// SetChatMessageHandler 设置聊天消息处理器（在 StartAll 之前调用）
+func (m *StreamClientManager) SetChatMessageHandler(handler func(ctx context.Context, msg *dingtalk.ChatMessage) (string, error)) {
+	m.mu.Lock()
+	m.chatHandler = handler
+	m.mu.Unlock()
 }
 
 // StartAll 启动所有活跃租户的 Stream 客户端
@@ -93,6 +101,9 @@ func (m *StreamClientManager) StartForTenant(parentCtx context.Context, tenant *
 	// 创建 Stream 客户端
 	streamClient := dingtalk.NewStreamClient(tenant.AppKey, tenant.AppSecret, tenant.CorpID, m.logger)
 	streamClient.SetBpmsEventHandler(eventHandler)
+	if m.chatHandler != nil {
+		streamClient.SetChatMessageHandler(m.chatHandler)
+	}
 
 	// 创建可取消的 context
 	ctx, cancel := context.WithCancel(parentCtx)
