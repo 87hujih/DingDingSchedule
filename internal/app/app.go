@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"schedule_server/global"
+	"schedule_server/internal/agent"
 	"schedule_server/internal/repository"
 	"schedule_server/internal/scheduler"
 	"schedule_server/internal/service"
@@ -27,8 +28,10 @@ func RunServer() {
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 
 	// 启动钉钉 Stream 客户端（如果启用）
+	var agentInstance *agent.Agent
 	if global.AppConfig.DingTalk.StreamMode {
-		go startDingTalkStream(streamCtx)
+		agentInstance = initAgent()
+		go startDingTalkStream(streamCtx, agentInstance)
 	}
 
 	// 启动考勤调度器
@@ -72,6 +75,11 @@ func RunServer() {
 	// 给 Stream 客户端 2 秒时间优雅关闭，避免 SDK 内部 goroutine 竞态
 	time.Sleep(2 * time.Second)
 
+	// 停止 Agent（清理 session 过期 goroutine）
+	if agentInstance != nil {
+		agentInstance.Stop()
+	}
+
 	// 停止考勤调度器
 	if attendanceScheduler != nil {
 		attendanceScheduler.Stop()
@@ -99,7 +107,7 @@ func RunServer() {
 }
 
 // startDingTalkStream 启动钉钉 Stream 客户端（多租户模式）
-func startDingTalkStream(ctx context.Context) {
+func startDingTalkStream(ctx context.Context, agentInstance *agent.Agent) {
 	// 捕获 SDK 内部 goroutine 可能的 panic（如关闭时的 "send on closed channel"）
 	defer func() {
 		if r := recover(); r != nil {
@@ -120,6 +128,11 @@ func startDingTalkStream(ctx context.Context) {
 		return leaveSyncSrv.SyncProcessInstance(ctx, corpID, processInstanceID)
 	}
 
+	// 注册 Agent 聊天消息处理器
+	if agentInstance != nil {
+		streamMgr.SetChatMessageHandler(agentInstance.Chat)
+	}
+
 	// 启动所有活跃租户的 Stream 客户端
 	if err := streamMgr.StartAll(ctx, eventHandler); err != nil {
 		global.Log.Errorw("启动 Stream 客户端管理器失败", "err", err)
@@ -131,6 +144,50 @@ func startDingTalkStream(ctx context.Context) {
 
 	// 停止所有客户端
 	streamMgr.StopAll()
+}
+
+// initAgent 创建 Agent 及其依赖的 Service
+func initAgent() *agent.Agent {
+	repo := repository.NewRepository(global.DB)
+	dingMgr := service.NewDingTalkClientManager(repo.TenantRepo)
+
+	schedulePeriodSrv := service.NewSchedulePeriodService(
+		repo.SchedulePeriodRepo,
+		repo.ScheduleSettingRepo,
+		&global.AppConfig.Schedule,
+	)
+	semesterSrv := service.NewSemesterService(repo.SemesterRepo)
+
+	scheduleSrv := service.NewScheduleService(
+		repo.CourseRepo,
+		repo.UserRepo,
+		repo.SemesterRepo,
+		repo.ScheduleSettingRepo,
+		dingMgr,
+		global.Log,
+	)
+	attendanceSrv := service.NewAttendanceRecordService(
+		repo.UserRepo,
+		repo.CourseRepo,
+		repo.LeaveRepo,
+		repo.AttendanceRecordRepo,
+		repo.ScheduleSettingRepo,
+		repo.UserRestDayRepo,
+		dingMgr,
+		schedulePeriodSrv,
+		semesterSrv,
+		global.AppConfig.Schedule,
+		global.Log,
+	)
+	restDaySrv := service.NewRestDayService(
+		repo.UserRestDayRepo,
+		repo.ScheduleSettingRepo,
+		repo.UserRepo,
+		global.Log,
+	)
+	leaveSyncSrv := service.NewLeaveSyncService(repo.LeaveRepo, repo.UserRepo, dingMgr, global.Log)
+
+	return buildAgent(repo, scheduleSrv, attendanceSrv, semesterSrv, schedulePeriodSrv, restDaySrv, leaveSyncSrv)
 }
 
 // startAttendanceScheduler 启动考勤调度器
