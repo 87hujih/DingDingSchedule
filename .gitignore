@@ -25,7 +25,7 @@ docs
 # Local config (contains secrets)
 configs/local.yaml
 configs/dev.yaml
-configs/dev.yaml
+configs/prod.yaml
 .env
 .claude/settings.local.json
 .claude/settings.json
