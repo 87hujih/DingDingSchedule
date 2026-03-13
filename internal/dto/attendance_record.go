@@ -374,3 +374,18 @@ func NewAttendanceDetailResponse(
 		},
 	}
 }
+
+// AttendanceRateRankingItem 用户出勤率排行条目
+type AttendanceRateRankingItem struct {
+	UserID      uint   `json:"user_id"`
+	Name        string `json:"name"`
+	Avatar      string `json:"avatar"`
+	OnTimeCount int    `json:"on_time_count"`
+	TotalCount  int    `json:"total_count"`
+	Rate        string `json:"rate"`
+}
+
+// WeeklyAttendanceRateRankingResponse 本周出勤率排行响应
+type WeeklyAttendanceRateRankingResponse struct {
+	Items []AttendanceRateRankingItem `json:"items"`
+}

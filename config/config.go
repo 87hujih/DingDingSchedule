@@ -17,6 +17,14 @@ type Config struct {
 	GoAdmin  GoAdmin  `mapstructure:"goadmin" yaml:"goadmin"`
 	Env      string   `mapstructure:"env" yaml:"env"`
 	App      App      `mapstructure:"app" yaml:"app"`
+	LLM      LLM      `mapstructure:"llm" yaml:"llm"`
+}
+
+// LLM OpenAI-compatible API 配置
+type LLM struct {
+	BaseURL string `mapstructure:"base_url" yaml:"base_url"`
+	APIKey  string `mapstructure:"api_key" yaml:"api_key"`
+	Model   string `mapstructure:"model" yaml:"model"`
 }
 
 // Server 配置
