@@ -59,6 +59,7 @@ func AutoMigrate() {
 		&model.AuditLog{},
 		&model.UserRestDay{},
 		&model.SystemLog{},
+		&model.GroupAttendanceSubscription{},
 	); err != nil {
 		global.Log.Fatalf("数据库迁移失败: %v", err)
 	}
