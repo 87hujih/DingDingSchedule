@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"sync"
+	"time"
 
 	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
@@ -117,7 +118,7 @@ func (m *StreamClientManager) StartForTenant(parentCtx context.Context, tenant *
 	m.cancels[tenant.ID] = cancel
 	m.mu.Unlock()
 
-	// 在独立 goroutine 中启动客户端
+	// 在独立 goroutine 中启动客户端，失败后自动重试（指数退避）
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -129,17 +130,50 @@ func (m *StreamClientManager) StartForTenant(parentCtx context.Context, tenant *
 			}
 		}()
 
-		m.logger.Infow("启动租户 Stream 客户端",
-			"tenantID", tenant.ID,
-			"corpID", tenant.CorpID,
+		const (
+			initBackoff = 5 * time.Second
+			maxBackoff  = 60 * time.Second
 		)
+		backoff := initBackoff
 
-		if err := streamClient.Start(ctx); err != nil && err != context.Canceled {
-			m.logger.Errorw("租户 Stream 客户端运行失败",
+		for {
+			// context 已取消，退出
+			if ctx.Err() != nil {
+				break
+			}
+
+			m.logger.Infow("启动租户 Stream 客户端",
+				"tenantID", tenant.ID,
+				"corpID", tenant.CorpID,
+			)
+
+			err := streamClient.Start(ctx)
+
+			// context 已取消，正常退出
+			if ctx.Err() != nil {
+				break
+			}
+
+			// Start 返回 nil 表示 SDK 正常退出（内部已处理重连），不重试
+			if err == nil {
+				break
+			}
+
+			// 连接失败，指数退避后重试
+			m.logger.Errorw("租户 Stream 客户端连接失败，准备重试",
 				"tenantID", tenant.ID,
 				"corpID", tenant.CorpID,
 				"error", err,
+				"retryAfter", backoff,
 			)
+			select {
+			case <-ctx.Done():
+			case <-time.After(backoff):
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
 		}
 
 		m.logger.Infow("租户 Stream 客户端已停止",

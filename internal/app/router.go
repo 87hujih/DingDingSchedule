@@ -29,7 +29,7 @@ func setupRouter() *gin.Engine {
 
 	// 注册路由
 	r := gin.Default()
-	registerRoutes(r, h, svc.AuditLogSrv)
+	registerRoutes(r, h, svc.AuditLogSrv, repo.UserRepo)
 
 	// GoAdmin 后台（可选）
 	if global.AppConfig.GoAdmin.Enable {
@@ -44,7 +44,7 @@ func setupRouter() *gin.Engine {
 }
 
 // registerRoutes 注册所有路由
-func registerRoutes(r *gin.Engine, h *handler.Handler, auditSvc *service.AuditLogService) {
+func registerRoutes(r *gin.Engine, h *handler.Handler, auditSvc *service.AuditLogService, userRepo repository.UserRepository) {
 	// 健康检查
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -55,7 +55,7 @@ func registerRoutes(r *gin.Engine, h *handler.Handler, auditSvc *service.AuditLo
 	registerAuthRoutes(public, h)
 
 	// 需要鉴权的路由
-	protected := r.Group("/api", middleware.JWTAuth(), middleware.AuditLog(auditSvc))
+	protected := r.Group("/api", middleware.JWTAuth(userRepo), middleware.AuditLog(auditSvc))
 	registerUserRoutes(protected, h)            // 用户相关
 	registerAdminRoutes(protected, h)           // 管理员相关
 	registerScheduleRoutes(protected, h)        // 课程相关

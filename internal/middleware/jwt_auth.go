@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"schedule_server/config"
+	"schedule_server/internal/repository"
 	"schedule_server/internal/response"
 	"schedule_server/internal/tenantctx"
 	"schedule_server/pkg/jwt"
@@ -48,7 +49,8 @@ func Init(jwtCfg config.JWT) {
 }
 
 // JWTAuth JWT认证中间件
-func JWTAuth() gin.HandlerFunc {
+// userRepo 用于每次请求时从 DB 读取最新角色，确保角色变更立即生效
+func JWTAuth(userRepo repository.UserRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 1. 获取Authorization头
 		authHeader := c.GetHeader(AuthorizationHeader)
@@ -81,11 +83,10 @@ func JWTAuth() gin.HandlerFunc {
 			return
 		}
 
-		// 5. 将用户信息写入Context
+		// 5. 将用户基础信息写入Context
 		c.Set(CtxKeyUserID, claims.UserID)
 		c.Set(CtxKeyDingUserID, claims.DingUserID)
 		c.Set(CtxKeyUserName, claims.Name)
-		c.Set(CtxKeyUserRole, claims.Role)
 		if claims.TenantID == 0 {
 			response.New(c).Code(response.CodeUnauthorized).Message("Token缺少租户信息").Abort()
 			return
@@ -97,6 +98,15 @@ func JWTAuth() gin.HandlerFunc {
 
 		// 6. 将租户信息写入 request context（供 repository/service 使用）
 		c.Request = c.Request.WithContext(tenantctx.WithTenantID(c.Request.Context(), claims.TenantID))
+
+		// 7. 从 DB 读取最新角色，覆盖 Token 中的快照值
+		// 确保管理员修改用户角色后立即生效，无需用户重新登录
+		user, err := userRepo.FindByID(c.Request.Context(), claims.UserID)
+		if err != nil {
+			response.New(c).Code(response.CodeUnauthorized).Message("用户不存在或已被删除").Abort()
+			return
+		}
+		c.Set(CtxKeyUserRole, user.Role)
 
 		c.Next()
 	}
