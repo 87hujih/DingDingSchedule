@@ -27,15 +27,15 @@ func NewLLMClient(baseURL, apiKey, model string) *LLMClient {
 		apiKey:  apiKey,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: 50 * time.Second,
 		},
 	}
 }
 
 // chatRequest OpenAI chat completion 请求体
 type chatRequest struct {
-	Model    string       `json:"model"`
-	Messages []msgJSON    `json:"messages"`
+	Model    string          `json:"model"`
+	Messages []msgJSON       `json:"messages"`
 	Tools    []tools.ToolDef `json:"tools,omitempty"`
 }
 

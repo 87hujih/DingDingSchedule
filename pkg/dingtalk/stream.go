@@ -120,11 +120,11 @@ func (s *StreamClient) handleChatBotMessage(ctx context.Context, data *chatbot.B
 		SessionWebhook:    data.SessionWebhook,
 	}
 
-	// 55 秒超时保护（LLM HTTP client 超时 60s，留 5s 给回复）
-	timeoutCtx, cancel := context.WithTimeout(ctx, 55*time.Second)
-	defer cancel()
+	// 90 秒处理超时（多轮 ReAct 每轮约 15-25s，3 轮以内应在 90s 内完成）
+	processCtx, processCancel := context.WithTimeout(ctx, 90*time.Second)
+	defer processCancel()
 
-	reply, err := s.chatHandler(timeoutCtx, msg)
+	reply, err := s.chatHandler(processCtx, msg)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			reply = "处理超时，请重试"
@@ -134,9 +134,11 @@ func (s *StreamClient) handleChatBotMessage(ctx context.Context, data *chatbot.B
 		}
 	}
 
-	// 通过 SessionWebhook 回复消息
+	// 用独立的 context 发送回复，避免处理超时后回复也无法发出
+	replyCtx, replyCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer replyCancel()
 	replier := chatbot.NewChatbotReplier()
-	if err := replier.SimpleReplyText(timeoutCtx, data.SessionWebhook, []byte(reply)); err != nil {
+	if err := replier.SimpleReplyText(replyCtx, data.SessionWebhook, []byte(reply)); err != nil {
 		s.logger.Errorw("回复聊天消息失败", "senderID", data.SenderStaffId, "err", err)
 	}
 
