@@ -400,7 +400,9 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 			toolsCalled += t
 		}
 	}
-	a.db.Create(&model.AgentCallLog{
+	// 使用 WithSkipTenantScope 跳过租户插件，TenantID 已在结构体中显式设置
+	ctx := tenantctx.WithSkipTenantScope(context.Background())
+	a.db.WithContext(ctx).Create(&model.AgentCallLog{
 		TenantID:    log.TenantID,
 		UserID:      log.UserID,
 		UserName:    log.UserName,
