@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// 最大循环次数
 const maxReactRounds = 5
 
 // Deps Agent 依赖注入
