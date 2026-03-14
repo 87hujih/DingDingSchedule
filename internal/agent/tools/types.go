@@ -168,6 +168,26 @@ type UserInfo struct {
 	TenantID   uint   `json:"tenant_id"`
 }
 
+// CallLog 一次对话的调用记录
+type CallLog struct {
+	TenantID    uint
+	UserID      uint
+	UserName    string
+	ConvType    string // "1"=单聊, "2"=群聊
+	Question    string
+	ToolsCalled []string // 调用的工具名列表
+	Reply       string
+	Rounds      int
+	DurationMs  int64
+	Status      string // success / failed / timeout
+	ErrorMsg    string
+}
+
+// CallLogPort 调用日志写入能力
+type CallLogPort interface {
+	Write(ctx context.Context, log CallLog)
+}
+
 // PeriodInfo 作息时段信息
 type PeriodInfo struct {
 	Name  string `json:"name"`

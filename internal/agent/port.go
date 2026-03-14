@@ -12,6 +12,7 @@ type (
 	SchedulePeriodPort = tools.SchedulePeriodPort
 	RestDayPort        = tools.RestDayPort
 	GroupSubPort       = tools.GroupSubPort
+	CallLogPort        = tools.CallLogPort
 )
 
 // 数据类型别名，便于外部引用 agent.CourseItem 等

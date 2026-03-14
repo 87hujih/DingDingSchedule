@@ -45,6 +45,7 @@ func buildAgent(
 		SchedulePeriod: &schedulePeriodAdapter{srv: schedulePeriodSrv},
 		RestDay:        &restDayAdapter{srv: restDaySrv},
 		GroupSub:       &groupSubAdapter{repo: repo.GroupSubRepo},
+		CallLog:        &callLogAdapter{db: global.DB},
 
 		Logger: global.Log,
 	})
@@ -381,4 +382,35 @@ func (a *groupSubAdapter) Subscribe(ctx context.Context, tenantID uint, conversa
 
 func (a *groupSubAdapter) Unsubscribe(ctx context.Context, tenantID uint, conversationID string) error {
 	return a.repo.SoftDelete(ctx, tenantID, conversationID)
+}
+
+// ────────────── callLogAdapter ──────────────
+
+type callLogAdapter struct {
+	db *gorm.DB
+}
+
+func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
+	toolsCalled := ""
+	if len(log.ToolsCalled) > 0 {
+		for i, t := range log.ToolsCalled {
+			if i > 0 {
+				toolsCalled += ","
+			}
+			toolsCalled += t
+		}
+	}
+	a.db.Create(&model.AgentCallLog{
+		TenantID:    log.TenantID,
+		UserID:      log.UserID,
+		UserName:    log.UserName,
+		ConvType:    log.ConvType,
+		Question:    log.Question,
+		ToolsCalled: toolsCalled,
+		Reply:       log.Reply,
+		Rounds:      log.Rounds,
+		DurationMs:  log.DurationMs,
+		Status:      log.Status,
+		ErrorMsg:    log.ErrorMsg,
+	})
 }

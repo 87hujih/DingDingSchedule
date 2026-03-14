@@ -120,8 +120,8 @@ func (s *StreamClient) handleChatBotMessage(ctx context.Context, data *chatbot.B
 		SessionWebhook:    data.SessionWebhook,
 	}
 
-	// 25 秒超时保护
-	timeoutCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	// 55 秒超时保护（LLM HTTP client 超时 60s，留 5s 给回复）
+	timeoutCtx, cancel := context.WithTimeout(ctx, 55*time.Second)
 	defer cancel()
 
 	reply, err := s.chatHandler(timeoutCtx, msg)

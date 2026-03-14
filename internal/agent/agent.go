@@ -30,6 +30,7 @@ type Deps struct {
 	SchedulePeriod SchedulePeriodPort
 	RestDay        RestDayPort
 	GroupSub       GroupSubPort
+	CallLog        CallLogPort
 
 	Logger *zap.SugaredLogger
 }
@@ -129,8 +130,19 @@ func (a *Agent) Chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 
 	// 5. 限流检查
 	if !a.limiter.Allow(sessionKey) {
+		a.deps.Logger.Infow("限流拦截", "user", user.Name, "tenantID", user.TenantID)
 		return "你发消息太快了，请稍后再试", nil
 	}
+
+	a.deps.Logger.Infow("收到消息",
+		"user", user.Name,
+		"tenantID", user.TenantID,
+		"convType", msg.ConversationType,
+		"content", msg.Content,
+	)
+
+	startTime := time.Now()
+	var toolsCalled []string
 
 	// 6. 加载历史消息
 	history := a.sessions.getMessages(sessionKey)
@@ -151,6 +163,7 @@ func (a *Agent) Chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		resp, err := a.llmClient.Chat(ctx, messages, toolDefs)
 		if err != nil {
 			a.deps.Logger.Errorw("LLM 调用失败", "round", round, "err", err)
+			a.writeCallLog(ctx, uctx, msg.Content, "", toolsCalled, round, startTime, "failed", err.Error())
 			return "AI 服务暂时不可用，请稍后重试", nil
 		}
 
@@ -160,6 +173,8 @@ func (a *Agent) Chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 			if reply == "" {
 				reply = "抱歉，我无法理解您的问题，请换个方式描述"
 			}
+			a.deps.Logger.Infow("回复完成", "user", uctx.Name, "rounds", round+1, "reply", reply)
+			a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, round+1, startTime, "success", "")
 			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 			return reply, nil
 		}
@@ -168,6 +183,8 @@ func (a *Agent) Chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		messages = append(messages, resp) // assistant message with tool_calls
 
 		for _, tc := range resp.ToolCalls {
+			a.deps.Logger.Infow("调用工具", "tool", tc.Function.Name, "user", uctx.Name, "args", tc.Function.Arguments)
+			toolsCalled = append(toolsCalled, tc.Function.Name)
 			toolResult, err := a.registry.Dispatch(ctx, uctx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
 			if err != nil {
 				a.deps.Logger.Warnw("工具执行失败",
@@ -187,7 +204,29 @@ func (a *Agent) Chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 
 	// 超出最大轮数
 	a.deps.Logger.Warnw("ReAct Loop 超出最大轮数", "sessionKey", sessionKey)
+	a.writeCallLog(ctx, uctx, msg.Content, "", toolsCalled, maxReactRounds, startTime, "failed", "超出最大轮数")
 	return "处理轮次过多，请简化您的问题后重试", nil
+}
+
+// writeCallLog 异步写入调用记录，不阻塞对话响应
+func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, question, reply string, toolsCalled []string, rounds int, startTime time.Time, status, errMsg string) {
+	if a.deps.CallLog == nil {
+		return
+	}
+	log := tools.CallLog{
+		TenantID:    uctx.TenantID,
+		UserID:      uctx.UserID,
+		UserName:    uctx.Name,
+		ConvType:    uctx.ConversationType,
+		Question:    question,
+		ToolsCalled: toolsCalled,
+		Reply:       reply,
+		Rounds:      rounds,
+		DurationMs:  time.Since(startTime).Milliseconds(),
+		Status:      status,
+		ErrorMsg:    errMsg,
+	}
+	go a.deps.CallLog.Write(context.Background(), log)
 }
 
 // buildSystemPrompt 构建系统提示词
