@@ -31,6 +31,8 @@ type AttendanceScheduler struct {
 	scheduleSettingRepo  repository.ScheduleSettingRepository
 	attendanceRecordSrv  *service.AttendanceRecordService
 	semesterSrv          *service.SemesterService
+	groupSubRepo         repository.GroupAttendanceSubscriptionRepository
+	dingMgr              *service.DingTalkClientManager
 	logger               *zap.SugaredLogger
 	cron                 *cron.Cron
 	delayAfterClassStart int // 上课后延迟多少分钟统计，默认0分钟（立即执行）
@@ -50,6 +52,8 @@ func NewAttendanceScheduler(
 	scheduleSettingRepo repository.ScheduleSettingRepository,
 	attendanceRecordSrv *service.AttendanceRecordService,
 	semesterSrv *service.SemesterService,
+	groupSubRepo repository.GroupAttendanceSubscriptionRepository,
+	dingMgr *service.DingTalkClientManager,
 	logger *zap.SugaredLogger,
 ) *AttendanceScheduler {
 	return &AttendanceScheduler{
@@ -59,6 +63,8 @@ func NewAttendanceScheduler(
 		scheduleSettingRepo:  scheduleSettingRepo,
 		attendanceRecordSrv:  attendanceRecordSrv,
 		semesterSrv:          semesterSrv,
+		groupSubRepo:         groupSubRepo,
+		dingMgr:              dingMgr,
 		logger:               logger,
 		delayAfterClassStart: scheduleCfg.TriggerDelayMinutes,
 		tenantJobs:           make(map[uint][]cron.EntryID),
@@ -394,6 +400,9 @@ func (s *AttendanceScheduler) triggerAttendanceForTenant(tenantID uint, section 
 		)
 	}
 
+	// 推送考勤结果到订阅群
+	s.pushToSubscribedGroups(ctx, tenant, result)
+
 	if err := s.attendanceRecordSrv.SendLateNotifications(ctx, result.Date, result.Section, result.SlotTime.Start, result.SlotTime.End, currentMode, lateUsers); err != nil {
 		s.logger.Errorw("发送迟到提醒失败",
 			"tenantId", tenantID,
@@ -409,4 +418,47 @@ func (s *AttendanceScheduler) triggerAttendanceForTenant(tenantID uint, section 
 		"leave", result.Statistics.Leave,
 		"notArrived", result.Statistics.NotArrived,
 	)
+}
+
+// pushToSubscribedGroups 将考勤结果推送到该租户的订阅群
+func (s *AttendanceScheduler) pushToSubscribedGroups(ctx context.Context, tenant *model.Tenant, result *dto.AttendanceDetailResponse) {
+	subs, err := s.groupSubRepo.ListByTenantID(ctx, tenant.ID)
+	if err != nil {
+		s.logger.Warnw("查询考勤推送订阅失败", "tenantId", tenant.ID, "err", err)
+		return
+	}
+	if len(subs) == 0 {
+		return
+	}
+
+	// 生成考勤文本
+	textReq := &dto.AttendanceTextRequest{
+		Date:    result.Date,
+		Week:    result.Week,
+		Section: result.Section,
+	}
+	textResp, err := s.attendanceRecordSrv.GetAttendanceText(ctx, textReq)
+	if err != nil {
+		s.logger.Warnw("生成考勤推送文本失败", "tenantId", tenant.ID, "err", err)
+		return
+	}
+
+	// 获取钉钉客户端
+	_, client, err := s.dingMgr.GetByCorpID(ctx, tenant.CorpID)
+	if err != nil {
+		s.logger.Warnw("获取钉钉客户端失败", "tenantId", tenant.ID, "err", err)
+		return
+	}
+
+	// 推送到每个订阅群
+	for _, sub := range subs {
+		if err := client.SendGroupRobotMessage(ctx, tenant.AppKey, sub.ConversationID, textResp.FullText); err != nil {
+			s.logger.Warnw("推送考勤到群失败",
+				"tenantId", tenant.ID,
+				"conversationId", sub.ConversationID,
+				"groupName", sub.GroupName,
+				"err", err,
+			)
+		}
+	}
 }

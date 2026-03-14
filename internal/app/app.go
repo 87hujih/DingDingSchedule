@@ -229,6 +229,8 @@ func startAttendanceScheduler() *scheduler.AttendanceScheduler {
 		repo.ScheduleSettingRepo,
 		attendanceRecordSrv,
 		semesterSrv,
+		repo.GroupSubRepo,
+		dingMgr,
 		global.Log,
 	)
 
