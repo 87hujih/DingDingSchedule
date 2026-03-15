@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -108,6 +110,11 @@ func (c *LLMClient) Chat(ctx context.Context, messages []tools.Message, toolDefs
 }
 
 func (c *LLMClient) doChat(ctx context.Context, reqBody chatRequest) (tools.Message, bool, error) {
+	// 快速失败：父 context 已超时/取消，无需发起请求
+	if ctx.Err() != nil {
+		return tools.Message{}, false, ctx.Err()
+	}
+
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return tools.Message{}, false, fmt.Errorf("序列化请求体失败: %w", err)
@@ -122,6 +129,16 @@ func (c *LLMClient) doChat(ctx context.Context, reqBody chatRequest) (tools.Mess
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		// 父 context 超时/取消：重试只会立即再失败
+		if ctx.Err() != nil {
+			return tools.Message{}, false, fmt.Errorf("发送请求失败: %w", err)
+		}
+		// HTTP 级超时（httpClient.Timeout）：API 响应过慢，重试大概率同样超时
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return tools.Message{}, false, fmt.Errorf("发送请求失败: %w", err)
+		}
+		// 其他网络错误（连接重置、DNS 等）：可能是瞬时抖动，值得重试
 		return tools.Message{}, true, fmt.Errorf("发送请求失败: %w", err)
 	}
 	defer resp.Body.Close()
