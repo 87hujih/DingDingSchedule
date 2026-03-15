@@ -138,7 +138,7 @@ func RegisterScheduleTools(r *Registry, schedule SchedulePort, semester Semester
 				"slot_start":  s.SlotStart,
 				"slot_end":    s.SlotEnd,
 				"free_count":  s.FreeCount,
-				"free_users":  formatNameList(s.FreeUsers),
+				"free_users":  s.FreeUsers,
 			}
 		}
 

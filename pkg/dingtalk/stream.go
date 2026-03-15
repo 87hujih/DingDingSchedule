@@ -204,6 +204,11 @@ func (s *StreamClient) handleGroupChatAsync(data *chatbot.BotCallbackDataModel, 
 			}
 		}()
 
+		// 立即告知用户正在处理（此时 SessionWebhook 仍有效）
+		ackCtx, ackCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = replier.SimpleReplyText(ackCtx, webhookURL, []byte(fmt.Sprintf("@%s 正在查询，请稍候...", msg.SenderNick)))
+		ackCancel()
+
 		// LLM 处理，给足时间（不再受 Webhook 有效期约束）
 		processCtx, processCancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer processCancel()
