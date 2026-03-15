@@ -172,6 +172,23 @@ type CourseAttendanceUserItem struct {
 	DeptName string `json:"dept_name,omitempty"`
 }
 
+// WeekSlotsSummaryResponse 整周所有时段的汇总考勤状态（周视图专用，只含数量）
+type WeekSlotsSummaryResponse struct {
+	Week  int               `json:"week"`
+	Slots []SlotSummaryItem `json:"slots"`
+}
+
+// SlotSummaryItem 单个时段的聚合数据
+type SlotSummaryItem struct {
+	Date              string `json:"date"`
+	DayOfWeek         int    `json:"day_of_week"`
+	Section           int    `json:"section"`
+	ShouldArriveCount int    `json:"should_arrive_count"`
+	OnLeaveCount      int    `json:"on_leave_count"`
+	OnRestDayCount    int    `json:"on_rest_day_count"`
+	HasCourseCount    int    `json:"has_course_count"`
+}
+
 // SlotAttendanceStatusResponse 时段考勤状态响应（不依赖课程ID）
 type SlotAttendanceStatusResponse struct {
 	Date         string                     `json:"date"`

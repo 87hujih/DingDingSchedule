@@ -189,7 +189,166 @@ func (s *AttendanceService) GetSlotAttendanceStatus(
 	}, nil
 }
 
-// GetSlotUserLeaveDetail 获取某用户在“时段(日期+节次)时间窗口”内的请假明细（不依赖 courseID）。
+// GetWeekSlotsAttendanceSummary 计算整周每个时段的考勤汇总数量（周视图专用）。
+//
+// 优化策略：所有公共数据（作息、模式、用户、课表、请假、休息日）各只查询一次，
+// 7天×N节的 slot 计算全部在内存中完成，DB 查询固定为 ~7 次。
+func (s *AttendanceService) GetWeekSlotsAttendanceSummary(
+	ctx context.Context,
+	viewerID uint,
+	week int,
+	startDate time.Time,
+	deptIDs []int64,
+) (*dto.WeekSlotsSummaryResponse, error) {
+	if viewerID == 0 {
+		return nil, response.ErrForbidden()
+	}
+	if startDate.IsZero() || week <= 0 {
+		return nil, response.ErrInvalidParamWithMsg("参数无效")
+	}
+
+	// ── Step 1: 共享数据批量加载（~7 次 DB 查询）────────────────────────────
+
+	periods := s.resolveActivePeriods(ctx)
+	if len(periods) == 0 {
+		return nil, response.ErrInvalidParamWithMsg("作息配置缺失")
+	}
+
+	useAllMode := s.shouldUseAllAttendMode(ctx, startDate)
+
+	activeUsers, err := s.listActiveUsersByDeptIDs(ctx, deptIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	totalSlots := 7 * len(periods)
+	slots := make([]dto.SlotSummaryItem, 0, totalSlots)
+
+	// 无活跃用户时直接返回全零 slots
+	if len(activeUsers) == 0 {
+		for day := 1; day <= 7; day++ {
+			date := startDate.AddDate(0, 0, day-1)
+			for sec := 1; sec <= len(periods); sec++ {
+				slots = append(slots, dto.SlotSummaryItem{
+					Date:      date.Format("2006-01-02"),
+					DayOfWeek: day,
+					Section:   sec,
+				})
+			}
+		}
+		return &dto.WeekSlotsSummaryResponse{Week: week, Slots: slots}, nil
+	}
+
+	userIDs := make([]uint, 0, len(activeUsers))
+	for _, u := range activeUsers {
+		userIDs = append(userIDs, u.ID)
+	}
+
+	// 整周课程：一次查全部 day，按 (dayOfWeek, section) 分组到内存
+	type daySectionKey struct{ day, sec int }
+	allCourses, err := s.repo.ListCoursesByUsersDays(ctx, userIDs, []int{1, 2, 3, 4, 5, 6, 7})
+	if err != nil {
+		return nil, errs.WrapMsgErr("获取整周课表失败", err)
+	}
+	coursesMap := make(map[daySectionKey][]model.Course, len(allCourses))
+	for _, c := range allCourses {
+		k := daySectionKey{c.DayOfWeek, c.Section}
+		coursesMap[k] = append(coursesMap[k], c)
+	}
+
+	// 整周请假：一次查全部，按 userID 分组到内存
+	weekEnd := startDate.AddDate(0, 0, 7)
+	allLeaves, err := s.leaveApprovalRepo.ListApprovedByUserIDs(ctx, userIDs, startDate, weekEnd)
+	if err != nil {
+		return nil, errs.WrapMsgErr("获取整周请假记录失败", err)
+	}
+	leavesByUserID := make(map[uint][]model.LeaveApproval, len(allLeaves))
+	for _, l := range allLeaves {
+		leavesByUserID[l.UserID] = append(leavesByUserID[l.UserID], l)
+	}
+
+	// 整周休息日：一次查全部，按 dayOfWeek 分组到内存
+	allRestDays, err := s.restDayRepo.ListByUserIDs(ctx, userIDs)
+	if err != nil {
+		s.logger.Warnw("查询休息日记录失败，跳过休息日逻辑", "error", err)
+		allRestDays = nil
+	}
+	restDayMap := make(map[int]map[uint]struct{})
+	for _, rd := range allRestDays {
+		if rd.DayOfWeek == nil {
+			continue
+		}
+		d := *rd.DayOfWeek
+		if restDayMap[d] == nil {
+			restDayMap[d] = make(map[uint]struct{})
+		}
+		restDayMap[d][rd.UserID] = struct{}{}
+	}
+
+	// ── Step 2: 纯内存计算，遍历 7天 × N节（零 DB 开销）────────────────────
+
+	for day := 1; day <= 7; day++ {
+		date := startDate.AddDate(0, 0, day-1)
+		restSet := restDayMap[day] // nil map 读取安全，不会 panic
+
+		for sec := 1; sec <= len(periods); sec++ {
+			sessionStart, sessionEnd, calcErr := scheduleutil.CalculateSlotTime(date, sec, periods)
+			if calcErr != nil {
+				s.logger.Warnw("计算时段时间失败，跳过该节", "day", day, "section", sec, "error", calcErr)
+				continue
+			}
+
+			// 有课用户：本周该节确实排有课程
+			busySet := make(map[uint]struct{})
+			if !useAllMode {
+				for _, c := range coursesMap[daySectionKey{day, sec}] {
+					if weekutil.ContainsWeek(c.WeekList, week) {
+						busySet[c.UserID] = struct{}{}
+					}
+				}
+			}
+
+			// 按优先级（有课 > 休息 > 请假 > 应到）逐一归类
+			hasCourseCount, onRestCount, onLeaveCount, shouldArriveCount := 0, 0, 0, 0
+			for _, u := range activeUsers {
+				if _, busy := busySet[u.ID]; busy {
+					hasCourseCount++
+					continue
+				}
+				if _, rest := restSet[u.ID]; rest {
+					onRestCount++
+					continue
+				}
+				onLeave := false
+				for _, leave := range leavesByUserID[u.ID] {
+					if timeOverlaps(leave.StartAt, leave.EndAt, sessionStart, sessionEnd) {
+						onLeave = true
+						break
+					}
+				}
+				if onLeave {
+					onLeaveCount++
+					continue
+				}
+				shouldArriveCount++
+			}
+
+			slots = append(slots, dto.SlotSummaryItem{
+				Date:              date.Format("2006-01-02"),
+				DayOfWeek:         day,
+				Section:           sec,
+				ShouldArriveCount: shouldArriveCount,
+				OnLeaveCount:      onLeaveCount,
+				OnRestDayCount:    onRestCount,
+				HasCourseCount:    hasCourseCount,
+			})
+		}
+	}
+
+	return &dto.WeekSlotsSummaryResponse{Week: week, Slots: slots}, nil
+}
+
+// GetSlotUserLeaveDetail 获取某用户在”时段(日期+节次)时间窗口”内的请假明细（不依赖 courseID）。
 //
 // 说明：
 // - 仅管理员可访问（路由层会拦截，这里再做一次防御性校验）

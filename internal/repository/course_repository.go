@@ -17,6 +17,8 @@ type CourseRepository interface {
 	ListByUserPaged(ctx context.Context, userID uint, page, pageSize int) ([]model.Course, int64, error)
 	// ListByUsersDaySection 按用户集合+星期+大节查询课程（用于判定忙闲）
 	ListByUsersDaySection(ctx context.Context, userIDs []uint, dayOfWeek, section int) ([]model.Course, error)
+	// ListCoursesByUsersDays 按用户集合+星期范围查询课程（整周批量，不过滤 section）
+	ListCoursesByUsersDays(ctx context.Context, userIDs []uint, dayOfWeeks []int) ([]model.Course, error)
 	ReplaceByUser(ctx context.Context, userID uint, courses []model.Course) error
 	GetByID(ctx context.Context, id uint) (*model.Course, error)
 	Create(ctx context.Context, course *model.Course) error
@@ -111,6 +113,24 @@ func (r *courseRepository) ListByUsersDaySection(
 	var courses []model.Course
 	if err := r.db.WithContext(ctx).
 		Where("user_id IN ? AND day_of_week = ? AND section = ?", userIDs, dayOfWeek, section).
+		Find(&courses).Error; err != nil {
+		return nil, err
+	}
+	return courses, nil
+}
+
+// ListCoursesByUsersDays 查询一批用户在指定星期范围内的所有课程（整周批量，不过滤 section）
+func (r *courseRepository) ListCoursesByUsersDays(
+	ctx context.Context,
+	userIDs []uint,
+	dayOfWeeks []int,
+) ([]model.Course, error) {
+	if len(userIDs) == 0 || len(dayOfWeeks) == 0 {
+		return []model.Course{}, nil
+	}
+	var courses []model.Course
+	if err := r.db.WithContext(ctx).
+		Where("user_id IN ? AND day_of_week IN ?", userIDs, dayOfWeeks).
 		Find(&courses).Error; err != nil {
 		return nil, err
 	}

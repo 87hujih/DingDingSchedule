@@ -12,6 +12,7 @@ func registerAttendanceRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 	attendance := rg.Group("/attendance")
 	{
 		attendance.GET("/slots/status", h.AttendanceHdl.SlotAttendanceStatus)                                         // 时段考勤状态
+		attendance.GET("/week-slots/summary", h.AttendanceHdl.WeekSlotsSummary)                                       // 整周时段汇总（周视图）
 		attendance.GET("/slots/users/:user_id/leave", middleware.RequireAdmin(), h.AttendanceHdl.SlotUserLeaveDetail) // 时段请假明细
 		// 考勤统计记录（管理员）
 		record := attendance.Group("/record")

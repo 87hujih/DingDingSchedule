@@ -66,6 +66,68 @@ func (h *AttendanceHandler) SlotAttendanceStatus(ctx *gin.Context) {
 	response.OK(ctx, result)
 }
 
+// WeekSlotsSummary 整周时段汇总（周视图专用，只返回数量）
+func (h *AttendanceHandler) WeekSlotsSummary(ctx *gin.Context) {
+	// 1. 鉴权
+	viewerID, err := h.getViewerID(ctx)
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	// 2. 解析 start_date（必须是周一）
+	rawDate := strings.TrimSpace(ctx.Query("start_date"))
+	if rawDate == "" {
+		response.Fail(ctx, response.CodeMissingParam, "缺少 start_date 参数")
+		return
+	}
+	startDate, parseErr := time.ParseInLocation("2006-01-02", rawDate, time.Local)
+	if parseErr != nil {
+		response.Fail(ctx, response.CodeInvalidParam, "start_date 格式错误，应为 YYYY-MM-DD")
+		return
+	}
+	if startDate.Weekday() != time.Monday {
+		response.Fail(ctx, response.CodeInvalidParam, "start_date 必须是周一")
+		return
+	}
+
+	// 3. 解析 week
+	rawWeek := strings.TrimSpace(ctx.Query("week"))
+	if rawWeek == "" {
+		response.Fail(ctx, response.CodeMissingParam, "缺少 week 参数")
+		return
+	}
+	week, convErr := strconv.Atoi(rawWeek)
+	if convErr != nil || week <= 0 {
+		response.Fail(ctx, response.CodeInvalidParam, "无效的 week")
+		return
+	}
+
+	// 4. 校验 week 与 start_date 一致性
+	if err := ValidateWeekDate(ctx, h.semesterSrv, startDate, week); err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	// 5. 解析可选 dept_ids
+	deptIDs, err := ParseDeptIDsQuery(ctx.Query("dept_ids"))
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	// 6. 调用 service
+	result, err := h.attendanceSrv.GetWeekSlotsAttendanceSummary(
+		ctx.Request.Context(), viewerID, week, startDate, deptIDs,
+	)
+	if err != nil {
+		response.FailWithError(ctx, err)
+		return
+	}
+
+	response.OK(ctx, result)
+}
+
 // SlotUserLeaveDetail 查看某用户在"时段"内的请假明细
 func (h *AttendanceHandler) SlotUserLeaveDetail(ctx *gin.Context) {
 	// 1. 获取查看者信息 (ID + Role)

@@ -9,6 +9,7 @@ import (
 // AttendanceRepository 考勤模块所需的数据访问集合
 type AttendanceRepository interface {
 	ListCoursesByUsersDaySection(ctx context.Context, userIDs []uint, dayOfWeek, section int) ([]model.Course, error)
+	ListCoursesByUsersDays(ctx context.Context, userIDs []uint, dayOfWeeks []int) ([]model.Course, error)
 
 	// FindUserByID Users
 	FindUserByID(ctx context.Context, id uint) (*model.User, error)
@@ -45,7 +46,11 @@ func (r *attendanceRepository) FindUserDepartmentIDs(ctx context.Context, userID
 	return r.userRepo.FindDepartmentIDs(ctx, userID)
 }
 
-// ListUsersByScope 根据部门或指定用户范围拉取用户列表
+// ListCoursesByUsersDays 透传到 courseRepo 查询整周课程
+func (r *attendanceRepository) ListCoursesByUsersDays(ctx context.Context, userIDs []uint, dayOfWeeks []int) ([]model.Course, error) {
+	return r.courseRepo.ListCoursesByUsersDays(ctx, userIDs, dayOfWeeks)
+}
+
 func (r *attendanceRepository) ListUsersByScope(ctx context.Context, deptIDs []int64, onlyUserIDs []uint) ([]model.User, error) {
 	return r.userRepo.ListByScope(ctx, deptIDs, onlyUserIDs)
 }
