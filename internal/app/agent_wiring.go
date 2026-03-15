@@ -408,6 +408,9 @@ func (a *deptAdapter) ListDepts(ctx context.Context) ([]agent.DeptItem, error) {
 	}
 	items := make([]agent.DeptItem, 0, len(depts))
 	for _, d := range depts {
+		if d.Status != 1 {
+			continue
+		}
 		items = append(items, agent.DeptItem{
 			DeptID:   d.DeptID,
 			Name:     d.Name,
