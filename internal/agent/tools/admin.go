@@ -157,7 +157,7 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 		Type: "function",
 		Function: FunctionDef{
 			Name:        "list_departments",
-			Description: "查询当前租户下的所有部门列表及部门ID，用于确认订阅考勤推送时需要填写的 dept_ids",
+			Description: "查询当前租户下参与考勤的部门列表",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
 		},
 	}, 1, func(ctx context.Context, uctx *UserContext, params json.RawMessage) (string, error) {
@@ -165,9 +165,13 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 		if err != nil {
 			return "", err
 		}
+		names := make([]string, 0, len(depts))
+		for _, d := range depts {
+			names = append(names, d.Name)
+		}
 		return marshalJSON(map[string]interface{}{
-			"count": len(depts),
-			"depts": depts,
+			"count": len(names),
+			"depts": names,
 		})
 	})
 }
