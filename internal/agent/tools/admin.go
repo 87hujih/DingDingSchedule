@@ -8,7 +8,7 @@ import (
 )
 
 // RegisterAdminTools 注册管理员工具
-func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, groupSub GroupSubPort) {
+func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, groupSub GroupSubPort, dept DeptPort) {
 	// sign_for_user
 	r.Register(ToolDef{
 		Type: "function",
@@ -89,8 +89,17 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 		Type: "function",
 		Function: FunctionDef{
 			Name:        "subscribe_attendance_push",
-			Description: "将当前群聊订阅为考勤自动推送目标（仅管理员，群聊中使用）",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
+			Description: "将当前群聊订阅为考勤自动推送目标（仅管理员，群聊中使用）。可通过 dept_ids 指定只推送特定部门的考勤，不填则推送全部人员的考勤",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"dept_ids": {
+						"type": "array",
+						"items": {"type": "integer"},
+						"description": "只推送这些部门ID的考勤，不填表示推送全部人员"
+					}
+				}
+			}`),
 		},
 	}, 1, func(ctx context.Context, uctx *UserContext, params json.RawMessage) (string, error) {
 		if uctx.ConversationType != "2" {
@@ -99,13 +108,22 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 			})
 		}
 
-		if err := groupSub.Subscribe(ctx, uctx.TenantID, uctx.ConversationID, uctx.ConversationTitle, uctx.UserID); err != nil {
+		var p struct {
+			DeptIDs []int64 `json:"dept_ids"`
+		}
+		_ = json.Unmarshal(params, &p)
+
+		if err := groupSub.Subscribe(ctx, uctx.TenantID, uctx.ConversationID, uctx.ConversationTitle, uctx.UserID, p.DeptIDs); err != nil {
 			return "", err
 		}
 
+		msg := "已为此群开启考勤推送"
+		if len(p.DeptIDs) > 0 {
+			msg = fmt.Sprintf("已为此群开启考勤推送（仅限%d个指定部门）", len(p.DeptIDs))
+		}
 		return marshalJSON(map[string]interface{}{
 			"success": true,
-			"message": "已为此群开启考勤推送",
+			"message": msg,
 		})
 	})
 
@@ -131,6 +149,25 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 		return marshalJSON(map[string]interface{}{
 			"success": true,
 			"message": "已取消此群的考勤自动推送",
+		})
+	})
+
+	// list_departments
+	r.Register(ToolDef{
+		Type: "function",
+		Function: FunctionDef{
+			Name:        "list_departments",
+			Description: "查询当前租户下的所有部门列表及部门ID，用于确认订阅考勤推送时需要填写的 dept_ids",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
+		},
+	}, 1, func(ctx context.Context, uctx *UserContext, params json.RawMessage) (string, error) {
+		depts, err := dept.ListDepts(ctx)
+		if err != nil {
+			return "", err
+		}
+		return marshalJSON(map[string]interface{}{
+			"count": len(depts),
+			"depts": depts,
 		})
 	})
 }

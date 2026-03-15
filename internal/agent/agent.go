@@ -31,6 +31,7 @@ type Deps struct {
 	SchedulePeriod SchedulePeriodPort
 	RestDay        RestDayPort
 	GroupSub       GroupSubPort
+	Dept           DeptPort
 	CallLog        CallLogPort
 
 	Logger *zap.SugaredLogger
@@ -61,7 +62,7 @@ func NewAgent(deps Deps) *Agent {
 	a.registry = tools.NewRegistry()
 	tools.RegisterScheduleTools(a.registry, deps.Schedule, deps.Semester, deps.SchedulePeriod)
 	tools.RegisterAttendanceTools(a.registry, deps.Attendance, deps.Semester, deps.RestDay, deps.Leave)
-	tools.RegisterAdminTools(a.registry, deps.Attendance, deps.User, deps.GroupSub)
+	tools.RegisterAdminTools(a.registry, deps.Attendance, deps.User, deps.GroupSub, deps.Dept)
 
 	// 启动 Session 过期清理
 	go a.cleanupLoop()

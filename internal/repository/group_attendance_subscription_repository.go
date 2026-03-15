@@ -28,7 +28,7 @@ func (r *groupAttendanceSubscriptionRepository) Upsert(ctx context.Context, sub 
 	return r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "tenant_id"}, {Name: "conversation_id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"group_name", "enabled_by_uid", "deleted_at"}),
+			DoUpdates: clause.AssignmentColumns([]string{"group_name", "enabled_by_uid", "dept_ids_json", "deleted_at"}),
 		}).Create(sub).Error
 }
 

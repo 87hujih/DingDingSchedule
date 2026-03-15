@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -45,6 +46,7 @@ func buildAgent(
 		SchedulePeriod: &schedulePeriodAdapter{srv: schedulePeriodSrv},
 		RestDay:        &restDayAdapter{srv: restDaySrv},
 		GroupSub:       &groupSubAdapter{repo: repo.GroupSubRepo},
+		Dept:           &deptAdapter{repo: repo.DeptRepo},
 		CallLog:        &callLogAdapter{db: global.DB},
 
 		Logger: global.Log,
@@ -371,17 +373,48 @@ type groupSubAdapter struct {
 	repo repository.GroupAttendanceSubscriptionRepository
 }
 
-func (a *groupSubAdapter) Subscribe(ctx context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint) error {
+func (a *groupSubAdapter) Subscribe(ctx context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64) error {
+	deptIDsJSON := ""
+	if len(deptIDs) > 0 {
+		b, err := json.Marshal(deptIDs)
+		if err != nil {
+			return err
+		}
+		deptIDsJSON = string(b)
+	}
 	return a.repo.Upsert(ctx, &model.GroupAttendanceSubscription{
 		TenantID:       tenantID,
 		ConversationID: conversationID,
 		GroupName:      groupName,
 		EnabledByUID:   enabledByUID,
+		DeptIDsJSON:    deptIDsJSON,
 	})
 }
 
 func (a *groupSubAdapter) Unsubscribe(ctx context.Context, tenantID uint, conversationID string) error {
 	return a.repo.SoftDelete(ctx, tenantID, conversationID)
+}
+
+// ────────────── deptAdapter ──────────────
+
+type deptAdapter struct {
+	repo repository.DepartmentRepository
+}
+
+func (a *deptAdapter) ListDepts(ctx context.Context) ([]agent.DeptItem, error) {
+	depts, err := a.repo.FindLeaf(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]agent.DeptItem, 0, len(depts))
+	for _, d := range depts {
+		items = append(items, agent.DeptItem{
+			DeptID:   d.DeptID,
+			Name:     d.Name,
+			ParentID: d.ParentID,
+		})
+	}
+	return items, nil
 }
 
 // ────────────── callLogAdapter ──────────────

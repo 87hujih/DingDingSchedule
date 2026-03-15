@@ -87,8 +87,13 @@ type RestDayPort interface {
 
 // GroupSubPort 群订阅能力
 type GroupSubPort interface {
-	Subscribe(ctx context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint) error
+	Subscribe(ctx context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64) error
 	Unsubscribe(ctx context.Context, tenantID uint, conversationID string) error
+}
+
+// DeptPort 部门查询能力
+type DeptPort interface {
+	ListDepts(ctx context.Context) ([]DeptItem, error)
 }
 
 // ────────────── Agent 数据类型 ──────────────
@@ -193,4 +198,11 @@ type PeriodInfo struct {
 	Name  string `json:"name"`
 	Start string `json:"start"`
 	End   string `json:"end"`
+}
+
+// DeptItem 部门信息
+type DeptItem struct {
+	DeptID   int64  `json:"dept_id"`
+	Name     string `json:"name"`
+	ParentID int64  `json:"parent_id"`
 }

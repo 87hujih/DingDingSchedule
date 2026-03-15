@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -431,18 +432,6 @@ func (s *AttendanceScheduler) pushToSubscribedGroups(ctx context.Context, tenant
 		return
 	}
 
-	// 生成考勤文本
-	textReq := &dto.AttendanceTextRequest{
-		Date:    result.Date,
-		Week:    result.Week,
-		Section: result.Section,
-	}
-	textResp, err := s.attendanceRecordSrv.GetAttendanceText(ctx, textReq)
-	if err != nil {
-		s.logger.Warnw("生成考勤推送文本失败", "tenantId", tenant.ID, "err", err)
-		return
-	}
-
 	// 获取钉钉客户端
 	_, client, err := s.dingMgr.GetByCorpID(ctx, tenant.CorpID)
 	if err != nil {
@@ -450,8 +439,36 @@ func (s *AttendanceScheduler) pushToSubscribedGroups(ctx context.Context, tenant
 		return
 	}
 
-	// 推送到每个订阅群
+	// 推送到每个订阅群，按各群的部门过滤分别生成文本
 	for _, sub := range subs {
+		// 解析部门过滤列表
+		var deptIDs []int64
+		if sub.DeptIDsJSON != "" {
+			if err := json.Unmarshal([]byte(sub.DeptIDsJSON), &deptIDs); err != nil {
+				s.logger.Warnw("解析订阅部门ID失败，跳过过滤",
+					"tenantId", tenant.ID,
+					"conversationId", sub.ConversationID,
+					"err", err,
+				)
+			}
+		}
+
+		textReq := &dto.AttendanceTextRequest{
+			Date:    result.Date,
+			Week:    result.Week,
+			Section: result.Section,
+			DeptIDs: deptIDs,
+		}
+		textResp, err := s.attendanceRecordSrv.GetAttendanceText(ctx, textReq)
+		if err != nil {
+			s.logger.Warnw("生成考勤推送文本失败",
+				"tenantId", tenant.ID,
+				"conversationId", sub.ConversationID,
+				"err", err,
+			)
+			continue
+		}
+
 		if err := client.SendGroupRobotMessage(ctx, tenant.AppKey, sub.ConversationID, textResp.FullText); err != nil {
 			s.logger.Warnw("推送考勤到群失败",
 				"tenantId", tenant.ID,

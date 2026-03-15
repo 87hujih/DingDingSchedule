@@ -12,6 +12,7 @@ type (
 	SchedulePeriodPort = tools.SchedulePeriodPort
 	RestDayPort        = tools.RestDayPort
 	GroupSubPort       = tools.GroupSubPort
+	DeptPort           = tools.DeptPort
 	CallLogPort        = tools.CallLogPort
 )
 
@@ -26,6 +27,7 @@ type (
 	LeaveItem        = tools.LeaveItem
 	UserInfo         = tools.UserInfo
 	PeriodInfo       = tools.PeriodInfo
+	DeptItem         = tools.DeptItem
 )
 
 // LLM 通信类型别名
