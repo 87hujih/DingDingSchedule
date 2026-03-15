@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -13,6 +14,9 @@ import (
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/payload"
 	"go.uber.org/zap"
 )
+
+// groupChatConcurrency 群聊并发处理上限，超出后立即告知用户服务繁忙
+const groupChatConcurrency = 10
 
 // StreamClient 钉钉 Stream 模式客户端
 type StreamClient struct {
@@ -26,6 +30,11 @@ type StreamClient struct {
 	onBpmsEvent func(ctx context.Context, corpID, processInstanceID, eventType string) error
 	// 聊天消息处理回调
 	chatHandler func(ctx context.Context, msg *ChatMessage) (string, error)
+
+	// SessionWebhook 失效后的主动推送兜底（群聊专用）
+	asyncReplyHandler func(ctx context.Context, msg *ChatMessage, reply string)
+	// 并发信号量
+	sema chan struct{}
 }
 
 // NewStreamClient 创建 Stream 客户端
@@ -35,6 +44,7 @@ func NewStreamClient(appKey, appSecret, corpID string, logger *zap.SugaredLogger
 		appSecret: appSecret,
 		corpID:    corpID,
 		logger:    logger,
+		sema:      make(chan struct{}, groupChatConcurrency),
 	}
 }
 
@@ -58,6 +68,11 @@ type ChatMessage struct {
 // SetChatMessageHandler 设置聊天消息处理器
 func (s *StreamClient) SetChatMessageHandler(handler func(ctx context.Context, msg *ChatMessage) (string, error)) {
 	s.chatHandler = handler
+}
+
+// SetAsyncReplyHandler 设置 SessionWebhook 失效时的兜底推送处理器（群聊专用）
+func (s *StreamClient) SetAsyncReplyHandler(handler func(ctx context.Context, msg *ChatMessage, reply string)) {
+	s.asyncReplyHandler = handler
 }
 
 var mentionRegexp = regexp.MustCompile(`@\S+\s*`)
@@ -128,8 +143,13 @@ func (s *StreamClient) handleChatBotMessage(ctx context.Context, data *chatbot.B
 		SessionWebhook:    data.SessionWebhook,
 	}
 
-	// 90 秒处理超时，基于 Background context 避免继承 SDK 内部的更短 deadline
-	processCtx, processCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	// 群聊：走异步流程（SessionWebhook 优先，过期则主动推送兜底）
+	if data.ConversationType == "2" {
+		return s.handleGroupChatAsync(data, msg)
+	}
+
+	// 私聊：保持同步，55s 超时留余量在 Webhook 60s 内完成
+	processCtx, processCancel := context.WithTimeout(context.Background(), 55*time.Second)
 	defer processCancel()
 
 	reply, err := s.chatHandler(processCtx, msg)
@@ -137,18 +157,86 @@ func (s *StreamClient) handleChatBotMessage(ctx context.Context, data *chatbot.B
 		if errors.Is(err, context.DeadlineExceeded) {
 			reply = "处理超时，请重试"
 		} else {
-			s.logger.Errorw("处理聊天消息失败", "senderID", data.SenderStaffId, "err", err)
+			s.logger.Errorw("处理私聊消息失败", "senderID", data.SenderStaffId, "err", err)
 			reply = "处理出错，请重试"
 		}
 	}
 
-	// 用独立的 context 发送回复，避免处理超时后回复也无法发出
 	replyCtx, replyCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer replyCancel()
 	replier := chatbot.NewChatbotReplier()
 	if err := replier.SimpleReplyText(replyCtx, data.SessionWebhook, []byte(reply)); err != nil {
-		s.logger.Errorw("回复聊天消息失败", "senderID", data.SenderStaffId, "err", err)
+		s.logger.Errorw("回复私聊消息失败", "senderID", data.SenderStaffId, "err", err)
 	}
+
+	return []byte(""), nil
+}
+
+// handleGroupChatAsync 群聊异步处理：立即返回，goroutine 完成后智能选择回复通道。
+// 优先使用 SessionWebhook（快速响应时仍有效），失效后自动切换主动推送接口。
+func (s *StreamClient) handleGroupChatAsync(data *chatbot.BotCallbackDataModel, msg *ChatMessage) ([]byte, error) {
+	replier := chatbot.NewChatbotReplier()
+
+	// 尝试获取信号量（非阻塞），防止 LLM 调用风暴
+	select {
+	case s.sema <- struct{}{}:
+		// 获取成功，继续处理
+	default:
+		// 并发已满，立即通过仍有效的 SessionWebhook 告知用户
+		ackCtx, ackCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer ackCancel()
+		busyMsg := fmt.Sprintf("@%s 服务繁忙，请稍后重试", data.SenderNick)
+		if err := replier.SimpleReplyText(ackCtx, data.SessionWebhook, []byte(busyMsg)); err != nil {
+			s.logger.Errorw("发送繁忙提示失败", "senderID", data.SenderStaffId, "err", err)
+		}
+		return []byte(""), nil
+	}
+
+	// 捕获 Webhook URL，goroutine 中使用（URL 有效期从消息接收时计算，与 handler 是否返回无关）
+	webhookURL := data.SessionWebhook
+
+	go func() {
+		// defer 逆序执行：recover 先于 sema 释放，确保 panic 时信号量也能释放
+		defer func() { <-s.sema }()
+		defer func() {
+			if r := recover(); r != nil {
+				s.logger.Errorw("群聊异步处理 panic", "senderID", msg.SenderID, "panic", r)
+			}
+		}()
+
+		// LLM 处理，给足时间（不再受 Webhook 有效期约束）
+		processCtx, processCancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer processCancel()
+
+		reply, err := s.chatHandler(processCtx, msg)
+		if err != nil {
+			errMsg := "处理出错，请重试"
+			if errors.Is(err, context.DeadlineExceeded) {
+				errMsg = "处理超时，请重试"
+			}
+			s.logger.Errorw("群聊处理失败", "senderID", msg.SenderID, "err", err)
+			reply = fmt.Sprintf("@%s %s", msg.SenderNick, errMsg)
+		}
+
+		// try 1：SessionWebhook（处理较快时仍有效，1 条消息，最佳体验）
+		webhookCtx, webhookCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		webhookErr := replier.SimpleReplyText(webhookCtx, webhookURL, []byte(reply))
+		webhookCancel()
+		if webhookErr == nil {
+			s.logger.Infow("通过 SessionWebhook 回复成功", "senderID", msg.SenderID)
+			return
+		}
+
+		// try 2：SessionWebhook 失效，切换主动推送接口
+		s.logger.Infow("SessionWebhook 已失效，切换主动推送", "senderID", msg.SenderID, "webhookErr", webhookErr)
+		if s.asyncReplyHandler == nil {
+			s.logger.Errorw("主动推送处理器未注册，消息丢失", "senderID", msg.SenderID)
+			return
+		}
+		fallbackCtx, fallbackCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer fallbackCancel()
+		s.asyncReplyHandler(fallbackCtx, msg, reply)
+	}()
 
 	return []byte(""), nil
 }

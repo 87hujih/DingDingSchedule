@@ -15,6 +15,7 @@ import (
 	"schedule_server/internal/repository"
 	"schedule_server/internal/scheduler"
 	"schedule_server/internal/service"
+	"schedule_server/pkg/dingtalk"
 )
 
 // RunServer 启动 HTTP 服务器并支持优雅关闭
@@ -131,6 +132,26 @@ func startDingTalkStream(ctx context.Context, agentInstance *agent.Agent) {
 	// 注册 Agent 聊天消息处理器
 	if agentInstance != nil {
 		streamMgr.SetChatMessageHandler(agentInstance.Chat)
+
+		// 构建群聊兜底推送处理器：SessionWebhook 失效时通过主动推送接口回复
+		asyncReplyHandler := func(ctx context.Context, msg *dingtalk.ChatMessage, reply string) {
+			tenant, dingClient, err := dingMgr.GetByCorpID(ctx, msg.CorpID)
+			if err != nil {
+				global.Log.Errorw("主动推送：获取钉钉客户端失败",
+					"corpID", msg.CorpID,
+					"err", err,
+				)
+				return
+			}
+			if err := dingClient.SendGroupRobotMessage(ctx, tenant.AppKey, msg.ConversationID, reply); err != nil {
+				global.Log.Errorw("主动推送群消息失败",
+					"corpID", msg.CorpID,
+					"conversationID", msg.ConversationID,
+					"err", err,
+				)
+			}
+		}
+		streamMgr.SetAsyncReplyHandler(asyncReplyHandler)
 	}
 
 	// 启动所有活跃租户的 Stream 客户端

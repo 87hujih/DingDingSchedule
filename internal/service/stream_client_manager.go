@@ -18,6 +18,9 @@ type StreamClientManager struct {
 	logger      *zap.SugaredLogger
 	chatHandler func(ctx context.Context, msg *dingtalk.ChatMessage) (string, error)
 
+	// SessionWebhook 失效后的主动推送兜底（群聊专用）
+	asyncReplyHandler func(ctx context.Context, msg *dingtalk.ChatMessage, reply string)
+
 	mu      sync.RWMutex
 	clients map[uint]*streamClientEntry // tenantID -> client entry
 	cancels map[uint]context.CancelFunc // tenantID -> cancel function
@@ -42,6 +45,13 @@ func NewStreamClientManager(tenantRepo repository.TenantRepository, logger *zap.
 func (m *StreamClientManager) SetChatMessageHandler(handler func(ctx context.Context, msg *dingtalk.ChatMessage) (string, error)) {
 	m.mu.Lock()
 	m.chatHandler = handler
+	m.mu.Unlock()
+}
+
+// SetAsyncReplyHandler 设置兜底推送处理器，必须在 StartAll 之前调用
+func (m *StreamClientManager) SetAsyncReplyHandler(handler func(ctx context.Context, msg *dingtalk.ChatMessage, reply string)) {
+	m.mu.Lock()
+	m.asyncReplyHandler = handler
 	m.mu.Unlock()
 }
 
@@ -104,6 +114,9 @@ func (m *StreamClientManager) StartForTenant(parentCtx context.Context, tenant *
 	streamClient.SetBpmsEventHandler(eventHandler)
 	if m.chatHandler != nil {
 		streamClient.SetChatMessageHandler(m.chatHandler)
+	}
+	if m.asyncReplyHandler != nil {
+		streamClient.SetAsyncReplyHandler(m.asyncReplyHandler)
 	}
 
 	// 创建可取消的 context
