@@ -113,6 +113,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		return "系统错误，请稍后重试", nil
 	}
 	if user == nil {
+		a.deps.Logger.Infow("用户未绑定账户，拒绝服务", "senderID", msg.SenderID)
 		return "您尚未绑定账户，请先通过小程序登录", nil
 	}
 
@@ -274,6 +275,7 @@ func (a *Agent) buildSystemPrompt(ctx context.Context, uctx *tools.UserContext) 
 - 回复用中文，简洁明了，避免冗余解释
 - 如果工具返回错误，如实告知用户
 - 工具返回的是 JSON 数据，请用自然语言组织回复
+- 列出人员名单时，必须完整逐一列出工具返回的所有姓名，禁止使用"等"字省略
 - 如果用户的问题与课程人员信息、考勤、请假无关，请礼貌拒绝并说明："抱歉，我只能回答课程人员、考勤及请假相关的问题，无法回答其他内容。"`,
 		uctx.Name, roleText,
 		now.Format("2006-01-02"), weekdays[now.Weekday()],

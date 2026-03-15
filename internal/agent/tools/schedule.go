@@ -124,11 +124,29 @@ func RegisterScheduleTools(r *Registry, schedule SchedulePort, semester Semester
 			return "", err
 		}
 
+		weekdayNames := []string{"", "周一", "周二", "周三", "周四", "周五", "周六", "周日"}
+		formattedSlots := make([]map[string]interface{}, len(slots))
+		for i, s := range slots {
+			dayName := ""
+			if s.DayOfWeek >= 1 && s.DayOfWeek <= 7 {
+				dayName = weekdayNames[s.DayOfWeek]
+			}
+			formattedSlots[i] = map[string]interface{}{
+				"day_of_week": s.DayOfWeek,
+				"day_name":    dayName,
+				"section":     s.Section,
+				"slot_start":  s.SlotStart,
+				"slot_end":    s.SlotEnd,
+				"free_count":  s.FreeCount,
+				"free_users":  formatNameList(s.FreeUsers),
+			}
+		}
+
 		return marshalJSON(map[string]interface{}{
 			"week":      week,
 			"day_start": dayStart,
 			"day_end":   dayEnd,
-			"slots":     slots,
+			"slots":     formattedSlots,
 		})
 	})
 

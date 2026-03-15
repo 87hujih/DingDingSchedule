@@ -98,7 +98,15 @@ func (s *StreamClient) Start(ctx context.Context) error {
 
 // handleChatBotMessage 处理机器人聊天消息（SDK chatbot 框架回调）
 func (s *StreamClient) handleChatBotMessage(ctx context.Context, data *chatbot.BotCallbackDataModel) ([]byte, error) {
+	s.logger.Infow("收到钉钉消息回调",
+		"senderID", data.SenderStaffId,
+		"senderNick", data.SenderNick,
+		"convType", data.ConversationType,
+		"content", data.Text.Content,
+	)
+
 	if s.chatHandler == nil {
+		s.logger.Warnw("chatHandler 未注册，消息被丢弃", "senderID", data.SenderStaffId)
 		return []byte(""), nil
 	}
 
@@ -120,8 +128,8 @@ func (s *StreamClient) handleChatBotMessage(ctx context.Context, data *chatbot.B
 		SessionWebhook:    data.SessionWebhook,
 	}
 
-	// 90 秒处理超时（多轮 ReAct 每轮约 15-25s，3 轮以内应在 90s 内完成）
-	processCtx, processCancel := context.WithTimeout(ctx, 90*time.Second)
+	// 90 秒处理超时，基于 Background context 避免继承 SDK 内部的更短 deadline
+	processCtx, processCancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer processCancel()
 
 	reply, err := s.chatHandler(processCtx, msg)

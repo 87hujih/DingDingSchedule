@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -52,7 +54,22 @@ func RegisterAttendanceTools(r *Registry, attendance AttendancePort, semester Se
 			return "", err
 		}
 
-		return marshalJSON(result)
+		return marshalJSON(map[string]interface{}{
+			"date":           result.Date,
+			"week":           result.Week,
+			"section":        result.Section,
+			"slot_start":     result.SlotStart,
+			"slot_end":       result.SlotEnd,
+			"should_attend":  result.ShouldAttend,
+			"on_time_count":  result.OnTimeCount,
+			"leave_count":    result.LeaveCount,
+			"absent_count":   result.AbsentCount,
+			"rest_day_count": result.RestDayCount,
+			"on_time_users":  formatNameList(result.OnTimeUsers),
+			"absent_users":   formatNameList(result.AbsentUsers),
+			"rest_day_users": formatNameList(result.RestDayUsers),
+			"leave_users":    formatLeaveList(result.LeaveUsers),
+		})
 	})
 
 	// generate_attendance_text
@@ -207,4 +224,28 @@ func RegisterAttendanceTools(r *Registry, attendance AttendancePort, semester Se
 			"items": items,
 		})
 	})
+}
+
+// formatNameList 将姓名切片转为编号列表字符串，供 LLM 直接引用
+func formatNameList(names []string) string {
+	if len(names) == 0 {
+		return "无"
+	}
+	parts := make([]string, len(names))
+	for i, n := range names {
+		parts[i] = fmt.Sprintf("%d. %s", i+1, n)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// formatLeaveList 将请假用户列表转为编号列表字符串
+func formatLeaveList(users []AttendLeave) string {
+	if len(users) == 0 {
+		return "无"
+	}
+	parts := make([]string, len(users))
+	for i, u := range users {
+		parts[i] = fmt.Sprintf("%d. %s（%s）", i+1, u.Name, u.LeaveType)
+	}
+	return strings.Join(parts, "\n")
 }
