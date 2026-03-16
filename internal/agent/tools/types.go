@@ -202,6 +202,80 @@ type CallLogPort interface {
 	Write(ctx context.Context, log CallLog)
 }
 
+// ────────────── 通用查询层类型 ──────────────
+
+// AttendanceStatsQuery 考勤统计查询参数
+type AttendanceStatsQuery struct {
+	// 时间维度：DateRange > Date > WeekRange > Week，优先级依次降低
+	Week      int       // 单周
+	WeekRange [2]int    // 周次范围 [起始周, 结束周]，两值都 > 0 时生效
+	Date      string    // 单日 YYYY-MM-DD
+	DateRange [2]string // 日期范围 [开始, 结束]
+
+	// 节次维度
+	Section  int   // 单节次
+	Sections []int // 多节次，与 Section 二选一
+
+	// 人员/部门筛选
+	UserName string
+	DeptID   int64 // 0 表示不限
+
+	// 聚合维度
+	GroupBy string // "user"|"dept"|"week"|"section"|"day"，不填返回原始明细
+
+	// 聚合后过滤（HAVING）
+	MinAbsentCount int     // 缺勤次数 >= N
+	MaxOnTimeRate  float64 // 出勤率 <= 0.x（0 表示不限）
+
+	// 排序
+	SortBy    string // "absent_count"|"on_time_count"|"on_time_rate"|"leave_count"
+	SortOrder string // "asc"|"desc"
+	Limit     int    // 默认 20
+}
+
+// AttendanceStatItem 聚合统计条目
+type AttendanceStatItem struct {
+	Label       string `json:"label"` // 分组标签
+	AbsentCount int    `json:"absent_count"`
+	OnTimeCount int    `json:"on_time_count"`
+	LeaveCount  int    `json:"leave_count"`
+	TotalCount  int    `json:"total_count"`
+	OnTimeRate  string `json:"on_time_rate"` // 如 "85.0%"
+}
+
+// AttendanceStatsPort 考勤统计查询能力
+type AttendanceStatsPort interface {
+	QueryStats(ctx context.Context, req AttendanceStatsQuery) ([]AttendanceStatItem, error)
+}
+
+// SlotCondition 时间槽条件
+type SlotCondition struct {
+	Week      int // 0 表示不限周次
+	DayOfWeek int // 1-7，必填
+	Section   int // 必填
+}
+
+// AbsentCondition 缺勤条件（Date 与 Week 二选一）
+type AbsentCondition struct {
+	Date    string // YYYY-MM-DD
+	Week    int    // 周次，与 Date 二选一
+	Section int    // 必填
+}
+
+// UserCrossQuery 人员交叉查询参数
+type UserCrossQuery struct {
+	FreeSlots []SlotCondition   // AND 语义：同时在所有槽无课
+	BusySlots []SlotCondition   // AND 语义：同时在所有槽有课
+	AbsentOn  []AbsentCondition // OR 语义：命中任意一条缺勤即满足
+	DeptID    int64             // 0 表示不限
+	UserNames []string          // 非空时只在这些人中查找
+}
+
+// UserCrossPort 人员交叉查询能力
+type UserCrossPort interface {
+	QueryUserCross(ctx context.Context, req UserCrossQuery) ([]string, error)
+}
+
 // PeriodInfo 作息时段信息
 type PeriodInfo struct {
 	Name  string `json:"name"`

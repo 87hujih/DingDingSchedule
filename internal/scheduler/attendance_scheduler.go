@@ -453,13 +453,7 @@ func (s *AttendanceScheduler) pushToSubscribedGroups(ctx context.Context, tenant
 			}
 		}
 
-		textReq := &dto.AttendanceTextRequest{
-			Date:    result.Date,
-			Week:    result.Week,
-			Section: result.Section,
-			DeptIDs: deptIDs,
-		}
-		textResp, err := s.attendanceRecordSrv.GetAttendanceText(ctx, textReq)
+		textResp, err := s.attendanceRecordSrv.FormatAttendanceTextFromDetail(ctx, result, deptIDs)
 		if err != nil {
 			s.logger.Warnw("生成考勤推送文本失败",
 				"tenantId", tenant.ID,

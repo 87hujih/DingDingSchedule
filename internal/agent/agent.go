@@ -23,16 +23,18 @@ type Deps struct {
 	LLMAPIKey  string
 	LLMModel   string
 
-	Schedule       SchedulePort
-	Attendance     AttendancePort
-	Leave          LeavePort
-	User           UserPort
-	Semester       SemesterPort
-	SchedulePeriod SchedulePeriodPort
-	RestDay        RestDayPort
-	GroupSub       GroupSubPort
-	Dept           DeptPort
-	CallLog        CallLogPort
+	Schedule        SchedulePort
+	Attendance      AttendancePort
+	Leave           LeavePort
+	User            UserPort
+	Semester        SemesterPort
+	SchedulePeriod  SchedulePeriodPort
+	RestDay         RestDayPort
+	GroupSub        GroupSubPort
+	Dept            DeptPort
+	CallLog         CallLogPort
+	AttendanceStats AttendanceStatsPort
+	UserCross       UserCrossPort
 
 	Logger *zap.SugaredLogger
 }
@@ -63,6 +65,7 @@ func NewAgent(deps Deps) *Agent {
 	tools.RegisterScheduleTools(a.registry, deps.Schedule, deps.Semester, deps.SchedulePeriod)
 	tools.RegisterAttendanceTools(a.registry, deps.Attendance, deps.Semester, deps.RestDay, deps.Leave)
 	tools.RegisterAdminTools(a.registry, deps.Attendance, deps.User, deps.GroupSub, deps.Dept)
+	tools.RegisterAnalyticsTools(a.registry, deps.AttendanceStats, deps.UserCross)
 
 	// 启动 Session 过期清理
 	go a.cleanupLoop()

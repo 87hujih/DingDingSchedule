@@ -50,6 +50,22 @@ func (s *SemesterService) CalculateWeekFromDate(semester *model.Semester, date t
 	return week, nil
 }
 
+// GetWeekDateRange 返回指定周次的日期范围：[weekStart, weekEnd)
+// weekStart 是周一 00:00:00，weekEnd 是下周一 00:00:00
+func (s *SemesterService) GetWeekDateRange(ctx context.Context, week int) (time.Time, time.Time, error) {
+	semester, err := s.GetActiveSemester(ctx)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	semStart := time.Date(
+		semester.StartDate.Year(), semester.StartDate.Month(), semester.StartDate.Day(),
+		0, 0, 0, 0, time.Local,
+	)
+	weekStart := semStart.AddDate(0, 0, (week-1)*7)
+	weekEnd := weekStart.AddDate(0, 0, 7)
+	return weekStart, weekEnd, nil
+}
+
 // ValidateWeekDate 校验周数与日期是否一致
 // 返回 nil 表示校验通过，返回 error 表示不一致
 func (s *SemesterService) ValidateWeekDate(ctx context.Context, date time.Time, week int) error {

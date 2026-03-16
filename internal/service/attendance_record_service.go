@@ -1201,6 +1201,93 @@ func (s *AttendanceRecordService) GetAttendanceText(
 	return s.formatAttendanceText(detail, mode, periods), nil
 }
 
+// FormatAttendanceTextFromDetail 直接从已计算的考勤结果生成推送文本
+// 相比 GetAttendanceText，不重新读取数据库，避免因保存失败而推送旧数据
+func (s *AttendanceRecordService) FormatAttendanceTextFromDetail(
+	ctx context.Context,
+	result *dto.AttendanceDetailResponse,
+	deptIDs []int64,
+) (*dto.AttendanceTextResponse, error) {
+	detail := result
+
+	// 如果有部门过滤，在内存中过滤用户列表
+	if len(deptIDs) > 0 {
+		deptUsers, err := s.userRepo.ListByScope(ctx, deptIDs, nil)
+		if err != nil {
+			return nil, errs.WrapMsgErr("获取部门用户失败", err)
+		}
+		deptSet := make(map[uint]bool, len(deptUsers))
+		for _, u := range deptUsers {
+			deptSet[u.ID] = true
+		}
+		detail = filterDetailByDeptSet(result, deptSet)
+	}
+
+	mode, err := s.schedulePeriodSrv.GetCurrentMode(ctx)
+	if err != nil {
+		s.logger.Warnw("获取作息模式失败，使用默认上学模式", "error", err)
+		mode = model.ScheduleModeSchool
+	}
+
+	periods := s.resolveActivePeriods(ctx)
+	return s.formatAttendanceText(detail, mode, periods), nil
+}
+
+// filterDetailByDeptSet 按部门用户集合在内存中过滤考勤详情
+func filterDetailByDeptSet(result *dto.AttendanceDetailResponse, deptSet map[uint]bool) *dto.AttendanceDetailResponse {
+	onTime := make([]dto.AttendanceUserCheck, 0)
+	for _, u := range result.Users.OnTime {
+		if deptSet[u.ID] {
+			onTime = append(onTime, u)
+		}
+	}
+	leave := make([]dto.AttendanceUserLeave, 0)
+	for _, u := range result.Users.Leave {
+		if deptSet[u.ID] {
+			leave = append(leave, u)
+		}
+	}
+	notArrived := make([]dto.AttendanceUserBasic, 0)
+	for _, u := range result.Users.NotArrived {
+		if deptSet[u.ID] {
+			notArrived = append(notArrived, u)
+		}
+	}
+	restDay := make([]dto.AttendanceUserBasic, 0)
+	for _, u := range result.Users.RestDay {
+		if deptSet[u.ID] {
+			restDay = append(restDay, u)
+		}
+	}
+	shouldAttend := make([]dto.AttendanceUserBasic, 0)
+	for _, u := range result.Users.ShouldAttend {
+		if deptSet[u.ID] {
+			shouldAttend = append(shouldAttend, u)
+		}
+	}
+	return &dto.AttendanceDetailResponse{
+		RecordID: result.RecordID,
+		Date:     result.Date,
+		Week:     result.Week,
+		Section:  result.Section,
+		SlotTime: result.SlotTime,
+		Statistics: dto.AttendanceStatistics{
+			ShouldAttend: len(shouldAttend),
+			OnTime:       len(onTime),
+			Leave:        len(leave),
+			NotArrived:   len(notArrived),
+			RestDay:      len(restDay),
+		},
+		Users: dto.AttendanceUserLists{
+			ShouldAttend: shouldAttend,
+			OnTime:       onTime,
+			Leave:        leave,
+			NotArrived:   notArrived,
+			RestDay:      restDay,
+		},
+	}
+}
+
 // formatAttendanceText 将考勤详情格式化为文本
 func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDetailResponse, mode string, periods []config.Period) *dto.AttendanceTextResponse {
 	// 解析日期以获取星期几
