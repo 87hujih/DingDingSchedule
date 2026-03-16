@@ -178,7 +178,10 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		if len(messages) > 0 && messages[len(messages)-1].Role == "tool" {
 			currentToolDefs = nil
 		}
-		resp, err := a.llmClient.Chat(ctx, messages, currentToolDefs)
+		// 每轮 LLM 调用使用独立的 50s 超时，避免多轮 ReAct 累积耗时耗尽 processCtx 预算
+		llmCtx, llmCancel := context.WithTimeout(context.Background(), 50*time.Second)
+		resp, err := a.llmClient.Chat(llmCtx, messages, currentToolDefs)
+		llmCancel()
 		if err != nil {
 			a.deps.Logger.Errorw("LLM 调用失败", "round", round, "err", err)
 			a.writeCallLog(ctx, uctx, msg.Content, "", toolsCalled, round, startTime, "failed", err.Error())
