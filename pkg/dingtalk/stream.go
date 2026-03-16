@@ -204,16 +204,24 @@ func (s *StreamClient) handleGroupChatAsync(data *chatbot.BotCallbackDataModel, 
 			}
 		}()
 
-		// 立即告知用户正在处理（此时 SessionWebhook 仍有效）
-		ackCtx, ackCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = replier.SimpleReplyText(ackCtx, webhookURL, []byte(fmt.Sprintf("@%s 正在查询，请稍候...", msg.SenderNick)))
-		ackCancel()
-
 		// LLM 处理，给足时间（不再受 Webhook 有效期约束）
 		processCtx, processCancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer processCancel()
 
+		// 超时兜底：处理超过 4s 才发"正在查询"，快速响应时不打扰用户
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-time.After(4 * time.Second):
+				ackCtx, ackCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = replier.SimpleReplyText(ackCtx, webhookURL, []byte(fmt.Sprintf("@%s 正在查询，请稍候...", msg.SenderNick)))
+				ackCancel()
+			case <-done:
+			}
+		}()
+
 		reply, err := s.chatHandler(processCtx, msg)
+		close(done)
 		if err != nil {
 			errMsg := "处理出错，请重试"
 			if errors.Is(err, context.DeadlineExceeded) {
