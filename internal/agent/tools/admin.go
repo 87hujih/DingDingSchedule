@@ -187,13 +187,17 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 		if err != nil {
 			return "", err
 		}
-		names := make([]string, 0, len(depts))
+		type deptInfo struct {
+			DeptID int64  `json:"dept_id"`
+			Name   string `json:"name"`
+		}
+		items := make([]deptInfo, 0, len(depts))
 		for _, d := range depts {
-			names = append(names, d.Name)
+			items = append(items, deptInfo{DeptID: d.DeptID, Name: d.Name})
 		}
 		return marshalJSON(map[string]interface{}{
-			"count": len(names),
-			"depts": names,
+			"count": len(items),
+			"depts": items,
 		})
 	})
 }
