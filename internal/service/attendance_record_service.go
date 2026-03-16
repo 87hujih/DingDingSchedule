@@ -1074,10 +1074,10 @@ func (s *AttendanceRecordService) GetWeeklyAttendanceRateRanking(
 
 	// 4. 计算出勤率并排序
 	type rateEntry struct {
-		userID  uint
-		onTime  int
-		total   int
-		rate    float64
+		userID uint
+		onTime int
+		total  int
+		rate   float64
 	}
 	entries := make([]rateEntry, 0, len(totalSlots))
 	for uid, total := range totalSlots {
@@ -1235,16 +1235,16 @@ func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDet
 	// 构建标题：根据模式决定是否显示周次
 	var title string
 	if mode == model.ScheduleModeHoliday {
-		// 假期模式：日期 + 星期 + 时段（不显示周次和"假期"字样）
+		// 假期模式：日期 + 星期 + 时段（不显示周次）
 		title = "📅 " + detail.Date + " " + weekdayStr + " " + periodLabel + " 考勤"
 	} else {
-		// 上学模式：日期 + 星期 + 第X周 + 第X节
+		// 上学模式：日期 + 星期 + 第X周 + 节次
 		title = "📅 " + detail.Date + " " + weekdayStr + " 第" + intToString(detail.Week) + "周 " + periodLabel + " 考勤"
 	}
 
 	// 构建统计信息
-	statistics := "📊 应到" + intToString(detail.Statistics.ShouldAttend) + "人，" +
-		"正常打卡" + intToString(detail.Statistics.OnTime) + "人，" +
+	statistics := "⬇️应到" + intToString(detail.Statistics.ShouldAttend) + "人，" +
+		"准时打卡" + intToString(detail.Statistics.OnTime) + "人，" +
 		"请假" + intToString(detail.Statistics.Leave) + "人，" +
 		"未到" + intToString(detail.Statistics.NotArrived) + "人"
 	if detail.Statistics.RestDay > 0 {
@@ -1254,13 +1254,13 @@ func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDet
 	// 构建分类人员列表
 	content := make([]string, 0, 3)
 
-	// 正常打卡
+	// 准时到
 	if len(detail.Users.OnTime) > 0 {
 		names := make([]string, 0, len(detail.Users.OnTime))
 		for _, u := range detail.Users.OnTime {
 			names = append(names, u.Name)
 		}
-		line := "✅ 正常打卡(" + intToString(len(detail.Users.OnTime)) + "人)：\n" + joinNames(names)
+		line := "🌟准时到(" + intToString(len(detail.Users.OnTime)) + "人)：" + joinNames(names)
 		content = append(content, line)
 	}
 
@@ -1268,21 +1268,19 @@ func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDet
 	if len(detail.Users.Leave) > 0 {
 		names := make([]string, 0, len(detail.Users.Leave))
 		for _, u := range detail.Users.Leave {
-			// 简洁版只显示姓名和请假类型
-			nameWithType := u.Name + "（" + u.LeaveType + "）"
-			names = append(names, nameWithType)
+			names = append(names, u.Name)
 		}
-		line := "🏥 请假(" + intToString(len(detail.Users.Leave)) + "人)：\n" + joinNames(names)
+		line := "🌱请假(" + intToString(len(detail.Users.Leave)) + "人)：" + joinNames(names)
 		content = append(content, line)
 	}
 
-	// 未到
+	// 迟到/未到
 	if len(detail.Users.NotArrived) > 0 {
 		names := make([]string, 0, len(detail.Users.NotArrived))
 		for _, u := range detail.Users.NotArrived {
 			names = append(names, u.Name)
 		}
-		line := "❌ 未到(" + intToString(len(detail.Users.NotArrived)) + "人)：\n" + joinNames(names)
+		line := "❗️️迟到(" + intToString(len(detail.Users.NotArrived)) + "人)：" + joinNames(names)
 		content = append(content, line)
 	}
 
@@ -1292,7 +1290,7 @@ func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDet
 		for _, u := range detail.Users.RestDay {
 			names = append(names, u.Name)
 		}
-		line := "😴 休息(" + intToString(len(detail.Users.RestDay)) + "人)：\n" + joinNames(names)
+		line := "😴 休息(" + intToString(len(detail.Users.RestDay)) + "人)：" + joinNames(names)
 		content = append(content, line)
 	}
 
