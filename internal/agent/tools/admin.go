@@ -152,6 +152,28 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 		})
 	})
 
+	// query_subscription_status
+	r.Register(ToolDef{
+		Type: "function",
+		Function: FunctionDef{
+			Name:        "query_subscription_status",
+			Description: "查询当前群聊是否已订阅考勤自动推送（群聊中使用）",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
+		},
+	}, 1, func(ctx context.Context, uctx *UserContext, params json.RawMessage) (string, error) {
+		if uctx.ConversationType != "2" {
+			return marshalJSON(map[string]interface{}{
+				"error": "该功能只能在群聊中使用",
+			})
+		}
+
+		info, err := groupSub.GetSubscription(ctx, uctx.TenantID, uctx.ConversationID)
+		if err != nil {
+			return "", err
+		}
+		return marshalJSON(info)
+	})
+
 	// list_departments
 	r.Register(ToolDef{
 		Type: "function",
