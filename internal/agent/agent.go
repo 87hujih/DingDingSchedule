@@ -181,8 +181,13 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		if len(messages) > 0 && messages[len(messages)-1].Role == "tool" {
 			currentToolDefs = nil
 		}
-		// 每轮 LLM 调用使用独立的 50s 超时，避免多轮 ReAct 累积耗时耗尽 processCtx 预算
-		llmCtx, llmCancel := context.WithTimeout(context.Background(), 50*time.Second)
+		// 总结阶段（末尾为 tool 消息）LLM 需处理完整工具结果，输入 token 较多，给予更长超时
+		// 工具调用阶段使用 50s，总结阶段使用 90s
+		llmTimeout := 50 * time.Second
+		if len(messages) > 0 && messages[len(messages)-1].Role == "tool" {
+			llmTimeout = 90 * time.Second
+		}
+		llmCtx, llmCancel := context.WithTimeout(context.Background(), llmTimeout)
 		resp, err := a.llmClient.Chat(llmCtx, messages, currentToolDefs)
 		llmCancel()
 		if err != nil {
