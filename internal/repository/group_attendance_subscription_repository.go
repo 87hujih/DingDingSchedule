@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 
 	"schedule_server/internal/model"
 
@@ -14,6 +15,7 @@ type GroupAttendanceSubscriptionRepository interface {
 	Upsert(ctx context.Context, sub *model.GroupAttendanceSubscription) error
 	SoftDelete(ctx context.Context, tenantID uint, conversationID string) error
 	ListByTenantID(ctx context.Context, tenantID uint) ([]model.GroupAttendanceSubscription, error)
+	FindByConversationID(ctx context.Context, tenantID uint, conversationID string) (*model.GroupAttendanceSubscription, error)
 }
 
 type groupAttendanceSubscriptionRepository struct {
@@ -42,4 +44,15 @@ func (r *groupAttendanceSubscriptionRepository) ListByTenantID(ctx context.Conte
 	var subs []model.GroupAttendanceSubscription
 	err := r.db.WithContext(ctx).Where("tenant_id = ?", tenantID).Find(&subs).Error
 	return subs, err
+}
+
+func (r *groupAttendanceSubscriptionRepository) FindByConversationID(ctx context.Context, tenantID uint, conversationID string) (*model.GroupAttendanceSubscription, error) {
+	var sub model.GroupAttendanceSubscription
+	err := r.db.WithContext(ctx).
+		Where("tenant_id = ? AND conversation_id = ?", tenantID, conversationID).
+		First(&sub).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &sub, err
 }

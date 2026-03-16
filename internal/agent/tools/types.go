@@ -89,6 +89,15 @@ type RestDayPort interface {
 type GroupSubPort interface {
 	Subscribe(ctx context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64) error
 	Unsubscribe(ctx context.Context, tenantID uint, conversationID string) error
+	GetSubscription(ctx context.Context, tenantID uint, conversationID string) (*GroupSubInfo, error)
+}
+
+// GroupSubInfo 群订阅状态
+type GroupSubInfo struct {
+	Subscribed bool    `json:"subscribed"`
+	GroupName  string  `json:"group_name,omitempty"`
+	DeptIDs    []int64 `json:"dept_ids,omitempty"` // 空表示推送全部人员
+	CreatedAt  string  `json:"created_at,omitempty"`
 }
 
 // DeptPort 部门查询能力

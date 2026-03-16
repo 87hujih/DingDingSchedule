@@ -173,7 +173,12 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 
 	// 9. ReAct Loop
 	for round := 0; round < maxReactRounds; round++ {
-		resp, err := a.llmClient.Chat(ctx, messages, toolDefs)
+		// 末尾是 tool 消息时处于总结阶段，无需再传工具定义，减少无效 token
+		currentToolDefs := toolDefs
+		if len(messages) > 0 && messages[len(messages)-1].Role == "tool" {
+			currentToolDefs = nil
+		}
+		resp, err := a.llmClient.Chat(ctx, messages, currentToolDefs)
 		if err != nil {
 			a.deps.Logger.Errorw("LLM 调用失败", "round", round, "err", err)
 			a.writeCallLog(ctx, uctx, msg.Content, "", toolsCalled, round, startTime, "failed", err.Error())

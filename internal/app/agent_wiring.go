@@ -395,6 +395,29 @@ func (a *groupSubAdapter) Unsubscribe(ctx context.Context, tenantID uint, conver
 	return a.repo.SoftDelete(ctx, tenantID, conversationID)
 }
 
+func (a *groupSubAdapter) GetSubscription(ctx context.Context, tenantID uint, conversationID string) (*agenttool.GroupSubInfo, error) {
+	sub, err := a.repo.FindByConversationID(ctx, tenantID, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if sub == nil {
+		return &agenttool.GroupSubInfo{Subscribed: false}, nil
+	}
+
+	info := &agenttool.GroupSubInfo{
+		Subscribed: true,
+		GroupName:  sub.GroupName,
+		CreatedAt:  sub.CreatedAt.Format("2006-01-02 15:04:05"),
+	}
+	if sub.DeptIDsJSON != "" {
+		var deptIDs []int64
+		if err := json.Unmarshal([]byte(sub.DeptIDsJSON), &deptIDs); err == nil {
+			info.DeptIDs = deptIDs
+		}
+	}
+	return info, nil
+}
+
 // ────────────── deptAdapter ──────────────
 
 type deptAdapter struct {
