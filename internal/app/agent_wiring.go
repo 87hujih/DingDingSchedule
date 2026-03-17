@@ -120,11 +120,15 @@ type attendanceAdapter struct {
 }
 
 func (a *attendanceAdapter) GetAttendanceDetail(ctx context.Context, req agenttool.AttendanceQuery) (*agenttool.AttendanceResult, error) {
-	resp, err := a.srv.GetAttendanceRecordFromDB(ctx, &dto.AttendanceDetailRequest{
+	dtoReq := &dto.AttendanceDetailRequest{
 		Date:    req.Date,
 		Week:    req.Week,
 		Section: req.Section,
-	})
+	}
+	if req.DeptID != 0 {
+		dtoReq.DeptIDs = []int64{req.DeptID}
+	}
+	resp, err := a.srv.GetAttendanceRecordFromDB(ctx, dtoReq)
 	if err != nil {
 		return nil, err
 	}

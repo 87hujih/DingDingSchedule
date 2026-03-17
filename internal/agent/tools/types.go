@@ -122,6 +122,7 @@ type AttendanceQuery struct {
 	Date    string
 	Week    int
 	Section int
+	DeptID  int64 // 0 表示不限部门
 }
 
 // AttendanceResult 考勤查询结果

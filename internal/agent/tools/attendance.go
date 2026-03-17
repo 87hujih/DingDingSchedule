@@ -21,7 +21,8 @@ func RegisterAttendanceTools(r *Registry, attendance AttendancePort, semester Se
 				"properties": {
 					"date":    {"type": "string", "description": "日期(YYYY-MM-DD)，默认今天"},
 					"week":    {"type": "integer", "description": "周次，默认自动计算"},
-					"section": {"type": "integer", "description": "节次(必填)"}
+					"section": {"type": "integer", "description": "节次(必填)"},
+					"dept_id": {"type": "integer", "description": "按部门ID筛选，不填则查全部人员。部门ID须先通过 list_departments 获取"}
 				},
 				"required": ["section"]
 			}`),
@@ -31,6 +32,7 @@ func RegisterAttendanceTools(r *Registry, attendance AttendancePort, semester Se
 			Date    string `json:"date"`
 			Week    int    `json:"week"`
 			Section int    `json:"section"`
+			DeptID  int64  `json:"dept_id"`
 		}
 		_ = json.Unmarshal(params, &p)
 
@@ -49,6 +51,7 @@ func RegisterAttendanceTools(r *Registry, attendance AttendancePort, semester Se
 			Date:    p.Date,
 			Week:    p.Week,
 			Section: p.Section,
+			DeptID:  p.DeptID,
 		})
 		if err != nil {
 			return "", err
