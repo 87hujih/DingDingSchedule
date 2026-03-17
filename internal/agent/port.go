@@ -16,6 +16,7 @@ type (
 	CallLogPort         = tools.CallLogPort
 	AttendanceStatsPort = tools.AttendanceStatsPort
 	UserCrossPort       = tools.UserCrossPort
+	TenantPort          = tools.TenantPort
 )
 
 // 数据类型别名，便于外部引用 agent.CourseItem 等

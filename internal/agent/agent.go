@@ -15,7 +15,7 @@ import (
 )
 
 // 最大循环次数
-const maxReactRounds = 5
+const maxReactRounds = 8
 
 // Deps Agent 依赖注入
 type Deps struct {
@@ -35,6 +35,7 @@ type Deps struct {
 	CallLog         CallLogPort
 	AttendanceStats AttendanceStatsPort
 	UserCross       UserCrossPort
+	Tenant          TenantPort
 
 	Logger *zap.SugaredLogger
 }
@@ -110,7 +111,19 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		return "请输入您的问题", nil
 	}
 
-	// 1. 查用户
+	// 1. 通过 CorpID 确定租户并注入上下文（必须先于用户查询，保证租户隔离正确）
+	tenantID, err := a.deps.Tenant.FindTenantIDByCorpID(ctx, msg.CorpID)
+	if err != nil {
+		a.deps.Logger.Errorw("查找租户失败", "corpID", msg.CorpID, "err", err)
+		return "系统错误，请稍后重试", nil
+	}
+	if tenantID == 0 {
+		a.deps.Logger.Infow("未找到对应企业，拒绝服务", "corpID", msg.CorpID)
+		return "未找到对应的企业，请联系管理员", nil
+	}
+	ctx = tenantctx.WithTenantID(ctx, tenantID)
+
+	// 2. 查用户（已有租户上下文，隔离正确）
 	user, err := a.deps.User.FindByDingUserID(ctx, msg.SenderID)
 	if err != nil {
 		a.deps.Logger.Errorw("查找用户失败", "senderID", msg.SenderID, "err", err)
@@ -120,9 +133,6 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		a.deps.Logger.Infow("用户未绑定账户，拒绝服务", "senderID", msg.SenderID)
 		return "您尚未绑定账户，请先通过小程序登录", nil
 	}
-
-	// 2. 注入租户上下文
-	ctx = tenantctx.WithTenantID(ctx, user.TenantID)
 
 	// 3. 构建 UserContext
 	uctx := &tools.UserContext{
@@ -272,6 +282,19 @@ func (a *Agent) buildSystemPrompt(ctx context.Context, uctx *tools.UserContext) 
 		weekInfo = "\n- 学期周次：当前无活跃学期"
 	}
 
+	periodsInfo := ""
+	if periods, _, err := a.deps.SchedulePeriod.GetScheduleInfo(ctx); err == nil && len(periods) > 0 {
+		periodsInfo = "\n- 节次时间（直接使用，无需调用 query_schedule_info）："
+		for i, p := range periods {
+			periodsInfo += fmt.Sprintf("\n  第%d节（%s）：%s-%s", i+1, p.Name, p.Start, p.End)
+		}
+	}
+
+	convInfo := "\n- 当前对话：单聊（钉钉）"
+	if uctx.ConversationType == "2" {
+		convInfo = fmt.Sprintf("\n- 当前对话：群聊（%s）", uctx.ConversationTitle)
+	}
+
 	now := time.Now()
 	weekdays := []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
 
@@ -279,7 +302,7 @@ func (a *Agent) buildSystemPrompt(ctx context.Context, uctx *tools.UserContext) 
 
 当前信息：
 - 用户：%s（%s）
-- 日期：%s（%s）%s
+- 日期：%s（%s）%s%s%s
 
 职责范围（仅限以下内容）：
 - 查询课程安排及相关人员信息（如：某人的课表、某时间段谁有课/无课）
@@ -296,6 +319,6 @@ func (a *Agent) buildSystemPrompt(ctx context.Context, uctx *tools.UserContext) 
 - 如果用户的问题与课程人员信息、考勤、请假无关，请礼貌拒绝并说明："抱歉，我只能回答课程人员、考勤及请假相关的问题，无法回答其他内容。"`,
 		uctx.Name, roleText,
 		now.Format("2006-01-02"), weekdays[now.Weekday()],
-		weekInfo,
+		weekInfo, periodsInfo, convInfo,
 	)
 }

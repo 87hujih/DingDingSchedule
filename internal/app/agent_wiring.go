@@ -50,6 +50,7 @@ func buildAgent(
 		CallLog:         &callLogAdapter{db: global.DB},
 		AttendanceStats: attendanceSrv,
 		UserCross:       attendanceSrv,
+		Tenant:          &tenantAdapter{repo: repo.TenantRepo},
 
 		Logger: global.Log,
 	})
@@ -279,8 +280,6 @@ type userAdapter struct {
 }
 
 func (a *userAdapter) FindByDingUserID(ctx context.Context, dingUserID string) (*agenttool.UserInfo, error) {
-	// Agent.Chat 在获取 tenantID 之前调用此方法，必须跳过租户隔离
-	ctx = tenantctx.WithSkipTenantScope(ctx)
 	user, err := a.repo.FindByDingUserID(ctx, dingUserID)
 	if err != nil {
 		if errors.Is(err, repository.ErrUserNotFound) {
@@ -476,4 +475,21 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 		Status:      log.Status,
 		ErrorMsg:    log.ErrorMsg,
 	})
+}
+
+// ────────────── tenantAdapter ──────────────
+
+type tenantAdapter struct {
+	repo repository.TenantRepository
+}
+
+func (a *tenantAdapter) FindTenantIDByCorpID(ctx context.Context, corpID string) (uint, error) {
+	tenant, err := a.repo.FindActiveByCorpID(ctx, corpID)
+	if errors.Is(err, repository.ErrTenantNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return tenant.ID, nil
 }

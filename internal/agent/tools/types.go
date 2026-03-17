@@ -202,6 +202,12 @@ type CallLogPort interface {
 	Write(ctx context.Context, log CallLog)
 }
 
+// TenantPort 租户查询能力
+type TenantPort interface {
+	// FindTenantIDByCorpID 根据钉钉企业 corpID 查找对应的租户 ID，未找到时返回 0, nil
+	FindTenantIDByCorpID(ctx context.Context, corpID string) (uint, error)
+}
+
 // ────────────── 通用查询层类型 ──────────────
 
 // AttendanceStatsQuery 考勤统计查询参数

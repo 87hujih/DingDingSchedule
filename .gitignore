@@ -21,6 +21,8 @@ docs
 # Temp files
 *.tmp
 *.swp
+tasks
+AGENTS.md
 
 # Local config (contains secrets)
 configs/local.yaml
