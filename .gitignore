@@ -35,7 +35,6 @@ configs/prod.yaml
 uploads/
 
 # Docker volumes
-logs/
 *.tar.gz
 
 # Go specific
