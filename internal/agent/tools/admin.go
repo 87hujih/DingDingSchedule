@@ -89,14 +89,14 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 		Type: "function",
 		Function: FunctionDef{
 			Name:        "subscribe_attendance_push",
-			Description: "将当前群聊订阅为考勤自动推送目标（仅管理员，群聊中使用）。可通过 dept_ids 指定只推送特定部门的考勤，不填则推送全部人员的考勤",
+			Description: "将当前群聊订阅为考勤自动推送目标（仅管理员，群聊中使用）。可通过 dept_names 指定只推送特定部门的考勤，不填则推送全部人员的考勤。部门名称须先通过 list_departments 查询获得",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
-					"dept_ids": {
+					"dept_names": {
 						"type": "array",
-						"items": {"type": "integer"},
-						"description": "只推送这些部门ID的考勤，不填表示推送全部人员"
+						"items": {"type": "string"},
+						"description": "只推送这些部门名称的考勤，不填表示推送全部人员。名称必须与 list_departments 返回的一致"
 					}
 				}
 			}`),
@@ -109,17 +109,44 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 		}
 
 		var p struct {
-			DeptIDs []int64 `json:"dept_ids"`
+			DeptNames []string `json:"dept_names"`
 		}
 		_ = json.Unmarshal(params, &p)
 
-		if err := groupSub.Subscribe(ctx, uctx.TenantID, uctx.ConversationID, uctx.ConversationTitle, uctx.UserID, p.DeptIDs); err != nil {
+		// 将部门名称解析为真实的 dept_id
+		var deptIDs []int64
+		if len(p.DeptNames) > 0 {
+			allDepts, err := dept.ListDepts(ctx)
+			if err != nil {
+				return "", err
+			}
+			nameToID := make(map[string]int64, len(allDepts))
+			for _, d := range allDepts {
+				nameToID[d.Name] = d.DeptID
+			}
+			var notFound []string
+			for _, name := range p.DeptNames {
+				id, ok := nameToID[name]
+				if !ok {
+					notFound = append(notFound, name)
+					continue
+				}
+				deptIDs = append(deptIDs, id)
+			}
+			if len(notFound) > 0 {
+				return marshalJSON(map[string]interface{}{
+					"error": fmt.Sprintf("以下部门名称不存在，请通过 list_departments 确认：%v", notFound),
+				})
+			}
+		}
+
+		if err := groupSub.Subscribe(ctx, uctx.TenantID, uctx.ConversationID, uctx.ConversationTitle, uctx.UserID, deptIDs); err != nil {
 			return "", err
 		}
 
 		msg := "已为此群开启考勤推送"
-		if len(p.DeptIDs) > 0 {
-			msg = fmt.Sprintf("已为此群开启考勤推送（仅限%d个指定部门）", len(p.DeptIDs))
+		if len(p.DeptNames) > 0 {
+			msg = fmt.Sprintf("已为此群开启考勤推送（仅限：%v）", p.DeptNames)
 		}
 		return marshalJSON(map[string]interface{}{
 			"success": true,
