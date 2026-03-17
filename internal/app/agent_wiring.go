@@ -179,11 +179,15 @@ func (a *attendanceAdapter) GetAttendanceDetail(ctx context.Context, req agentto
 }
 
 func (a *attendanceAdapter) GetAttendanceText(ctx context.Context, req agenttool.AttendanceQuery) (string, error) {
-	resp, err := a.srv.GetAttendanceText(ctx, &dto.AttendanceTextRequest{
+	dtoReq := &dto.AttendanceTextRequest{
 		Date:    req.Date,
 		Week:    req.Week,
 		Section: req.Section,
-	})
+	}
+	if req.DeptID != 0 {
+		dtoReq.DeptIDs = []int64{req.DeptID}
+	}
+	resp, err := a.srv.GetAttendanceText(ctx, dtoReq)
 	if err != nil {
 		return "", err
 	}
