@@ -111,7 +111,9 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 		var p struct {
 			DeptNames []string `json:"dept_names"`
 		}
-		_ = json.Unmarshal(params, &p)
+		if err := json.Unmarshal(params, &p); err != nil {
+			return marshalJSON(map[string]interface{}{"error": "参数解析失败"})
+		}
 
 		// 将部门名称解析为真实的 dept_id
 		var deptIDs []int64

@@ -186,11 +186,6 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 
 	// 9. ReAct Loop
 	for round := 0; round < maxReactRounds; round++ {
-		// 末尾是 tool 消息时处于总结阶段，无需再传工具定义，减少无效 token
-		currentToolDefs := toolDefs
-		if len(messages) > 0 && messages[len(messages)-1].Role == "tool" {
-			currentToolDefs = nil
-		}
 		// 总结阶段（末尾为 tool 消息）LLM 需处理完整工具结果，输入 token 较多，给予更长超时
 		// 工具调用阶段使用 50s，总结阶段使用 90s
 		llmTimeout := 50 * time.Second
@@ -198,7 +193,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 			llmTimeout = 90 * time.Second
 		}
 		llmCtx, llmCancel := context.WithTimeout(context.Background(), llmTimeout)
-		resp, err := a.llmClient.Chat(llmCtx, messages, currentToolDefs)
+		resp, err := a.llmClient.Chat(llmCtx, messages, toolDefs)
 		llmCancel()
 		if err != nil {
 			a.deps.Logger.Errorw("LLM 调用失败", "round", round, "err", err)

@@ -24,7 +24,7 @@ func RegisterScheduleTools(r *Registry, schedule SchedulePort, semester Semester
 		result := map[string]interface{}{
 			"date":        now.Format("2006-01-02"),
 			"weekday":     weekdays[now.Weekday()],
-			"weekday_num": int(now.Weekday()),
+			"weekday_num": weekdayNumberForTool(now.Weekday()),
 		}
 
 		week, total, err := semester.GetCurrentWeek(ctx)
@@ -169,6 +169,13 @@ func RegisterScheduleTools(r *Registry, schedule SchedulePort, semester Semester
 			"periods": periods,
 		})
 	})
+}
+
+func weekdayNumberForTool(day time.Weekday) int {
+	if day == time.Sunday {
+		return 7
+	}
+	return int(day)
 }
 
 func marshalJSON(v interface{}) (string, error) {
