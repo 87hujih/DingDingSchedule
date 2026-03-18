@@ -1,131 +1,131 @@
-# Agent Query Tools Dept Name Support Design
+# Agent 查询工具支持 `dept_name` 设计
 
-## Background
+## 背景
 
-The agent already exposes department-filtered attendance and analytics queries, but the public query tools only accept `dept_id`.
-In practice, the LLM often receives natural language department names from users and cannot reliably translate them into IDs because `list_departments` is only available to admins.
-This causes the agent to fall back to unfiltered queries and return whole-tenant attendance results.
+当前 agent 已经暴露了支持按部门过滤的考勤查询和统计查询工具，但公开查询工具只接受 `dept_id`。
+实际对话中，用户通常直接输入自然语言部门名称，而 LLM 又无法稳定地将部门名称转换为部门 ID，因为 `list_departments` 目前仅对管理员开放。
+这会导致 agent 回退到不带部门过滤的查询，最终返回整个租户范围的考勤结果。
 
-## Goal
+## 目标
 
-Allow all agent query tools that currently support department filtering to accept `dept_name` directly, while keeping `dept_id` compatible.
+让当前所有支持部门过滤的 agent 查询工具都可以直接接受 `dept_name`，同时保持对 `dept_id` 的兼容。
 
-The affected tools are:
+本次改动涉及以下工具：
 
 - `query_attendance_status`
 - `generate_attendance_text`
 - `query_attendance_stats`
 - `query_user_cross`
 
-## Non-Goals
+## 非目标
 
-- Do not change service or repository filtering behavior.
-- Do not make `list_departments` public.
-- Do not introduce fuzzy or semantic department matching.
-- Do not change multi-department subscription behavior in admin tools.
+- 不修改 service 或 repository 现有的部门过滤行为。
+- 不将 `list_departments` 改为公开工具。
+- 不引入模糊匹配、语义匹配或近似匹配。
+- 不修改管理员工具中多部门订阅的现有行为。
 
-## Recommended Approach
+## 推荐方案
 
-Keep the current downstream API shape based on a single `dept_id`, and add a tool-layer resolver that converts `dept_name` into a single department ID before dispatching to services.
+保持现有下游接口仍然基于单个 `dept_id` 工作，只在工具层增加一个解析步骤，将 `dept_name` 转换为最终的单个部门 ID，再继续走原有服务链路。
 
-Each affected tool will accept both:
+每个受影响工具同时接受：
 
-- `dept_name` as the preferred field
-- `dept_id` as a backward-compatible fallback
+- `dept_name`：推荐字段
+- `dept_id`：兼容保留字段
 
-Resolution rules:
+解析规则如下：
 
-1. If `dept_name` is non-empty after trimming, resolve by exact department name match.
-2. If `dept_name` resolves successfully, use that department's ID and ignore `dept_id`.
-3. If `dept_name` is empty and `dept_id` is provided, keep the existing behavior.
-4. If both are empty, keep the existing "no department filter" behavior.
+1. 如果 `dept_name` 在去除首尾空白后非空，则按精确部门名称匹配。
+2. 如果 `dept_name` 解析成功，则使用对应部门 ID，并忽略 `dept_id`。
+3. 如果 `dept_name` 为空但传入了 `dept_id`，则保持现有行为不变。
+4. 如果两者都为空，则保持现有“不按部门过滤”的行为。
 
-## Tool-Layer Design
+## 工具层设计
 
-### Shared Resolver
+### 共享解析器
 
-Add a shared helper under `internal/agent/tools` responsible for converting tool input into a final department ID.
+在 `internal/agent/tools` 下新增一个共享 helper，职责仅为将工具层输入解析为最终部门 ID。
 
-The helper will depend on `DeptPort` and return:
+该 helper 依赖 `DeptPort`，并返回：
 
-- resolved department ID
-- whether a department filter should be applied
-- a user-facing JSON error payload for expected validation failures
+- 最终解析出的部门 ID
+- 是否启用部门过滤
+- 面向用户的 JSON 错误结果，用于处理可预期的参数错误
 
-Expected validation failures handled in the helper:
+helper 需要处理的可预期校验失败包括：
 
-- unknown department name
-- duplicate department names within the current tenant
+- 部门名称不存在
+- 当前租户内存在重名部门
 
-These should return business-style JSON results instead of bubbling a Go error, so the agent can respond with a clear explanation rather than a generic "tool execution failed".
+这些情况应返回业务风格的 JSON 结果，而不是直接抛出 Go error。这样 agent 可以向用户返回明确原因，而不是笼统的“工具执行失败”。
 
-### Affected Registration Functions
+### 需要调整的注册函数
 
-Update these registrations to receive `DeptPort`:
+以下注册函数需要补充 `DeptPort` 依赖：
 
 - `RegisterAttendanceTools`
 - `RegisterAnalyticsTools`
 
-`agent.NewAgent` will pass the existing `deps.Dept` into both registrations.
+`agent.NewAgent` 中继续复用现有的 `deps.Dept`，并将其传入以上两个注册函数。
 
-## Parameter Schema Changes
+## 参数 Schema 变更
 
-For all 4 affected tools:
+对上述 4 个工具统一做以下调整：
 
-- add `dept_name` to the JSON schema
-- keep `dept_id`
-- update descriptions to say that `dept_name` is preferred and `dept_id` is retained for compatibility
+- 在 JSON Schema 中新增 `dept_name`
+- 保留 `dept_id`
+- 更新参数描述，明确 `dept_name` 为首选，`dept_id` 为兼容保留字段
 
-When both are present, tool behavior will prefer `dept_name`.
+当 `dept_name` 和 `dept_id` 同时传入时，工具行为以 `dept_name` 为准。
 
-## Error Handling
+## 错误处理
 
-Department name matching will be exact after `strings.TrimSpace`.
+部门名称匹配采用 `strings.TrimSpace` 后的精确匹配。
 
-Rules:
+具体规则：
 
-- blank `dept_name` means "not provided"
-- no fuzzy match
-- unknown `dept_name` returns: department not found
-- duplicate `dept_name` returns: department name is ambiguous, use `dept_id`
+- 空字符串 `dept_name` 视为未传
+- 不做模糊匹配
+- `dept_name` 不存在时，返回“未找到部门”
+- `dept_name` 命中多个部门时，返回“部门名称不唯一，请改用 `dept_id`”
 
-This keeps the first version deterministic and avoids accidental matches such as `学生` matching `学生会`.
+这样可以保证第一版行为稳定可预测，避免出现例如 `学生` 错误匹配到 `学生会` 的情况。
 
-## Testing Strategy
+## 测试策略
 
-Use TDD.
+采用 TDD。
 
-### Resolver Tests
+### 解析器测试
 
-Add focused unit tests for:
+增加针对 helper 的单元测试，覆盖：
 
-- resolve by `dept_name`
-- `dept_name` takes precedence over `dept_id`
-- fallback to `dept_id`
-- no filter when both are empty
-- unknown name
-- duplicate name
+- 通过 `dept_name` 正确解析
+- `dept_name` 优先于 `dept_id`
+- 回退到 `dept_id`
+- 两者都为空时不启用过滤
+- 部门名称不存在
+- 部门名称重名
 
-### Tool Regression Tests
+### 工具回归测试
 
-Add tests for all 4 affected tools to verify:
+为 4 个受影响工具补充测试，验证：
 
-- `dept_name` is resolved into the expected `DeptID`
-- invalid `dept_name` does not call downstream attendance or analytics ports
-- legacy `dept_id` behavior remains intact
+- 传入 `dept_name` 时，下游实际收到正确的 `DeptID`
+- `dept_name` 无效时，不会调用下游考勤或统计 port
+- 旧的 `dept_id` 调用方式继续保持兼容
 
-## Risks
+## 风险
 
-- Existing tenants may contain duplicate leaf department names.
-  In that case, the new behavior should fail closed and ask for `dept_id`.
-- Tool descriptions must clearly prefer `dept_name`, or the LLM may continue using unfiltered calls.
+- 现有租户下可能存在重名的叶子部门。
+  在这种情况下，新行为应当失败关闭，并提示用户改用 `dept_id`。
+- 如果工具描述没有明确优先推荐 `dept_name`，LLM 仍可能继续使用不带过滤的调用方式。
 
-## Verification Plan
+## 验证计划
 
-At minimum, run:
+至少执行以下命令：
 
 - `go test ./internal/agent/tools -run Dept -v`
 - `go test ./internal/agent/tools -v`
 - `go test ./internal/agent/...`
 
-If package naming or test names differ, use the equivalent focused commands that cover the new resolver and the 4 affected tools.
+如果测试名称或包范围与最终实现不完全一致，则执行等价的定向命令，确保覆盖新的解析 helper 以及上述 4 个工具。
