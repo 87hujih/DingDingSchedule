@@ -21,6 +21,7 @@ docs
 # Temp files
 *.tmp
 *.swp
+.worktrees/
 tasks
 AGENTS.md
 
