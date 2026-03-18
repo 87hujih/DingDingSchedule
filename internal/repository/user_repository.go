@@ -28,6 +28,8 @@ type UserRepository interface {
 	ListByIDs(ctx context.Context, ids []uint) ([]model.User, error)
 	// ListByScope 按可见范围（部门或指定用户）查询用户
 	ListByScope(ctx context.Context, deptIDs []int64, onlyUserIDs []uint) ([]model.User, error)
+	// ListAttendanceCandidates 按考勤候选规则查询用户（用户状态启用且至少命中一个启用部门）
+	ListAttendanceCandidates(ctx context.Context, deptIDs []int64) ([]model.User, error)
 	// ListByStatus 根据状态查询用户（status=1表示参与考勤）
 	ListByStatus(ctx context.Context, status int) ([]model.User, error)
 	// List 分页获取本地用户（按ID升序），仅包含已有用户
@@ -145,6 +147,34 @@ func (r *userRepository) ListByScope(ctx context.Context, deptIDs []int64, onlyU
 
 	var users []model.User
 	if err := q.Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// ListAttendanceCandidates 返回参与考勤且部门启用的候选用户。
+// - deptIDs 为空：返回至少归属一个启用部门的参与考勤用户
+// - deptIDs 非空：只返回归属于指定启用部门的参与考勤用户
+func (r *userRepository) ListAttendanceCandidates(ctx context.Context, deptIDs []int64) ([]model.User, error) {
+	cleanDeptIDs := make([]int64, 0, len(deptIDs))
+	for _, id := range deptIDs {
+		if id > 0 {
+			cleanDeptIDs = append(cleanDeptIDs, id)
+		}
+	}
+
+	q := r.db.WithContext(ctx).
+		Model(&model.User{}).
+		Joins("JOIN user_departments ud ON ud.user_id = users.id AND ud.tenant_id = users.tenant_id").
+		Joins("JOIN departments d ON d.dept_id = ud.dept_id AND d.tenant_id = ud.tenant_id").
+		Where("users.status = ? AND d.status = ?", 1, 1)
+
+	if len(cleanDeptIDs) > 0 {
+		q = q.Where("ud.dept_id IN ?", cleanDeptIDs)
+	}
+
+	var users []model.User
+	if err := q.Select("DISTINCT users.*").Order("users.id ASC").Find(&users).Error; err != nil {
 		return nil, err
 	}
 	return users, nil

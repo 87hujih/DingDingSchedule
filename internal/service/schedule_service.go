@@ -477,16 +477,10 @@ func (s *ScheduleService) GetFreeUsersBySlot(
 	week, dayStart, dayEnd int,
 	periods []config.Period,
 ) ([]FreeUserSlot, error) {
-	// 1. 获取所有参与考勤的用户（status=1）
-	allUsers, err := s.userRepo.ListByScope(ctx, nil, nil)
+	// 1. 获取所有参与考勤且部门启用的用户
+	activeUsers, err := s.userRepo.ListAttendanceCandidates(ctx, nil)
 	if err != nil {
 		return nil, err
-	}
-	var activeUsers []model.User
-	for _, u := range allUsers {
-		if u.Status == 1 {
-			activeUsers = append(activeUsers, u)
-		}
 	}
 	if len(activeUsers) == 0 {
 		return nil, nil

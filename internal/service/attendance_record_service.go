@@ -348,7 +348,7 @@ func (s *AttendanceRecordService) resolveActivePeriods(ctx context.Context) []co
 }
 
 // getShouldAttendUsers 获取应到人员（候选人 - 有课人员）
-// deptIDs 为空时返回全部参与考勤用户，否则仅返回指定部门的用户
+// deptIDs 为空时返回所有部门启用且用户状态启用的候选人，否则仅返回指定启用部门的候选人
 // 返回值：应到用户列表、有课用户列表
 func (s *AttendanceRecordService) getShouldAttendUsers(
 	ctx context.Context,
@@ -356,31 +356,23 @@ func (s *AttendanceRecordService) getShouldAttendUsers(
 	week, section int,
 	deptIDs []int64,
 ) ([]model.User, []model.User, error) {
-	// 1. 获取候选用户（按部门过滤或全部）
-	candidates, err := s.userRepo.ListByScope(ctx, deptIDs, nil)
+	// 1. 获取候选用户（用户启用且至少归属一个启用部门）
+	activeUsers, err := s.userRepo.ListAttendanceCandidates(ctx, deptIDs)
 	if err != nil {
 		return nil, nil, errs.WrapMsgErr("获取候选用户失败", err)
-	}
-
-	// 2. 过滤出参与考勤的用户（status=1）
-	activeUsers := make([]model.User, 0, len(candidates))
-	for _, u := range candidates {
-		if u.Status == 1 {
-			activeUsers = append(activeUsers, u)
-		}
 	}
 
 	if len(activeUsers) == 0 {
 		return []model.User{}, []model.User{}, nil
 	}
 
-	// 3. 判断是否使用"全体应到"模式（假期模式或超出学期时间）
+	// 2. 判断是否使用"全体应到"模式（假期模式或超出学期时间）
 	if s.shouldUseAllAttendMode(ctx, date) {
 		// 全体应到模式：不排除有课人员
 		return activeUsers, []model.User{}, nil
 	}
 
-	// 4. 正常模式：获取该时段有课的人员
+	// 3. 正常模式：获取该时段有课的人员
 	dayOfWeek := scheduleutil.WeekdayMon1Sun7(date)
 	userIDs := make([]uint, 0, len(activeUsers))
 	for _, u := range activeUsers {
@@ -392,7 +384,7 @@ func (s *AttendanceRecordService) getShouldAttendUsers(
 		return nil, nil, errs.WrapMsgErr("获取用户课表失败", err)
 	}
 
-	// 5. 过滤出本周有课的用户
+	// 4. 过滤出本周有课的用户
 	busyUserSet := make(map[uint]bool)
 	for _, c := range courses {
 		if weekutil.ContainsWeek(c.WeekList, week) {
@@ -400,7 +392,7 @@ func (s *AttendanceRecordService) getShouldAttendUsers(
 		}
 	}
 
-	// 6. 应到人员 = 候选人 - 有课人员
+	// 5. 应到人员 = 候选人 - 有课人员
 	shouldAttend := make([]model.User, 0, len(activeUsers))
 	hasCourse := make([]model.User, 0, len(busyUserSet))
 	for _, u := range activeUsers {

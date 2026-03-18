@@ -49,8 +49,8 @@ func NewAttendanceService(repo repository.AttendanceRepository, leaveApprovalRep
 // GetSlotAttendanceStatus 计算指定日期+周次+节次的应到/请假人员（不依赖 courseID）。
 //
 // deptIDs：部门过滤条件（可选）
-// - deptIDs 为空(nil 或 len=0)：按“全体参与考勤用户（users.status=1）”计算
-// - deptIDs 非空：按“传入部门的并集用户（users.status=1）”计算
+// - deptIDs 为空(nil 或 len=0)：按“用户启用且至少归属一个启用部门”的全体候选人计算
+// - deptIDs 非空：按“传入部门中启用部门的并集用户，且用户状态启用”计算
 func (s *AttendanceService) GetSlotAttendanceStatus(
 	ctx context.Context,
 	viewerID uint,
@@ -422,8 +422,8 @@ func (s *AttendanceService) validateSlotParams(date time.Time, week, section int
 }
 
 // computeShouldArriveUsersByDeptFilter 计算应到名单（本节无课人员）。
-// - deptIDs 为空：不按部门筛选，使用全部参与考勤用户（status=1）
-// - deptIDs 非空：仅使用这些部门下参与考勤的用户
+// - deptIDs 为空：不按部门筛选，使用所有部门启用且用户状态启用的候选人
+// - deptIDs 非空：仅使用这些启用部门下用户状态启用的候选人
 // 返回值：应到用户列表、应到用户DTO列表、有课用户列表
 func (s *AttendanceService) computeShouldArriveUsersByDeptFilter(
 	ctx context.Context,
@@ -457,22 +457,15 @@ func (s *AttendanceService) computeShouldArriveUsersByDeptFilter(
 	return shouldArriveUsers, toAttendanceUserItems(shouldArriveUsers, nil), busyUsers, nil
 }
 
-// listActiveUsersByDeptIDs 获取候选用户（参与考勤 status=1）。
-// - deptIDs 为空：返回全部用户（由 repo.ListUsersByScope 内部逻辑决定为“不限制”）
-// - deptIDs 非空：返回这些部门的并集用户（会 DISTINCT 去重）
+// listActiveUsersByDeptIDs 获取候选用户。
+// - deptIDs 为空：返回用户状态启用且至少归属一个启用部门的用户
+// - deptIDs 非空：返回指定启用部门下用户状态启用的并集用户
 func (s *AttendanceService) listActiveUsersByDeptIDs(ctx context.Context, deptIDs []int64) ([]model.User, error) {
-	users, err := s.repo.ListUsersByScope(ctx, deptIDs, nil)
+	users, err := s.userRepo.ListAttendanceCandidates(ctx, deptIDs)
 	if err != nil {
 		return nil, errs.WrapMsgErr("获取用户列表失败", err)
 	}
-
-	active := make([]model.User, 0, len(users))
-	for _, u := range users {
-		if u.Status == 1 {
-			active = append(active, u)
-		}
-	}
-	return active, nil
+	return users, nil
 }
 
 // busyUserSetForSlot 计算“忙”的用户集合：在指定星期、节次，并且本周确实有课的用户。

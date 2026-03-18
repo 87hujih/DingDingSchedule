@@ -134,15 +134,13 @@ func (s *AttendanceRecordService) loadStatsUsers(
 	if deptID > 0 {
 		deptIDs = []int64{deptID}
 	}
-	users, err := s.userRepo.ListByScope(ctx, deptIDs, nil)
+	users, err := s.userRepo.ListAttendanceCandidates(ctx, deptIDs)
 	if err != nil {
 		return nil, err
 	}
+
 	active := make([]model.User, 0, len(users))
 	for _, u := range users {
-		if u.Status != 1 {
-			continue
-		}
 		if userName != "" && !strings.Contains(u.Name, userName) {
 			continue
 		}
@@ -507,21 +505,13 @@ func (s *AttendanceRecordService) loadCrossUsers(
 	if deptID > 0 {
 		deptIDs = []int64{deptID}
 	}
-	users, err := s.userRepo.ListByScope(ctx, deptIDs, nil)
+	users, err := s.userRepo.ListAttendanceCandidates(ctx, deptIDs)
 	if err != nil {
 		return nil, err
 	}
 
-	// 只取参与考勤的用户
-	active := make([]model.User, 0, len(users))
-	for _, u := range users {
-		if u.Status == 1 {
-			active = append(active, u)
-		}
-	}
-
 	if len(userNames) == 0 {
-		return active, nil
+		return users, nil
 	}
 
 	// 按姓名精确过滤
@@ -530,7 +520,7 @@ func (s *AttendanceRecordService) loadCrossUsers(
 		nameSet[n] = struct{}{}
 	}
 	filtered := make([]model.User, 0)
-	for _, u := range active {
+	for _, u := range users {
 		if _, ok := nameSet[u.Name]; ok {
 			filtered = append(filtered, u)
 		}
