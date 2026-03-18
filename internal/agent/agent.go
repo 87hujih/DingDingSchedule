@@ -64,9 +64,9 @@ func NewAgent(deps Deps) *Agent {
 	// 注册工具
 	a.registry = tools.NewRegistry()
 	tools.RegisterScheduleTools(a.registry, deps.Schedule, deps.Semester, deps.SchedulePeriod)
-	tools.RegisterAttendanceTools(a.registry, deps.Attendance, deps.Semester, deps.RestDay, deps.Leave)
+	tools.RegisterAttendanceTools(a.registry, deps.Attendance, deps.Semester, deps.RestDay, deps.Leave, deps.Dept)
 	tools.RegisterAdminTools(a.registry, deps.Attendance, deps.User, deps.GroupSub, deps.Dept)
-	tools.RegisterAnalyticsTools(a.registry, deps.AttendanceStats, deps.UserCross)
+	tools.RegisterAnalyticsTools(a.registry, deps.AttendanceStats, deps.UserCross, deps.Dept)
 
 	// 启动 Session 过期清理
 	go a.cleanupLoop()

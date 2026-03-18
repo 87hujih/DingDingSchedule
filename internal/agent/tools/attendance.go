@@ -9,7 +9,7 @@ import (
 )
 
 // RegisterAttendanceTools 注册考勤、休息日、请假相关工具
-func RegisterAttendanceTools(r *Registry, attendance AttendancePort, semester SemesterPort, restDay RestDayPort, leave LeavePort) {
+func RegisterAttendanceTools(r *Registry, attendance AttendancePort, semester SemesterPort, restDay RestDayPort, leave LeavePort, dept DeptPort) {
 	// query_attendance_status
 	r.Register(ToolDef{
 		Type: "function",
@@ -17,22 +17,24 @@ func RegisterAttendanceTools(r *Registry, attendance AttendancePort, semester Se
 			Name:        "query_attendance_status",
 			Description: "查询指定日期指定节次的考勤状态",
 			Parameters: json.RawMessage(`{
-				"type": "object",
-				"properties": {
-					"date":    {"type": "string", "description": "日期(YYYY-MM-DD)，默认今天"},
-					"week":    {"type": "integer", "description": "周次，默认自动计算"},
-					"section": {"type": "integer", "description": "节次(必填)"},
-					"dept_id": {"type": "integer", "description": "按部门ID筛选，不填则查全部人员。部门ID须先通过 list_departments 获取"}
-				},
-				"required": ["section"]
-			}`),
+                "type": "object",
+                "properties": {
+                    "date":      {"type": "string", "description": "日期(YYYY-MM-DD)，默认今天"},
+                    "week":      {"type": "integer", "description": "周次，默认自动计算"},
+                    "section":   {"type": "integer", "description": "节次(必填)"},
+                    "dept_name": {"type": "string", "description": "按部门名称筛选，优先于 dept_id"},
+                    "dept_id":   {"type": "integer", "description": "按部门ID筛选，兼容保留字段；当 dept_name 存在时会被忽略"}
+                },
+                "required": ["section"]
+            }`),
 		},
 	}, 0, func(ctx context.Context, uctx *UserContext, params json.RawMessage) (string, error) {
 		var p struct {
-			Date    string `json:"date"`
-			Week    int    `json:"week"`
-			Section int    `json:"section"`
-			DeptID  int64  `json:"dept_id"`
+			Date     string `json:"date"`
+			Week     int    `json:"week"`
+			Section  int    `json:"section"`
+			DeptName string `json:"dept_name"`
+			DeptID   int64  `json:"dept_id"`
 		}
 		_ = json.Unmarshal(params, &p)
 
@@ -45,6 +47,17 @@ func RegisterAttendanceTools(r *Registry, attendance AttendancePort, semester Se
 				return marshalJSON(map[string]interface{}{"error": "无法获取当前周次: " + err.Error()})
 			}
 			p.Week = w
+		}
+
+		resolvedID, useFilter, payload, err := resolveDeptFilter(ctx, dept, p.DeptID, p.DeptName)
+		if err != nil {
+			return "", err
+		}
+		if payload != "" {
+			return payload, nil
+		}
+		if useFilter {
+			p.DeptID = resolvedID
 		}
 
 		result, err := attendance.GetAttendanceDetail(ctx, AttendanceQuery{
@@ -82,22 +95,24 @@ func RegisterAttendanceTools(r *Registry, attendance AttendancePort, semester Se
 			Name:        "generate_attendance_text",
 			Description: "生成可直接群发的考勤通报文本",
 			Parameters: json.RawMessage(`{
-				"type": "object",
-				"properties": {
-					"date":    {"type": "string", "description": "日期(YYYY-MM-DD)，默认今天"},
-					"week":    {"type": "integer", "description": "周次，默认自动计算"},
-					"section": {"type": "integer", "description": "节次(必填)"},
-					"dept_id": {"type": "integer", "description": "按部门ID筛选，不填则包含全部人员。部门ID须先通过 list_departments 获取"}
-				},
-				"required": ["section"]
-			}`),
+                "type": "object",
+                "properties": {
+                    "date":      {"type": "string", "description": "日期(YYYY-MM-DD)，默认今天"},
+                    "week":      {"type": "integer", "description": "周次，默认自动计算"},
+                    "section":   {"type": "integer", "description": "节次(必填)"},
+                    "dept_name": {"type": "string", "description": "按部门名称筛选，优先于 dept_id"},
+                    "dept_id":   {"type": "integer", "description": "按部门ID筛选，兼容保留字段；当 dept_name 存在时会被忽略"}
+                },
+                "required": ["section"]
+            }`),
 		},
 	}, 0, func(ctx context.Context, uctx *UserContext, params json.RawMessage) (string, error) {
 		var p struct {
-			Date    string `json:"date"`
-			Week    int    `json:"week"`
-			Section int    `json:"section"`
-			DeptID  int64  `json:"dept_id"`
+			Date     string `json:"date"`
+			Week     int    `json:"week"`
+			Section  int    `json:"section"`
+			DeptName string `json:"dept_name"`
+			DeptID   int64  `json:"dept_id"`
 		}
 		_ = json.Unmarshal(params, &p)
 
@@ -110,6 +125,17 @@ func RegisterAttendanceTools(r *Registry, attendance AttendancePort, semester Se
 				return marshalJSON(map[string]interface{}{"error": "无法获取当前周次: " + err.Error()})
 			}
 			p.Week = w
+		}
+
+		resolvedID, useFilter, payload, err := resolveDeptFilter(ctx, dept, p.DeptID, p.DeptName)
+		if err != nil {
+			return "", err
+		}
+		if payload != "" {
+			return payload, nil
+		}
+		if useFilter {
+			p.DeptID = resolvedID
 		}
 
 		text, err := attendance.GetAttendanceText(ctx, AttendanceQuery{
@@ -202,11 +228,11 @@ func RegisterAttendanceTools(r *Registry, attendance AttendancePort, semester Se
 			Name:        "query_my_leave",
 			Description: "查询当前用户近期请假记录",
 			Parameters: json.RawMessage(`{
-				"type": "object",
-				"properties": {
-					"days": {"type": "integer", "description": "查询天数，默认30"}
-				}
-			}`),
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "description": "查询天数，默认30"}
+                }
+            }`),
 		},
 	}, 0, func(ctx context.Context, uctx *UserContext, params json.RawMessage) (string, error) {
 		var p struct {
