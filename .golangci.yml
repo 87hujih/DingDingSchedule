@@ -72,16 +72,13 @@ linters-settings:
   # Import 格式化
   goimports:
     # 将你的项目本地包分许，放在标准库和第三方库之后
-    # 【注意】这里请替换为你自己的 module 名称，例如 github.com/my-company/my-project
-    local-prefixes: github.com/your-username/your-project
+    local-prefixes: schedule_server
 
   # 代码风格检查
   revive:
     severity: warning
     rules:
       - name: exported
-        arguments:
-          - disableStuttering  # 允许包名和结构体名重复，例如 user.User
       - name: package-comments # 强制包注释
         disabled: true         # 个人项目如果觉得写包注释太累，可以设为 true 禁用
 

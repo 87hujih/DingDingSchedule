@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Schedule Server 部署脚本
-# 用途：自动化构建、部署和管理 Docker 容器
+# 用途：自动化部署和管理生产容器；镜像由 CI 构建并发布
 
-set -e  # 遇到错误立即退出
+set -euo pipefail
 
 # 颜色输出
 RED='\033[0;31m'
@@ -12,9 +12,10 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # 配置变量
-IMAGE_NAME="schedule-server"
-CONTAINER_NAME="schedule-server"
-VERSION=$(date +%Y%m%d-%H%M%S)
+CONTAINER_NAME="${CONTAINER_NAME:-schedule-server}"
+COMPOSE_FILE="${DEPLOY_COMPOSE_FILE:-docker-compose.prod.yml}"
+ENV_FILE="${DEPLOY_ENV_FILE:-.env.prod}"
+LOCAL_IMAGE_TAG="${LOCAL_IMAGE_TAG:-schedule-server:local}"
 
 # 打印带颜色的消息
 log_info() {
@@ -38,45 +39,105 @@ check_docker() {
     log_info "Docker 版本: $(docker --version)"
 }
 
-# 构建镜像
-build_image() {
-    log_info "开始构建 Docker 镜像..."
-    docker build -t ${IMAGE_NAME}:${VERSION} -t ${IMAGE_NAME}:latest .
-    log_info "镜像构建完成: ${IMAGE_NAME}:${VERSION}"
-}
-
-# 停止并删除旧容器
-stop_old_container() {
-    if [ "$(docker ps -aq -f name=${CONTAINER_NAME})" ]; then
-        log_warn "停止旧容器..."
-        docker stop ${CONTAINER_NAME} || true
-        docker rm ${CONTAINER_NAME} || true
-        log_info "旧容器已删除"
+# 检查 docker compose 是否可用
+check_compose() {
+    if ! docker compose version >/dev/null 2>&1; then
+        log_error "Docker Compose 插件不可用，请先安装 docker compose"
+        exit 1
     fi
 }
 
-# 启动新容器
-start_container() {
-    log_info "启动新容器..."
-    docker run -d \
-        --name ${CONTAINER_NAME} \
-        --restart unless-stopped \
-        -p 26665:26665 \
-        -e ENV=prod \
-        -v $(pwd)/logs:/app/logs \
-        -v $(pwd)/uploads:/app/uploads \
-        ${IMAGE_NAME}:latest
+# 检查部署文件
+check_deploy_files() {
+    if [ ! -f "${COMPOSE_FILE}" ]; then
+        log_error "未找到部署文件: ${COMPOSE_FILE}"
+        exit 1
+    fi
 
-    log_info "容器启动成功"
+    if [ ! -f "${ENV_FILE}" ]; then
+        log_error "未找到环境文件: ${ENV_FILE}"
+        if [ -f ".env.prod.example" ]; then
+            log_warn "请先基于 .env.prod.example 创建 ${ENV_FILE}"
+        fi
+        exit 1
+    fi
+
+    load_env_paths
+
+    if [ ! -f "${CONFIG_DIR:-./configs}/prod.yaml" ]; then
+        log_error "未找到生产配置: ${CONFIG_DIR:-./configs}/prod.yaml"
+        log_warn "请先将生产配置放到 ${CONFIG_DIR:-./configs}/prod.yaml"
+        exit 1
+    fi
+}
+
+load_env_paths() {
+    local key value
+
+    while IFS='=' read -r key value; do
+        case "${key}" in
+            ""|\#*)
+                continue
+                ;;
+        esac
+
+        value="${value%$'\r'}"
+        value="${value%\"}"
+        value="${value#\"}"
+
+        case "${key}" in
+            CONFIG_DIR)
+                if [ -z "${CONFIG_DIR:-}" ]; then
+                    CONFIG_DIR="${value}"
+                fi
+                ;;
+            LOG_DIR)
+                if [ -z "${LOG_DIR:-}" ]; then
+                    LOG_DIR="${value}"
+                fi
+                ;;
+            UPLOAD_DIR)
+                if [ -z "${UPLOAD_DIR:-}" ]; then
+                    UPLOAD_DIR="${value}"
+                fi
+                ;;
+        esac
+    done < "${ENV_FILE}"
+}
+
+compose() {
+    if [ -n "${IMAGE_REPO:-}" ]; then
+        export IMAGE_REPO
+    fi
+    if [ -n "${IMAGE_TAG:-}" ]; then
+        export IMAGE_TAG
+    fi
+    docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" "$@"
+}
+
+# 构建本地调试镜像
+build_local_image() {
+    log_info "开始构建本地调试镜像..."
+    docker build -t "${LOCAL_IMAGE_TAG}" .
+    log_info "镜像构建完成: ${LOCAL_IMAGE_TAG}"
+}
+
+# 拉取并启动生产镜像
+deploy_stack() {
+    mkdir -p "${LOG_DIR:-./logs}" "${UPLOAD_DIR:-./uploads}" "${CONFIG_DIR:-./configs}"
+    log_info "开始拉取镜像..."
+    compose pull
+    log_info "启动生产容器..."
+    compose up -d
 }
 
 # 查看容器状态
 check_status() {
     log_info "容器状态:"
-    docker ps -f name=${CONTAINER_NAME}
+    compose ps
 
     log_info "\n最近日志:"
-    docker logs --tail 50 ${CONTAINER_NAME}
+    docker logs --tail 50 "${CONTAINER_NAME}" 2>/dev/null || true
 }
 
 # 清理旧镜像
@@ -90,52 +151,77 @@ main() {
     case "${1:-deploy}" in
         build)
             check_docker
-            build_image
+            build_local_image
             ;;
         deploy)
             check_docker
-            build_image
-            stop_old_container
-            start_container
-            sleep 3
+            check_compose
+            check_deploy_files
+            deploy_stack
+            sleep 5
             check_status
             cleanup_images
             log_info "部署完成！访问地址: http://localhost:26665"
             ;;
         restart)
-            docker restart ${CONTAINER_NAME}
+            check_docker
+            check_compose
+            check_deploy_files
+            compose restart
             log_info "容器已重启"
             ;;
         stop)
-            docker stop ${CONTAINER_NAME}
+            check_docker
+            check_compose
+            check_deploy_files
+            compose stop
             log_info "容器已停止"
             ;;
         start)
-            docker start ${CONTAINER_NAME}
+            check_docker
+            check_compose
+            check_deploy_files
+            compose up -d
             log_info "容器已启动"
             ;;
         logs)
-            docker logs -f ${CONTAINER_NAME}
+            check_docker
+            check_compose
+            check_deploy_files
+            compose logs -f "${CONTAINER_NAME}"
             ;;
         status)
+            check_docker
+            check_compose
+            check_deploy_files
             check_status
             ;;
+        config)
+            check_docker
+            check_compose
+            check_deploy_files
+            compose config
+            ;;
         clean)
-            stop_old_container
-            docker rmi ${IMAGE_NAME}:latest || true
+            check_docker
+            check_compose
+            check_deploy_files
+            compose down --remove-orphans || true
+            docker image rm "${LOCAL_IMAGE_TAG}" || true
             log_info "清理完成"
             ;;
         *)
-            echo "用法: $0 {build|deploy|restart|stop|start|logs|status|clean}"
+            echo "用法: $0 {build|deploy|restart|stop|start|logs|status|config|clean}"
             echo ""
             echo "命令说明:"
-            echo "  build   - 仅构建镜像"
-            echo "  deploy  - 完整部署（构建+停止旧容器+启动新容器）"
+            echo "  build   - 构建本地调试镜像"
+            echo "  deploy  - 拉取镜像并按生产 compose 启动"
             echo "  restart - 重启容器"
             echo "  stop    - 停止容器"
             echo "  start   - 启动容器"
             echo "  logs    - 查看实时日志"
             echo "  status  - 查看容器状态"
+            echo "  config  - 展开并检查生产 compose 配置"
             echo "  clean   - 清理容器和镜像"
             exit 1
             ;;

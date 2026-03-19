@@ -31,7 +31,7 @@ RUN apk add --no-cache ca-certificates tzdata
 # 设置时区为中国
 ENV TZ=Asia/Shanghai
 
-# 设置配置文件环境（生产环境使用 dev.yaml）
+# 默认按生产配置名读取，实际配置文件通过外部挂载提供
 ENV CONFIG_ENV=prod
 
 # 创建非 root 用户运行应用（安全最佳实践）
@@ -44,12 +44,9 @@ WORKDIR /app
 # 从构建阶段复制编译好的二进制文件
 COPY --from=builder /build/schedule_server .
 
-# 复制配置文件
-COPY --chown=appuser:appuser configs ./configs
-
-# 创建日志和上传目录
-RUN mkdir -p logs uploads && \
-    chown -R appuser:appuser logs uploads
+# 创建配置、日志和上传目录
+RUN mkdir -p configs logs uploads && \
+    chown -R appuser:appuser configs logs uploads
 
 # 切换到非 root 用户
 USER appuser

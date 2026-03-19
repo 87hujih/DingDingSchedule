@@ -1,4 +1,4 @@
-.PHONY: help build run test clean docker-build docker-run docker-stop deploy
+.PHONY: help build run test ci-test ci-build ci-lint clean docker-build docker-build-prod docker-run docker-stop deploy
 
 # 默认目标
 help:
@@ -6,8 +6,12 @@ help:
 	@echo "  make build        - 编译应用"
 	@echo "  make run          - 本地运行（开发模式）"
 	@echo "  make test         - 运行测试"
+	@echo "  make ci-test      - 运行 CI 测试"
+	@echo "  make ci-build     - 运行 CI 构建"
+	@echo "  make ci-lint      - 运行 CI lint"
 	@echo "  make clean        - 清理构建产物"
 	@echo "  make docker-build - 构建 Docker 镜像"
+	@echo "  make docker-build-prod - 以 CI 标签到构建 Docker 镜像"
 	@echo "  make docker-run   - 运行 Docker 容器"
 	@echo "  make docker-stop  - 停止 Docker 容器"
 	@echo "  make deploy       - 完整部署（构建+运行）"
@@ -28,6 +32,18 @@ test:
 	@echo "运行测试..."
 	go test -v ./...
 
+ci-test:
+	@echo "运行 CI 测试..."
+	go test ./...
+
+ci-build:
+	@echo "运行 CI 构建..."
+	go build -o bin/schedule_server ./cmd/main.go
+
+ci-lint:
+	@echo "运行 CI lint..."
+	golangci-lint run
+
 # 清理构建产物
 clean:
 	@echo "清理构建产物..."
@@ -40,15 +56,19 @@ docker-build:
 	@echo "构建 Docker 镜像..."
 	docker build -t schedule-server:latest .
 
+docker-build-prod:
+	@echo "以 CI 标签构建 Docker 镜像..."
+	docker build -t schedule-server:ci .
+
 # 运行 Docker 容器
 docker-run:
 	@echo "启动 Docker 容器..."
-	docker-compose up -d
+	docker compose up -d
 
 # 停止 Docker 容器
 docker-stop:
 	@echo "停止 Docker 容器..."
-	docker-compose down
+	docker compose down
 
 # 完整部署
 deploy:

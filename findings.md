@@ -68,3 +68,32 @@
 ---
 *每进行两次 view / browser / search 操作后就更新本文件*
 *这样可以避免视觉内容在上下文中丢失*
+
+## 2026-03-19：CI/CD 与部署标准化规划
+
+### 需求
+- 用户当前通过 `ONE_CLICK_DEPLOY_GUIDE.md` 和 `one-click-deploy.sh` 做日常发布，希望知道对于更规范的项目部署流程，需要做哪些改变。
+- 用户确认需要把建议进一步落成仓库内实施计划，而不是停留在口头建议。
+
+### 调研发现
+- 当前仓库存在且仅存在一条 GitHub Actions 工作流 `.github/workflows/deploy.yml`，它更接近“自动部署”而不是完整 CI/CD，因为缺少 PR / 普通 push 级别的测试和 lint。
+- 当前生产发布主路径仍是 `ONE_CLICK_DEPLOY_GUIDE.md -> one-click-deploy.sh -> pack-for-deploy.sh -> deploy.sh`，本质是“本地打包源码 -> 上传服务器 -> 服务器重新构建”。
+- `deploy.yml` 和一键部署脚本之间存在目录、配置和执行方式不一致：前者使用 `/opt/schedule_server` 且上传 `configs/dev.yaml`，后者使用 `/workspace/schedule_server`，而打包脚本只复制 `configs/prod.yaml`。
+- `go test ./...` 当前会在 `scripts` 包失败，因为多个脚本文件共享同一个包并重复声明 `main`，这是引入标准 CI 之前必须先清掉的结构性阻塞。
+- 对当前项目而言，最合适的目标状态是继续维持“单机 Docker + GitHub Actions + SSH 到单台生产机”的轻量方案，而不是引入 Kubernetes 或额外发布平台。
+
+### 技术决策
+| 决定 | 原因 |
+|------|------|
+| 将改造拆为 6 个任务 | 这样每个阶段都能独立验证，不会把 CI、CD、文档和服务器约定揉成一次大重构 |
+| 优先处理 `scripts` 目录结构 | 先恢复 `go test ./...`，CI 才有可靠入口 |
+| 为生产环境新增独立的 `docker-compose.prod.yml` | 将本地运行与生产部署解耦，减少配置漂移 |
+| 让 `deploy.sh` 从“build-and-run”转为“pull-and-run” | 让服务器只消费制品，去掉现场构建 |
+| 将正式生产文档与应急文档分离 | 正式流程和救火流程的目标不同，不应继续混写在一份 one-click 文档里 |
+
+### 参考资源
+- `G:\gofile\schedule_server\ONE_CLICK_DEPLOY_GUIDE.md`
+- `G:\gofile\schedule_server\one-click-deploy.sh`
+- `G:\gofile\schedule_server\deploy.sh`
+- `G:\gofile\schedule_server\.github\workflows\deploy.yml`
+- `G:\gofile\schedule_server\docs\superpowers\plans\2026-03-19-cicd-deployment-standardization-plan.md`

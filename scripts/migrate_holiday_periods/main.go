@@ -12,7 +12,7 @@ import (
 )
 
 // 为现有租户添加假期作息配置
-// 使用方法: go run scripts/migrate_holiday_periods.go
+// 使用方法: go run ./scripts/migrate_holiday_periods
 func main() {
 	inits.ConfigInit()
 	inits.LogInit()
@@ -29,7 +29,6 @@ func main() {
 		return
 	}
 
-	// 假期配置模板
 	holidayPeriods := []struct {
 		Name      string
 		StartTime string
@@ -44,12 +43,10 @@ func main() {
 	for _, tenant := range tenants {
 		ctx := tenantctx.WithSkipTenantScope(context.Background())
 
-		// 1. 更新现有配置的 mode 字段为 school（如果尚未设置）
 		global.DB.WithContext(ctx).Model(&model.SchedulePeriod{}).
 			Where("tenant_id = ? AND (mode = '' OR mode IS NULL)", tenant.ID).
 			Update("mode", model.ScheduleModeSchool)
 
-		// 2. 检查是否已有假期配置
 		var count int64
 		global.DB.WithContext(ctx).Model(&model.SchedulePeriod{}).
 			Where("tenant_id = ? AND mode = ?", tenant.ID, model.ScheduleModeHoliday).
@@ -58,7 +55,6 @@ func main() {
 		if count > 0 {
 			fmt.Printf("租户 %s (ID=%d) 已有假期配置，跳过\n", tenant.Name, tenant.ID)
 		} else {
-			// 3. 插入假期配置
 			for _, p := range holidayPeriods {
 				period := &model.SchedulePeriod{
 					TenantID:  tenant.ID,
@@ -77,11 +73,9 @@ func main() {
 			fmt.Printf("租户 %s (ID=%d) 假期配置添加完成\n", tenant.Name, tenant.ID)
 		}
 
-		// 4. 初始化作息设置（默认上学模式）
 		var setting model.ScheduleSetting
 		result := global.DB.WithContext(ctx).Where("tenant_id = ?", tenant.ID).First(&setting)
 		if result.Error != nil {
-			// 记录不存在，创建新的
 			setting = model.ScheduleSetting{
 				TenantID:    tenant.ID,
 				CurrentMode: model.ScheduleModeSchool,

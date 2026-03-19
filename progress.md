@@ -199,3 +199,49 @@
 
 ---
 *每完成一个阶段或遇到错误后更新本文件*
+
+## 会话：2026-03-19（CI/CD 与部署标准化规划）
+
+### 阶段 1：现状确认
+- **状态：** 已完成
+- **开始时间：** 2026-03-19 13:05:00
+- 已执行动作：
+  - 复查了 `.github/workflows/deploy.yml`、`deploy.sh`、`one-click-deploy.sh`、`pack-for-deploy.sh` 与部署指南。
+  - 确认当前正式可用路径仍是 one-click 文档驱动的人机协作发布，而不是完整 CI/CD。
+  - 重新验证了 `go test ./...` 当前会被 `scripts` 包的多 `main` 冲突阻塞。
+- 创建/修改的文件：
+  - `G:\gofile\schedule_server\tasks\todo.md`（已更新）
+  - `G:\gofile\schedule_server\task_plan.md`（已更新）
+  - `G:\gofile\schedule_server\findings.md`（已更新）
+  - `G:\gofile\schedule_server\progress.md`（已更新）
+
+### 阶段 2：目标状态收敛
+- **状态：** 已完成
+- 已执行动作：
+  - 将目标架构收敛为“单机 Docker + GitHub Actions + 镜像制品部署”。
+  - 明确 `one-click-deploy.sh` 保留为应急路径，但不再作为日常正式发布流程。
+  - 明确后续应统一 `/opt/schedule_server` 与 `CONFIG_ENV=prod` 作为生产约定。
+- 创建/修改的文件：
+  - `G:\gofile\schedule_server\task_plan.md`（已更新）
+  - `G:\gofile\schedule_server\findings.md`（已更新）
+
+### 阶段 3：计划文档编写
+- **状态：** 已完成
+- 已执行动作：
+  - 按阶段编写了部署标准化实施计划，覆盖脚本结构整理、CI、生产部署资产、CD、文档和验收。
+  - 为每个任务写明了目标文件、执行步骤、验收命令和预期结果。
+  - 将计划保存到 `docs/superpowers/plans/2026-03-19-cicd-deployment-standardization-plan.md`。
+- 创建/修改的文件：
+  - `G:\gofile\schedule_server\docs\superpowers\plans\2026-03-19-cicd-deployment-standardization-plan.md`（新建）
+
+### 阶段 4：交付准备
+- **状态：** 已完成
+- 已执行动作：
+  - 更新了 `tasks/todo.md` 复盘。
+  - 更新了项目根目录下的规划文件，记录本次规划结论和执行入口。
+  - 准备向用户交付计划路径和建议的执行顺序。
+- 创建/修改的文件：
+  - `G:\gofile\schedule_server\tasks\todo.md`（已更新）
+  - `G:\gofile\schedule_server\task_plan.md`（已更新）
+  - `G:\gofile\schedule_server\findings.md`（已更新）
+  - `G:\gofile\schedule_server\progress.md`（已更新）

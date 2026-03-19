@@ -6,48 +6,78 @@ on:
       - master  # 推送到 master 分支时触发
   workflow_dispatch:  # 支持手动触发
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
+      - name: Normalize image repository
+        shell: bash
+        run: echo "IMAGE_REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/schedule-server" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image
-        run: |
-          docker build -t schedule-server:${{ github.sha }} .
-          docker tag schedule-server:${{ github.sha }} schedule-server:latest
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPO }}:${{ github.sha }}
+            ${{ env.IMAGE_REPO }}:latest
 
-      - name: Save Docker image
-        run: docker save schedule-server:latest | gzip > schedule-server.tar.gz
-
-      - name: Deploy to server
-        uses: appleboy/scp-action@master
+      - name: Sync deployment assets
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          source: "schedule-server.tar.gz,deploy.sh,docker-compose.yml,configs/dev.yaml"
+          source: "deploy.sh,docker-compose.prod.yml,.env.prod.example"
           target: "/opt/schedule_server"
 
       - name: Execute deployment script
-        uses: appleboy/ssh-action@master
+        uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
+            set -e
+            IMAGE_REPO="${{ env.IMAGE_REPO }}"
+            IMAGE_TAG="${{ github.sha }}"
+
+            if [ -n "${{ secrets.GHCR_USERNAME }}" ] && [ -n "${{ secrets.GHCR_TOKEN }}" ]; then
+              echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
+            fi
+
+            mkdir -p /opt/schedule_server/logs /opt/schedule_server/uploads /opt/schedule_server/configs
             cd /opt/schedule_server
-            docker load < schedule-server.tar.gz
+
+            if [ ! -f .env.prod ]; then
+              cp .env.prod.example .env.prod
+              echo ".env.prod 不存在，已写入模板，请补全后重新执行部署。"
+              exit 1
+            fi
+
             chmod +x deploy.sh
-            ./deploy.sh deploy
-            rm schedule-server.tar.gz
+            IMAGE_REPO="$IMAGE_REPO" IMAGE_TAG="$IMAGE_TAG" ./deploy.sh deploy
 
       - name: Health check
         run: |
-          sleep 10
+          sleep 15
           curl -f http://${{ secrets.SERVER_HOST }}:26665/health || exit 1

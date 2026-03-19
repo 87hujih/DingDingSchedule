@@ -17,6 +17,10 @@ func ConfigInit() {
 		configName = "dev"
 	}
 
+	if configPath := os.Getenv("CONFIG_PATH"); configPath != "" {
+		viper.AddConfigPath(configPath)
+	}
+
 	viper.SetConfigName(configName)   // 配置文件名（不含扩展名）
 	viper.SetConfigType("yaml")       // 配置文件类型
 	viper.AddConfigPath("./configs")  // 查找配置文件所在路径

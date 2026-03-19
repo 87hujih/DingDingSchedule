@@ -2,10 +2,7 @@ version: '3.8'
 
 services:
   schedule-server:
-    image: schedule-server:local
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${IMAGE_REPO}:${IMAGE_TAG}
     container_name: schedule-server
     restart: unless-stopped
     ports:
@@ -19,14 +16,14 @@ services:
       - "${CONFIG_DIR:-./configs}:/app/configs:ro"
       - "${LOG_DIR:-./logs}:/app/logs"
       - "${UPLOAD_DIR:-./uploads}:/app/uploads"
-    networks:
-      - schedule-network
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:26665/health"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 10s
+    networks:
+      - schedule-network
 
 networks:
   schedule-network:

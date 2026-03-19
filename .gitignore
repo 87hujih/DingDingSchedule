@@ -17,7 +17,11 @@ ai_docs
 # Logs
 logs/
 *.log
-docs
+docs/*
+!docs/deployment/
+docs/deployment/*
+!docs/deployment/production.md
+!docs/deployment/emergency.md
 # Temp files
 *.tmp
 *.swp
@@ -34,10 +38,6 @@ configs/prod.yaml
 
 # Local deployment and security-sensitive files
 .env.example
-ONE_CLICK_DEPLOY_GUIDE.md
-XSHELL_DEPLOY_COMPLETE_GUIDE.md
-deploy-to-server.bat
-one-click-deploy.sh
 setup-ssh-key.sh
 scripts/reset_admin_password.go
 reset_password.sql
