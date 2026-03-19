@@ -29,9 +29,8 @@ func NewLLMClient(baseURL, apiKey, model string) *LLMClient {
 		baseURL: baseURL,
 		apiKey:  apiKey,
 		model:   model,
-		httpClient: &http.Client{
-			Timeout: 50 * time.Second,
-		},
+		// 请求超时由调用方 context 控制，避免固定 HTTP 超时截断总结阶段的更长等待时间。
+		httpClient: &http.Client{},
 	}
 }
 
