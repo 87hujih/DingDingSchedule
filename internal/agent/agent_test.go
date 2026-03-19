@@ -56,7 +56,7 @@ func (testSchedulePort) ListMyScheduleByWeek(context.Context, uint, int) ([]agen
 	return nil, nil
 }
 
-func (testSchedulePort) GetFreeUsersBySlot(context.Context, int, int, int) ([]agenttools.FreeSlotResult, error) {
+func (testSchedulePort) GetFreeUsersBySlot(context.Context, int, int, int, int64) ([]agenttools.FreeSlotResult, error) {
 	return nil, nil
 }
 

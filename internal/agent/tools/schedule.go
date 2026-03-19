@@ -8,7 +8,7 @@ import (
 )
 
 // RegisterScheduleTools 注册课表相关工具
-func RegisterScheduleTools(r *Registry, schedule SchedulePort, semester SemesterPort, period SchedulePeriodPort) {
+func RegisterScheduleTools(r *Registry, schedule SchedulePort, semester SemesterPort, period SchedulePeriodPort, dept DeptPort) {
 	// get_current_time
 	r.Register(ToolDef{
 		Type: "function",
@@ -84,21 +84,25 @@ func RegisterScheduleTools(r *Registry, schedule SchedulePort, semester Semester
 		Type: "function",
 		Function: FunctionDef{
 			Name:        "query_free_users_by_slot",
-			Description: "汇总指定周次、指定星期范围各节次的无课人员名单",
+			Description: "汇总指定周次、指定星期范围各节次的无课人员名单，可按部门筛选",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
 					"week":      {"type": "integer", "description": "周次，不传则使用当前周"},
 					"day_start": {"type": "integer", "description": "起始星期(1-7)，默认1"},
-					"day_end":   {"type": "integer", "description": "结束星期(1-7)，默认5"}
+					"day_end":   {"type": "integer", "description": "结束星期(1-7)，默认5"},
+					"dept_name": {"type": "string", "description": "按部门名称筛选，优先于 dept_id"},
+					"dept_id":   {"type": "integer", "description": "按部门ID筛选，兼容保留字段；当 dept_name 存在时会被忽略"}
 				}
 			}`),
 		},
 	}, 0, func(ctx context.Context, uctx *UserContext, params json.RawMessage) (string, error) {
 		var p struct {
-			Week     int `json:"week"`
-			DayStart int `json:"day_start"`
-			DayEnd   int `json:"day_end"`
+			Week     int    `json:"week"`
+			DayStart int    `json:"day_start"`
+			DayEnd   int    `json:"day_end"`
+			DeptName string `json:"dept_name"`
+			DeptID   int64  `json:"dept_id"`
 		}
 		_ = json.Unmarshal(params, &p)
 
@@ -119,7 +123,18 @@ func RegisterScheduleTools(r *Registry, schedule SchedulePort, semester Semester
 			dayEnd = 5
 		}
 
-		slots, err := schedule.GetFreeUsersBySlot(ctx, week, dayStart, dayEnd)
+		resolvedDeptID, useDeptFilter, payload, err := resolveDeptFilter(ctx, dept, p.DeptID, p.DeptName)
+		if err != nil {
+			return "", err
+		}
+		if payload != "" {
+			return payload, nil
+		}
+		if !useDeptFilter {
+			resolvedDeptID = 0
+		}
+
+		slots, err := schedule.GetFreeUsersBySlot(ctx, week, dayStart, dayEnd, resolvedDeptID)
 		if err != nil {
 			return "", err
 		}

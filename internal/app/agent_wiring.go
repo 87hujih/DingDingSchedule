@@ -82,14 +82,14 @@ func (a *scheduleAdapter) ListMyScheduleByWeek(ctx context.Context, userID uint,
 	return items, nil
 }
 
-func (a *scheduleAdapter) GetFreeUsersBySlot(ctx context.Context, week, dayStart, dayEnd int) ([]agenttool.FreeSlotResult, error) {
+func (a *scheduleAdapter) GetFreeUsersBySlot(ctx context.Context, week, dayStart, dayEnd int, deptID int64) ([]agenttool.FreeSlotResult, error) {
 	// 获取当前活跃的作息时间配置
 	info, err := a.schedulePeriodSrv.GetScheduleInfo(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	slots, err := a.srv.GetFreeUsersBySlot(ctx, week, dayStart, dayEnd, info.ActivePeriods)
+	slots, err := a.srv.GetFreeUsersBySlot(ctx, week, dayStart, dayEnd, deptID, info.ActivePeriods)
 	if err != nil {
 		return nil, err
 	}

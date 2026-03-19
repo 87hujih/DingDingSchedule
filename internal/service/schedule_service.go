@@ -475,10 +475,15 @@ type FreeUserSlot struct {
 func (s *ScheduleService) GetFreeUsersBySlot(
 	ctx context.Context,
 	week, dayStart, dayEnd int,
+	deptID int64,
 	periods []config.Period,
 ) ([]FreeUserSlot, error) {
 	// 1. 获取所有参与考勤且部门启用的用户
-	activeUsers, err := s.userRepo.ListAttendanceCandidates(ctx, nil)
+	var deptIDs []int64
+	if deptID > 0 {
+		deptIDs = []int64{deptID}
+	}
+	activeUsers, err := s.userRepo.ListAttendanceCandidates(ctx, deptIDs)
 	if err != nil {
 		return nil, err
 	}
