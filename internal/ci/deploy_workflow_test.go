@@ -45,3 +45,23 @@ func TestDeployWorkflowValidatesSSHCredentialsBeforeRemoteSteps(t *testing.T) {
 		}
 	}
 }
+
+func TestDeployWorkflowIncludesSSHKeyFingerprintDebugStep(t *testing.T) {
+	workflow := readDeployWorkflow(t)
+
+	requiredSnippets := []string{
+		"- name: Debug SSH key fingerprint",
+		"ssh-keygen -y -f",
+		"ssh-keygen -lf",
+	}
+
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(workflow, snippet) {
+			t.Fatalf("deploy workflow missing SSH key fingerprint debug snippet: %s", snippet)
+		}
+	}
+
+	if strings.Contains(workflow, "cat \"${tmp}\"") || strings.Contains(workflow, "echo \"${SERVER_SSH_KEY}\"") {
+		t.Fatalf("deploy workflow must not print raw private key content in debug step")
+	}
+}

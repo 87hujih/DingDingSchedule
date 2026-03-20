@@ -63,6 +63,27 @@ jobs:
             echo "Using password authentication fallback"
           fi
 
+      - name: Debug SSH key fingerprint
+        if: ${{ secrets.SERVER_SSH_KEY != '' }}
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          echo "Target: ${SERVER_USER}@${SERVER_HOST}"
+
+          tmp="$(mktemp)"
+          trap 'rm -f "${tmp}" "${tmp}.pub"' EXIT
+
+          printf '%s\n' "${SERVER_SSH_KEY}" > "${tmp}"
+          chmod 600 "${tmp}"
+
+          ssh-keygen -y -f "${tmp}" > "${tmp}.pub"
+          echo "Secret-backed public key fingerprint:"
+          ssh-keygen -lf "${tmp}.pub"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
