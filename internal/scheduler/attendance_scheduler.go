@@ -198,6 +198,33 @@ func (s *AttendanceScheduler) reloadTenantSchedule(tenantID uint) {
 		}
 
 		newEntryIDs = append(newEntryIDs, entryID)
+
+		finalizeCronExpr, err := s.buildFinalizeCronExpressionFromTime(period.StartTime)
+		if err != nil {
+			s.logger.Warnw("构建最终结算cron表达式失败",
+				"tenantId", tenantID,
+				"section", section,
+				"periodName", period.Name,
+				"startTime", period.StartTime,
+				"err", err,
+			)
+			continue
+		}
+
+		finalizeEntryID, err := s.cron.AddFunc(finalizeCronExpr, func() {
+			s.finalizeAttendanceForTenant(tid, sec, time.Now())
+		})
+		if err != nil {
+			s.logger.Errorw("添加最终结算任务失败",
+				"tenantId", tenantID,
+				"section", section,
+				"cronExpr", finalizeCronExpr,
+				"err", err,
+			)
+			continue
+		}
+
+		newEntryIDs = append(newEntryIDs, finalizeEntryID)
 	}
 
 	// 5. 保存新任务ID
@@ -253,6 +280,33 @@ func (s *AttendanceScheduler) loadTenantScheduleFromConfig(tenantID uint) {
 		}
 
 		newEntryIDs = append(newEntryIDs, entryID)
+
+		finalizeCronExpr, err := s.buildFinalizeCronExpression(period.Start)
+		if err != nil {
+			s.logger.Warnw("构建最终结算cron表达式失败",
+				"tenantId", tenantID,
+				"section", section,
+				"periodName", period.Name,
+				"startTime", period.Start,
+				"err", err,
+			)
+			continue
+		}
+
+		finalizeEntryID, err := s.cron.AddFunc(finalizeCronExpr, func() {
+			s.finalizeAttendanceForTenant(tid, sec, time.Now())
+		})
+		if err != nil {
+			s.logger.Errorw("添加最终结算任务失败",
+				"tenantId", tenantID,
+				"section", section,
+				"cronExpr", finalizeCronExpr,
+				"err", err,
+			)
+			continue
+		}
+
+		newEntryIDs = append(newEntryIDs, finalizeEntryID)
 	}
 
 	s.tenantJobs[tenantID] = newEntryIDs
@@ -291,6 +345,14 @@ func buildConfigPeriodsKey(periods []config.Period) string {
 // 输入: "08:00:00" 或 "08:00"
 // 输出: "0 3 8 * * *" (每天8:03)
 func (s *AttendanceScheduler) buildCronExpressionFromTime(timeStr string) (string, error) {
+	return s.buildCronExpressionFromTimeWithOffset(timeStr, s.delayAfterClassStart)
+}
+
+func (s *AttendanceScheduler) buildFinalizeCronExpressionFromTime(timeStr string) (string, error) {
+	return s.buildCronExpressionFromTimeWithOffset(timeStr, 30)
+}
+
+func (s *AttendanceScheduler) buildCronExpressionFromTimeWithOffset(timeStr string, offsetMinutes int) (string, error) {
 	// 支持 "HH:MM:SS" 和 "HH:MM" 格式
 	var startClock time.Time
 	var err error
@@ -307,8 +369,8 @@ func (s *AttendanceScheduler) buildCronExpressionFromTime(timeStr string) (strin
 		return "", fmt.Errorf("解析时间失败: %w", err)
 	}
 
-	// 计算触发时间 = 上课时间 + 延迟分钟数
-	triggerTime := startClock.Add(time.Duration(s.delayAfterClassStart) * time.Minute)
+	// 计算触发时间 = 上课时间 + 偏移分钟数
+	triggerTime := startClock.Add(time.Duration(offsetMinutes) * time.Minute)
 
 	// cron表达式格式: 秒 分 时 日 月 周
 	cronExpr := fmt.Sprintf("%d %d %d * * *", triggerTime.Second(), triggerTime.Minute(), triggerTime.Hour())
@@ -320,12 +382,20 @@ func (s *AttendanceScheduler) buildCronExpressionFromTime(timeStr string) (strin
 // 输入: "08:00"
 // 输出: "0 3 8 * * *" (每天8:03)
 func (s *AttendanceScheduler) buildCronExpression(startTimeStr string) (string, error) {
+	return s.buildCronExpressionWithOffset(startTimeStr, s.delayAfterClassStart)
+}
+
+func (s *AttendanceScheduler) buildFinalizeCronExpression(startTimeStr string) (string, error) {
+	return s.buildCronExpressionWithOffset(startTimeStr, 30)
+}
+
+func (s *AttendanceScheduler) buildCronExpressionWithOffset(startTimeStr string, offsetMinutes int) (string, error) {
 	startClock, err := time.Parse("15:04", startTimeStr)
 	if err != nil {
 		return "", fmt.Errorf("解析上课时间失败: %w", err)
 	}
 
-	triggerTime := startClock.Add(time.Duration(s.delayAfterClassStart) * time.Minute)
+	triggerTime := startClock.Add(time.Duration(offsetMinutes) * time.Minute)
 	cronExpr := fmt.Sprintf("0 %d %d * * *", triggerTime.Minute(), triggerTime.Hour())
 
 	return cronExpr, nil
@@ -416,6 +486,68 @@ func (s *AttendanceScheduler) triggerAttendanceForTenant(tenantID uint, section 
 		"tenantName", tenant.Name,
 		"shouldAttend", result.Statistics.ShouldAttend,
 		"onTime", result.Statistics.OnTime,
+		"leave", result.Statistics.Leave,
+		"notArrived", result.Statistics.NotArrived,
+	)
+}
+
+func (s *AttendanceScheduler) finalizeAttendanceForTenant(tenantID uint, section int, now time.Time) {
+	ctx := tenantctx.WithTenantID(context.Background(), tenantID)
+
+	enabled, err := s.scheduleSettingRepo.IsAttendanceEnabled(ctx)
+	if err != nil {
+		s.logger.Warnw("检查考勤开关失败", "tenantId", tenantID, "err", err)
+	}
+	if !enabled {
+		return
+	}
+
+	tenant, err := s.tenantRepo.FindByID(ctx, tenantID)
+	if err != nil {
+		s.logger.Errorw("获取租户信息失败", "tenantId", tenantID, "err", err)
+		return
+	}
+
+	setting, _ := s.scheduleSettingRepo.GetByTenantID(ctx)
+	currentMode := "school"
+	if setting != nil {
+		currentMode = setting.CurrentMode
+	}
+
+	week, err := s.semesterSrv.GetCurrentWeek(ctx)
+	if err != nil {
+		if currentMode != "holiday" {
+			s.logger.Warnw("获取当前周数失败，切换全体应到模式执行最终结算",
+				"tenantId", tenantID,
+				"tenantName", tenant.Name,
+				"err", err,
+			)
+		}
+		week = 0
+	}
+
+	req := &dto.AttendanceDetailRequest{
+		Date:    now.Format("2006-01-02"),
+		Week:    week,
+		Section: section,
+	}
+
+	result, err := s.attendanceRecordSrv.FinalizeAttendanceRecord(ctx, req)
+	if err != nil {
+		s.logger.Errorw("最终结算考勤失败",
+			"tenantId", tenantID,
+			"section", section,
+			"err", err,
+		)
+		return
+	}
+
+	s.logger.Infow("考勤最终结算完成",
+		"tenantId", tenantID,
+		"tenantName", tenant.Name,
+		"section", section,
+		"onTime", result.Statistics.OnTime,
+		"late", result.Statistics.Late,
 		"leave", result.Statistics.Leave,
 		"notArrived", result.Statistics.NotArrived,
 	)

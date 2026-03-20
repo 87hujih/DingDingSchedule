@@ -115,8 +115,16 @@ func (a *scheduleAdapter) GetFreeUsersBySlot(ctx context.Context, week, dayStart
 // ────────────── attendanceAdapter ──────────────
 
 type attendanceAdapter struct {
-	srv  *service.AttendanceRecordService
+	srv  attendanceDetailService
 	repo repository.AttendanceRecordRepository
+}
+
+type attendanceDetailService interface {
+	GetAttendanceDetail(ctx context.Context, req *dto.AttendanceDetailRequest) (*dto.AttendanceDetailResponse, error)
+	GetAttendanceText(ctx context.Context, req *dto.AttendanceTextRequest) (*dto.AttendanceTextResponse, error)
+	GetWeeklyRanking(ctx context.Context, req *dto.WeeklyAttendanceRankingRequest) (*dto.WeeklyAttendanceRankingResponse, error)
+	GetWeeklyAttendanceRateRanking(ctx context.Context, req *dto.WeeklyAttendanceRankingRequest) (*dto.WeeklyAttendanceRateRankingResponse, error)
+	SignForUsers(ctx context.Context, req *dto.SignForUserRequest) (*dto.SignForUserResponse, error)
 }
 
 func (a *attendanceAdapter) GetAttendanceDetail(ctx context.Context, req agenttool.AttendanceQuery) (*agenttool.AttendanceResult, error) {
@@ -128,7 +136,7 @@ func (a *attendanceAdapter) GetAttendanceDetail(ctx context.Context, req agentto
 	if req.DeptID != 0 {
 		dtoReq.DeptIDs = []int64{req.DeptID}
 	}
-	resp, err := a.srv.GetAttendanceRecordFromDB(ctx, dtoReq)
+	resp, err := a.srv.GetAttendanceDetail(ctx, dtoReq)
 	if err != nil {
 		return nil, err
 	}
@@ -137,6 +145,11 @@ func (a *attendanceAdapter) GetAttendanceDetail(ctx context.Context, req agentto
 	onTimeNames := make([]string, 0, len(resp.Users.OnTime))
 	for _, u := range resp.Users.OnTime {
 		onTimeNames = append(onTimeNames, u.Name)
+	}
+
+	lateNames := make([]string, 0, len(resp.Users.Late))
+	for _, u := range resp.Users.Late {
+		lateNames = append(lateNames, u.Name)
 	}
 
 	// 转换请假用户
@@ -166,12 +179,17 @@ func (a *attendanceAdapter) GetAttendanceDetail(ctx context.Context, req agentto
 		Section:      resp.Section,
 		SlotStart:    resp.SlotTime.Start,
 		SlotEnd:      resp.SlotTime.End,
+		ViewMode:     resp.ViewMode,
+		IsFinalized:  resp.IsFinalized,
+		FinalizeAt:   resp.FinalizeAt.Format("2006-01-02 15:04:05"),
 		ShouldAttend: resp.Statistics.ShouldAttend,
 		OnTimeCount:  resp.Statistics.OnTime,
+		LateCount:    resp.Statistics.Late,
 		LeaveCount:   resp.Statistics.Leave,
 		AbsentCount:  resp.Statistics.NotArrived,
 		RestDayCount: resp.Statistics.RestDay,
 		OnTimeUsers:  onTimeNames,
+		LateUsers:    lateNames,
 		LeaveUsers:   leaveUsers,
 		AbsentUsers:  absentNames,
 		RestDayUsers: restDayNames,

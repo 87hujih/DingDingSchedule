@@ -42,13 +42,16 @@ type AttendanceTextRequest struct {
 
 // AttendanceDetailResponse 考勤详情响应
 type AttendanceDetailResponse struct {
-	RecordID   uint                 `json:"record_id"`
-	Date       string               `json:"date"`
-	Week       int                  `json:"week"`
-	Section    int                  `json:"section"`
-	SlotTime   SlotTimeInfo         `json:"slot_time"`
-	Statistics AttendanceStatistics `json:"statistics"`
-	Users      AttendanceUserLists  `json:"users"`
+	RecordID    uint                 `json:"record_id"`
+	Date        string               `json:"date"`
+	Week        int                  `json:"week"`
+	Section     int                  `json:"section"`
+	ViewMode    string               `json:"view_mode"`
+	IsFinalized bool                 `json:"is_finalized"`
+	FinalizeAt  time.Time            `json:"finalize_at"`
+	SlotTime    SlotTimeInfo         `json:"slot_time"`
+	Statistics  AttendanceStatistics `json:"statistics"`
+	Users       AttendanceUserLists  `json:"users"`
 }
 
 // SlotTimeInfo 课节时间信息
@@ -61,8 +64,9 @@ type SlotTimeInfo struct {
 type AttendanceStatistics struct {
 	ShouldAttend int `json:"should_attend"` // 应到人数
 	OnTime       int `json:"on_time"`       // 正常打卡人数
+	Late         int `json:"late"`          // 迟到人数
 	Leave        int `json:"leave"`         // 请假人数
-	NotArrived   int `json:"not_arrived"`   // 未到人数（含迟到和缺勤）
+	NotArrived   int `json:"not_arrived"`   // 未到人数
 	RestDay      int `json:"rest_day"`      // 休息人数
 	HasCourse    int `json:"has_course"`    // 有课人数
 }
@@ -71,8 +75,9 @@ type AttendanceStatistics struct {
 type AttendanceUserLists struct {
 	ShouldAttend []AttendanceUserBasic `json:"should_attend"`
 	OnTime       []AttendanceUserCheck `json:"on_time"`
+	Late         []AttendanceUserCheck `json:"late"`
 	Leave        []AttendanceUserLeave `json:"leave"`
-	NotArrived   []AttendanceUserBasic `json:"not_arrived"` // 未到（含迟到和缺勤）
+	NotArrived   []AttendanceUserBasic `json:"not_arrived"` // 未到
 	RestDay      []AttendanceUserBasic `json:"rest_day"`    // 休息日
 	HasCourse    []AttendanceUserBasic `json:"has_course"`  // 有课
 }
@@ -181,6 +186,26 @@ func NewAttendanceDetailResponseFromRecord(
 		})
 	}
 
+	// Parse Late
+	var lateUsers []StoredUserCheck
+	if record.LateIDs != "" && record.LateIDs != "[]" {
+		_ = json.Unmarshal([]byte(record.LateIDs), &lateUsers)
+	}
+	lateList := make([]AttendanceUserCheck, 0, len(lateUsers))
+	for _, u := range lateUsers {
+		if _, ok := userMap[u.ID]; !ok {
+			continue
+		}
+		name, avatar, dept := getUserInfo(u.ID)
+		lateList = append(lateList, AttendanceUserCheck{
+			ID:        u.ID,
+			Name:      name,
+			Avatar:    avatar,
+			DeptName:  dept,
+			CheckTime: time.Unix(u.CheckTime, 0),
+		})
+	}
+
 	// Parse NotArrived
 	var notArrivedIDs []uint
 	if record.NotArrivedIDs != "" && record.NotArrivedIDs != "[]" {
@@ -238,7 +263,7 @@ func NewAttendanceDetailResponseFromRecord(
 		})
 	}
 
-	// ShouldAttend = OnTime + Leave + NotArrived
+	// ShouldAttend = OnTime + Late + Leave + NotArrived
 	shouldAttendList := make([]AttendanceUserBasic, 0)
 	seen := make(map[uint]bool)
 
@@ -262,6 +287,9 @@ func NewAttendanceDetailResponseFromRecord(
 	for _, u := range onTimeUsers {
 		add(u.ID)
 	}
+	for _, u := range lateUsers {
+		add(u.ID)
+	}
 	for _, u := range leaveUsers {
 		add(u.ID)
 	}
@@ -281,6 +309,7 @@ func NewAttendanceDetailResponseFromRecord(
 		Statistics: AttendanceStatistics{
 			ShouldAttend: len(shouldAttendList),
 			OnTime:       len(onTimeList),
+			Late:         len(lateList),
 			Leave:        len(leaveList),
 			NotArrived:   len(notArrivedList),
 			RestDay:      len(restDayList),
@@ -289,6 +318,7 @@ func NewAttendanceDetailResponseFromRecord(
 		Users: AttendanceUserLists{
 			ShouldAttend: shouldAttendList,
 			OnTime:       onTimeList,
+			Late:         lateList,
 			Leave:        leaveList,
 			NotArrived:   notArrivedList,
 			RestDay:      restDayList,
@@ -359,6 +389,7 @@ func NewAttendanceDetailResponse(
 		Statistics: AttendanceStatistics{
 			ShouldAttend: len(shouldAttend),
 			OnTime:       len(onTime),
+			Late:         0,
 			Leave:        len(leave),
 			NotArrived:   len(notArrived),
 			RestDay:      len(restDay),
@@ -367,12 +398,22 @@ func NewAttendanceDetailResponse(
 		Users: AttendanceUserLists{
 			ShouldAttend: shouldAttendList,
 			OnTime:       onTime,
+			Late:         []AttendanceUserCheck{},
 			Leave:        leave,
 			NotArrived:   notArrived,
 			RestDay:      restDay,
 			HasCourse:    hasCourse,
 		},
 	}
+}
+
+func (r *AttendanceDetailResponse) SetViewMetadata(viewMode string, isFinalized bool, finalizeAt time.Time) {
+	if r == nil {
+		return
+	}
+	r.ViewMode = viewMode
+	r.IsFinalized = isFinalized
+	r.FinalizeAt = finalizeAt
 }
 
 // AttendanceRateRankingItem 用户出勤率排行条目

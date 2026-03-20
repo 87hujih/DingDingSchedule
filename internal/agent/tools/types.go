@@ -132,12 +132,17 @@ type AttendanceResult struct {
 	Section      int           `json:"section"`
 	SlotStart    string        `json:"slot_start"`
 	SlotEnd      string        `json:"slot_end"`
+	ViewMode     string        `json:"view_mode"`
+	IsFinalized  bool          `json:"is_finalized"`
+	FinalizeAt   string        `json:"finalize_at"`
 	ShouldAttend int           `json:"should_attend"`
 	OnTimeCount  int           `json:"on_time_count"`
+	LateCount    int           `json:"late_count"`
 	LeaveCount   int           `json:"leave_count"`
 	AbsentCount  int           `json:"absent_count"`
 	RestDayCount int           `json:"rest_day_count"`
 	OnTimeUsers  []string      `json:"on_time_users"`
+	LateUsers    []string      `json:"late_users"`
 	LeaveUsers   []AttendLeave `json:"leave_users"`
 	AbsentUsers  []string      `json:"absent_users"`
 	RestDayUsers []string      `json:"rest_day_users"`
