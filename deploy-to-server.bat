@@ -2,11 +2,11 @@
 setlocal
 
 echo ========================================
-echo Schedule Server Windows 应急部署入口
+echo Schedule Server Windows 源码部署入口
 echo ========================================
 echo.
-echo 正式发布请优先使用 GitHub Actions。
-echo 当前脚本仅作为 one-click-deploy.sh 的 Windows 包装器。
+echo 当前脚本会调用 one-click-deploy.sh，
+echo 使用“本地打源码包 -> 上传服务器 -> 服务器本地构建”的旧部署方式。
 echo.
 
 where bash >nul 2>nul
@@ -18,11 +18,8 @@ if %errorlevel% neq 0 (
 )
 
 set SCRIPT_DIR=%~dp0
-set IMAGE_TAG=%~1
-if "%IMAGE_TAG%"=="" set IMAGE_TAG=latest
-
 pushd "%SCRIPT_DIR%"
-bash -lc "./one-click-deploy.sh %IMAGE_TAG%"
+bash -lc "./one-click-deploy.sh"
 set EXIT_CODE=%errorlevel%
 popd
 

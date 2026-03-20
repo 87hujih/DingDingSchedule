@@ -1,22 +1,19 @@
 #!/bin/bash
 
-# Schedule Server 应急一键部署脚本
-# 用途：同步部署资产并在服务器上部署指定镜像 tag
+# Schedule Server 一键源码部署脚本
+# 用途：本地打包源码，上传服务器后在服务器本地构建镜像并启动容器
 
 set -euo pipefail
 
 SERVER_HOST="${SERVER_HOST:-106.52.42.194}"
 SERVER_USER="${SERVER_USER:-root}"
 SERVER_PORT="${SERVER_PORT:-22}"
-SERVER_DIR="${SERVER_DIR:-/opt/schedule_server}"
+SERVER_PARENT_DIR="${SERVER_PARENT_DIR:-/opt}"
+SERVER_DIR="${SERVER_DIR:-${SERVER_PARENT_DIR}/schedule_server}"
+PACKAGE_NAME="schedule_server_deploy.tar.gz"
+PACKAGE_DIR="schedule_server"
 CONTAINER_NAME="${CONTAINER_NAME:-schedule-server}"
-IMAGE_TAG="${1:-${IMAGE_TAG:-latest}}"
-IMAGE_REPO="${IMAGE_REPO:-}"
 TOTAL_STEPS=4
-
-if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
-    TOTAL_STEPS=5
-fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -44,38 +41,19 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-detect_image_repo() {
-    if [ -n "${IMAGE_REPO}" ]; then
-        return
-    fi
-
-    local remote owner
-    remote="$(git remote get-url origin 2>/dev/null || true)"
-    owner="$(printf '%s' "${remote}" | sed -nE 's#.*github\.com[:/]+([^/]+)/[^/.]+(\.git)?#\1#p' | tr '[:upper:]' '[:lower:]')"
-
-    if [ -n "${owner}" ]; then
-        IMAGE_REPO="ghcr.io/${owner}/schedule-server"
-        print_warning "未显式设置 IMAGE_REPO，已根据 origin 推断为 ${IMAGE_REPO}"
-        return
-    fi
-
-    print_error "无法自动推断 IMAGE_REPO，请手动设置 IMAGE_REPO=ghcr.io/<github-owner>/schedule-server"
-    exit 1
-}
-
 check_local_requirements() {
     local asset
 
-    for asset in ssh scp curl; do
+    for asset in ssh scp tar bash; do
         if ! command -v "${asset}" >/dev/null 2>&1; then
             print_error "缺少本地命令: ${asset}"
             exit 1
         fi
     done
 
-    for asset in deploy.sh docker-compose.prod.yml .env.prod.example; do
+    for asset in pack-for-deploy.sh deploy-legacy.sh Dockerfile; do
         if [ ! -f "${asset}" ]; then
-            print_error "缺少部署资产: ${asset}"
+            print_error "缺少部署文件: ${asset}"
             exit 1
         fi
     done
@@ -89,58 +67,45 @@ check_ssh_connection() {
         return
     fi
 
-    print_error "SSH 连接失败，请先确认密钥登录或改用 Xshell 手工应急部署"
+    print_error "SSH 连接失败，请先确认密钥登录或改用 Xshell 手工部署"
     exit 1
 }
 
-sync_assets() {
-    print_step "2/${TOTAL_STEPS} 同步部署资产"
+build_source_bundle() {
+    print_step "2/${TOTAL_STEPS} 打包源码部署包"
 
-    ssh -p "${SERVER_PORT}" "${SERVER_USER}@${SERVER_HOST}" "mkdir -p '${SERVER_DIR}' '${SERVER_DIR}/configs' '${SERVER_DIR}/logs' '${SERVER_DIR}/uploads'"
-    scp -P "${SERVER_PORT}" deploy.sh docker-compose.prod.yml .env.prod.example "${SERVER_USER}@${SERVER_HOST}:${SERVER_DIR}/"
+    bash ./pack-for-deploy.sh
 
-    print_success "部署资产已同步到 ${SERVER_USER}@${SERVER_HOST}:${SERVER_DIR}"
-}
-
-login_ghcr_if_needed() {
-    if [ -z "${GHCR_USERNAME:-}" ] || [ -z "${GHCR_TOKEN:-}" ]; then
-        return
+    if [ ! -f "${PACKAGE_NAME}" ]; then
+        print_error "未生成部署包: ${PACKAGE_NAME}"
+        exit 1
     fi
 
-    print_step "3/${TOTAL_STEPS} 登录 GHCR"
-    printf '%s' "${GHCR_TOKEN}" | ssh -p "${SERVER_PORT}" "${SERVER_USER}@${SERVER_HOST}" "docker login ghcr.io -u '${GHCR_USERNAME}' --password-stdin"
-    print_success "GHCR 登录完成"
+    print_success "源码部署包已生成: ${PACKAGE_NAME}"
 }
 
-remote_deploy() {
-    local step_label
-    step_label="3/${TOTAL_STEPS} 远程部署镜像"
-    if [ "${TOTAL_STEPS}" -eq 5 ]; then
-        step_label="4/${TOTAL_STEPS} 远程部署镜像"
-    fi
+sync_and_deploy() {
+    print_step "3/${TOTAL_STEPS} 上传并远程部署"
 
-    print_step "${step_label}"
+    ssh -p "${SERVER_PORT}" "${SERVER_USER}@${SERVER_HOST}" "mkdir -p '${SERVER_PARENT_DIR}'"
+    scp -P "${SERVER_PORT}" "${PACKAGE_NAME}" "${SERVER_USER}@${SERVER_HOST}:${SERVER_PARENT_DIR}/"
 
     ssh -p "${SERVER_PORT}" "${SERVER_USER}@${SERVER_HOST}" \
         "set -euo pipefail; \
-        cd '${SERVER_DIR}'; \
-        if [ ! -f '.env.prod' ]; then cp '.env.prod.example' '.env.prod'; echo '.env.prod 不存在，已用模板初始化，请补全后重试。'; exit 1; fi; \
-        if [ ! -f 'configs/prod.yaml' ]; then echo '缺少 configs/prod.yaml，请先补齐生产配置。'; exit 1; fi; \
-        for asset in deploy.sh docker-compose.prod.yml .env.prod.example; do if [ -f \"\${asset}\" ]; then sed -i 's/\r\$//' \"\${asset}\"; fi; done; \
+        cd '${SERVER_PARENT_DIR}'; \
+        rm -rf '${PACKAGE_DIR}'; \
+        tar -xzf 'schedule_server_deploy.tar.gz'; \
+        cd 'schedule_server'; \
+        sed -i 's/\r\$//' 'deploy.sh'; \
         chmod +x deploy.sh; \
-        IMAGE_REPO='${IMAGE_REPO}' IMAGE_TAG='${IMAGE_TAG}' ./deploy.sh deploy"
+        mkdir -p logs uploads; \
+        ./deploy.sh deploy"
 
-    print_success "镜像部署命令执行完成"
+    print_success "远程源码部署命令执行完成"
 }
 
 verify_deployment() {
-    local step_label
-    step_label="4/${TOTAL_STEPS} 验证部署结果"
-    if [ "${TOTAL_STEPS}" -eq 5 ]; then
-        step_label="5/${TOTAL_STEPS} 验证部署结果"
-    fi
-
-    print_step "${step_label}"
+    print_step "4/${TOTAL_STEPS} 验证部署结果"
 
     ssh -p "${SERVER_PORT}" "${SERVER_USER}@${SERVER_HOST}" "docker ps --filter 'name=${CONTAINER_NAME}' --format '{{.Names}} {{.Status}}'"
     ssh -p "${SERVER_PORT}" "${SERVER_USER}@${SERVER_HOST}" "curl -fsS http://localhost:26665/health" >/dev/null
@@ -153,22 +118,24 @@ show_result() {
     echo -e "${GREEN}部署完成${NC}"
     echo "服务器: ${SERVER_USER}@${SERVER_HOST}"
     echo "目录: ${SERVER_DIR}"
-    echo "镜像: ${IMAGE_REPO}:${IMAGE_TAG}"
+    echo "部署方式: 源码包上传后在服务器本地构建"
     echo ""
     echo "常用命令:"
     echo "  ssh -p ${SERVER_PORT} ${SERVER_USER}@${SERVER_HOST} 'cd ${SERVER_DIR} && ./deploy.sh status'"
     echo "  ssh -p ${SERVER_PORT} ${SERVER_USER}@${SERVER_HOST} 'cd ${SERVER_DIR} && ./deploy.sh logs'"
-    echo "  回滚: IMAGE_REPO=${IMAGE_REPO} ./one-click-deploy.sh <old-sha>"
+    echo "  回滚: 切回旧代码版本后重新执行 ./one-click-deploy.sh"
     echo ""
 }
 
 main() {
-    detect_image_repo
+    if [ "$#" -gt 0 ]; then
+        print_warning "当前已恢复源码部署流程，位置参数将被忽略: $*"
+    fi
+
     check_local_requirements
     check_ssh_connection
-    sync_assets
-    login_ghcr_if_needed
-    remote_deploy
+    build_source_bundle
+    sync_and_deploy
     verify_deployment
     show_result
 }
