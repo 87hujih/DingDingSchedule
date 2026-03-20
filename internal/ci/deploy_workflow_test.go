@@ -1,0 +1,47 @@
+package ci
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func readDeployWorkflow(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join("..", "..", ".github", "workflows", "deploy.yml")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read deploy workflow: %v", err)
+	}
+	return string(content)
+}
+
+func TestDeployWorkflowSupportsSSHKeyOrPassword(t *testing.T) {
+	workflow := readDeployWorkflow(t)
+
+	if !strings.Contains(workflow, "key: ${{ secrets.SERVER_SSH_KEY }}") {
+		t.Fatalf("deploy workflow must keep SSH key support")
+	}
+
+	if !strings.Contains(workflow, "password: ${{ secrets.SERVER_PASSWORD }}") {
+		t.Fatalf("deploy workflow must support SERVER_PASSWORD fallback")
+	}
+}
+
+func TestDeployWorkflowValidatesSSHCredentialsBeforeRemoteSteps(t *testing.T) {
+	workflow := readDeployWorkflow(t)
+
+	requiredChecks := []string{
+		"Missing SERVER_HOST secret",
+		"Missing SERVER_USER secret",
+		"Either SERVER_SSH_KEY or SERVER_PASSWORD must be configured",
+	}
+
+	for _, check := range requiredChecks {
+		if !strings.Contains(workflow, check) {
+			t.Fatalf("deploy workflow missing preflight check: %s", check)
+		}
+	}
+}

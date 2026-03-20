@@ -39,6 +39,11 @@ IMAGE_REPO=ghcr.io/<github-owner>/schedule-server ./one-click-deploy.sh <commit-
 - `GHCR_USERNAME`: 可选
 - `GHCR_TOKEN`: 可选
 
+说明：
+
+- GitHub Actions 正式部署现在支持“私钥优先，密码兜底”。
+- `one-click-deploy.sh` 仍要求你本地机器已经具备可用的 SSH 登录能力；如果本地不能直接 SSH 到服务器，请改走 GitHub Actions 或 Xshell 手工流程。
+
 ## 方案 B：Xshell / Xftp 手工部署
 
 如果本地脚本不可用，可以手工执行：

@@ -13,6 +13,12 @@
 
 如果只是日常上线，请优先使用 GitHub Actions，不要再走“本地打包源码上传到服务器再构建”的旧流程。
 
+当前 GitHub Actions 部署支持：
+
+- 优先使用 `SERVER_SSH_KEY`
+- 未配置私钥时退回使用 `SERVER_PASSWORD`
+- 如果两者都缺失，workflow 会在远程步骤前直接失败
+
 ## 适用场景
 
 以下情况才建议使用 `one-click-deploy.sh`：
@@ -66,6 +72,26 @@ IMAGE_REPO=ghcr.io/<github-owner>/schedule-server ./one-click-deploy.sh <old-sha
 ```
 
 ## 常见问题
+
+### 0. GitHub Actions 报 SSH 凭据缺失
+
+正式部署 workflow 现在要求以下 secret：
+
+- `SERVER_HOST`
+- `SERVER_USER`
+- `SERVER_SSH_KEY` 或 `SERVER_PASSWORD`
+
+可选：
+
+- `SERVER_SSH_PASSPHRASE`
+
+如果看到以下报错：
+
+```text
+Either SERVER_SSH_KEY or SERVER_PASSWORD must be configured
+```
+
+说明仓库侧还没有配置可用的远程认证信息。
 
 ### 1. `.env.prod` 不存在
 

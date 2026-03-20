@@ -18,9 +18,13 @@
 
 - `SERVER_HOST`: 生产服务器地址。
 - `SERVER_USER`: 生产服务器 SSH 用户。
-- `SERVER_SSH_KEY`: 用于部署的私钥。
+- `SERVER_SSH_KEY`: 推荐；用于部署的私钥。
+- `SERVER_PASSWORD`: 兜底；当未配置 `SERVER_SSH_KEY` 时使用服务器密码登录。
+- `SERVER_SSH_PASSPHRASE`: 可选；当 `SERVER_SSH_KEY` 带口令时使用。
 - `GHCR_USERNAME`: 可选；当 GHCR 包为私有时使用。
 - `GHCR_TOKEN`: 可选；当 GHCR 包为私有时使用。
+
+其中 `SERVER_SSH_KEY` 与 `SERVER_PASSWORD` 至少需要配置一个。workflow 会优先使用私钥，未提供私钥时自动退回到密码登录。
 
 默认会使用 GitHub 自带的 `GITHUB_TOKEN` 将镜像推送到 GHCR。
 
@@ -33,6 +37,7 @@
 - 已准备 `/opt/schedule_server/.env.prod`。
 - 已准备 `/opt/schedule_server/configs/prod.yaml`。
 - 如果镜像仓库为私有，服务器已能登录 GHCR，或者在 workflow 中提供了 `GHCR_USERNAME` / `GHCR_TOKEN`。
+- 如果使用密码兜底模式，服务器 SSH 必须允许目标用户密码登录。
 
 推荐目录结构：
 
@@ -67,6 +72,12 @@ cp .env.prod.example .env.prod
 - 在 GitHub Actions 页面手动触发 `Deploy to Server`。
 
 部署成功后，工作流会对 `http://<SERVER_HOST>:26665/health` 执行健康检查。
+
+如果认证配置缺失，workflow 会在真正执行 `scp` / `ssh` 之前直接失败，并输出以下之一：
+
+- `Missing SERVER_HOST secret`
+- `Missing SERVER_USER secret`
+- `Either SERVER_SSH_KEY or SERVER_PASSWORD must be configured`
 
 ### 指定版本发布
 
