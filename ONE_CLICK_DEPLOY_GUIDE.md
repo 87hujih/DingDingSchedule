@@ -1,134 +1,149 @@
 # 一键部署使用指南
 
-## 定位
+## 部署方式说明
 
-本文件现在只用于说明本地应急部署脚本 `one-click-deploy.sh` 的使用方式。
+本文档恢复的是项目原来的部署方法：
 
-正式生产发布流程已经调整为：
+1. 在本地准备 `schedule_server_deploy.tar.gz` 源码部署包。
+2. 将部署包上传到服务器。
+3. 在服务器解压源码包并进入项目目录。
+4. 执行 `./deploy.sh deploy`，由服务器本地构建镜像并直接启动容器。
 
-1. Pull Request / 普通 push 先经过 `.github/workflows/ci.yml`。
-2. 合并到 `master` 或手动触发 `.github/workflows/deploy.yml`。
-3. GitHub Actions 构建并推送 GHCR 镜像。
-4. 生产机只拉取镜像并通过 `docker compose` 启动。
-
-如果只是日常上线，请优先使用 GitHub Actions，不要再走“本地打包源码上传到服务器再构建”的旧流程。
-
-当前 GitHub Actions 部署支持：
-
-- 优先使用 `SERVER_SSH_KEY`
-- 未配置私钥时退回使用 `SERVER_PASSWORD`
-- 如果两者都缺失，workflow 会在远程步骤前直接失败
-
-## 适用场景
-
-以下情况才建议使用 `one-click-deploy.sh`：
-
-- GitHub Actions 临时不可用。
-- 需要手工回滚到某个历史镜像 tag。
-- 需要从本地快速补发部署资产到服务器。
+这套流程不依赖 GitHub Actions，也不依赖 GHCR 镜像仓库，核心就是“本地打包源码，上传服务器后现场构建部署”。
 
 ## 前置条件
 
-- 本地已安装 Git Bash，并可用 `ssh` / `scp` / `curl`。
-- 已能通过 SSH 访问服务器。
-- 服务器已安装 Docker 和 `docker compose`。
-- 服务器已准备 `/opt/schedule_server/.env.prod`。
-- 服务器已准备 `/opt/schedule_server/configs/prod.yaml`。
-- 如果 GHCR 镜像为私有，服务器已登录 GHCR，或本地设置了 `GHCR_USERNAME` 与 `GHCR_TOKEN`。
+- 本地已安装 Git Bash，且可用 `tar`、`scp`、`ssh`。
+- 服务器已安装 Docker。
+- 服务器可开放并访问 `26665` 端口。
+- 部署包中已包含生产配置 `configs/prod.yaml`。
+- 服务器上有可写的部署目录，例如 `/opt/schedule_server`。
 
-## 推荐用法
+## 第一步：准备源码部署包
 
-```bash
-IMAGE_REPO=ghcr.io/<github-owner>/schedule-server ./one-click-deploy.sh <commit-sha>
-```
-
-说明：
-
-- `<commit-sha>` 建议使用 GitHub Actions 中对应发布版本的提交 SHA。
-- 如果省略参数，脚本默认部署 `latest`。
-- 如果未显式设置 `IMAGE_REPO`，脚本会尝试根据 `git remote origin` 自动推断。
-
-## 脚本会做什么
-
-`one-click-deploy.sh` 会自动完成以下步骤：
-
-1. 检查 SSH 连通性。
-2. 把 `deploy.sh`、`docker-compose.prod.yml`、`.env.prod.example` 上传到 `/opt/schedule_server`。
-3. 如提供 GHCR 凭证，则在服务器执行 `docker login ghcr.io`。
-4. 在服务器执行：
-
-```bash
-IMAGE_REPO=<repo> IMAGE_TAG=<tag> ./deploy.sh deploy
-```
-
-5. 校验服务器本地健康检查 `http://localhost:26665/health`。
-
-## 回滚
-
-回滚时重新执行脚本并传入旧镜像 tag：
-
-```bash
-IMAGE_REPO=ghcr.io/<github-owner>/schedule-server ./one-click-deploy.sh <old-sha>
-```
-
-## 常见问题
-
-### 0. GitHub Actions 报 SSH 凭据缺失
-
-正式部署 workflow 现在要求以下 secret：
-
-- `SERVER_HOST`
-- `SERVER_USER`
-- `SERVER_SSH_KEY` 或 `SERVER_PASSWORD`
-
-可选：
-
-- `SERVER_SSH_PASSPHRASE`
-
-如果看到以下报错：
+原来的部署包应命名为：
 
 ```text
-Either SERVER_SSH_KEY or SERVER_PASSWORD must be configured
+schedule_server_deploy.tar.gz
 ```
 
-说明仓库侧还没有配置可用的远程认证信息。
-
-### 1. `.env.prod` 不存在
-
-脚本会自动把 `.env.prod.example` 复制为 `.env.prod`，然后终止部署。你需要登录服务器补全真实生产值后再重新执行。
-
-### 2. `configs/prod.yaml` 不存在
-
-`deploy.sh` 会在启动前直接校验：
+包内目录结构应类似：
 
 ```text
-/opt/schedule_server/configs/prod.yaml
+schedule_server/
+├── cmd/
+├── internal/
+├── pkg/
+├── inits/
+├── global/
+├── config/
+├── configs/prod.yaml
+├── go.mod
+├── go.sum
+├── Dockerfile
+├── docker-compose.yml
+├── deploy.sh
+├── .dockerignore
+├── logs/
+└── uploads/
 ```
 
-缺失时需要先补齐生产配置，再重新部署。
+也就是说，部署包里必须带完整应用源码、`Dockerfile`、`deploy.sh` 和生产配置。原来的思路不是上传镜像，而是把这些文件传到服务器后再构建。
 
-### 3. GHCR 拉镜像失败
+如果你当前手里没有旧版 `pack-for-deploy.sh` 产物，也可以按上面的目录结构自行准备这个压缩包；关键是保证服务源码和 `configs/prod.yaml` 一起进入包内。
 
-如果镜像为私有，请先确保服务器可登录 GHCR。也可以在本地临时设置：
+这里说的 `deploy.sh`，指的是旧源码部署包里随包上传的脚本版本；它会在服务器本地执行 `docker build`。当前仓库根目录里的 `deploy.sh` 已经切换到镜像拉取流程，不属于本文恢复的这套旧部署方法。
+
+## 第二步：上传到服务器
+
+以下命令以 `/opt` 为例：
 
 ```bash
-export GHCR_USERNAME=<username>
-export GHCR_TOKEN=<token>
-IMAGE_REPO=ghcr.io/<github-owner>/schedule-server ./one-click-deploy.sh <commit-sha>
+scp schedule_server_deploy.tar.gz root@<server-host>:/opt/
 ```
 
-### 4. 健康检查失败
+如果你习惯先上传到别的目录也可以，最终只要能在服务器解压出 `schedule_server/` 目录即可。
 
-先登录服务器执行：
+## 第三步：在服务器解压
+
+登录服务器后执行：
 
 ```bash
-cd /opt/schedule_server
+cd /opt
+rm -rf schedule_server
+tar -xzf schedule_server_deploy.tar.gz
+cd schedule_server
+chmod +x deploy.sh
+```
+
+解压后目录中应能看到 `Dockerfile`、`deploy.sh`、`cmd/`、`internal/`、`pkg/` 和 `configs/prod.yaml`。
+
+## 第四步：执行部署
+
+在服务器项目目录执行：
+
+```bash
+./deploy.sh deploy
+```
+
+`deploy.sh deploy` 原来的行为是：
+
+1. 在服务器本地执行 `docker build` 构建 `schedule-server` 镜像。
+2. 停止并删除旧容器 `schedule-server`。
+3. 通过 `docker run` 启动新容器。
+4. 挂载当前目录下的 `logs/` 与 `uploads/`。
+5. 输出容器状态并清理未使用镜像。
+
+## 第五步：验证部署结果
+
+部署完成后可执行：
+
+```bash
+docker ps -f name=schedule-server
+curl -f http://localhost:26665/health
 ./deploy.sh status
+```
+
+如果需要看实时日志：
+
+```bash
 ./deploy.sh logs
 ```
 
-## 相关文档
+## 回滚方式
 
-- 正式发布流程：`docs/deployment/production.md`
-- 应急与回滚：`docs/deployment/emergency.md`
-- Xshell / Xftp 手工流程：`XSHELL_DEPLOY_COMPLETE_GUIDE.md`
+原来的回滚方式不是切镜像 tag，而是重新上传旧版本源码部署包，再次执行：
+
+```bash
+./deploy.sh deploy
+```
+
+只要压缩包里的源码版本回到目标版本，服务器重新构建后就会回滚到对应代码。
+
+## 常见问题
+
+### 1. `configs/prod.yaml` 缺失
+
+这是原部署方式里最容易漏掉的文件。部署包里如果没有它，容器虽然可能构建成功，但服务会因为生产配置缺失而无法正常启动。
+
+### 2. Docker 构建失败
+
+先确认服务器当前目录里确实有完整源码，而不只是几个运维脚本。原来的部署方式要求在服务器本地构建镜像，缺少 `cmd/`、`internal/`、`pkg/` 或 `go.mod` 都会失败。
+
+### 3. 端口已被占用
+
+旧容器未清理或服务器上有其他服务占用了 `26665` 时，新容器会启动失败。可先执行：
+
+```bash
+docker ps -a
+docker logs schedule-server
+```
+
+### 4. 日志或上传目录权限异常
+
+原来的部署脚本会挂载当前目录的 `logs/` 和 `uploads/`。如果目录不存在或权限不对，建议先手工确认：
+
+```bash
+mkdir -p logs uploads
+ls -ld logs uploads
+```

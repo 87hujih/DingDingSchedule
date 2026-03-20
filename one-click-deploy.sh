@@ -126,6 +126,7 @@ remote_deploy() {
         cd '${SERVER_DIR}'; \
         if [ ! -f '.env.prod' ]; then cp '.env.prod.example' '.env.prod'; echo '.env.prod 不存在，已用模板初始化，请补全后重试。'; exit 1; fi; \
         if [ ! -f 'configs/prod.yaml' ]; then echo '缺少 configs/prod.yaml，请先补齐生产配置。'; exit 1; fi; \
+        for asset in deploy.sh docker-compose.prod.yml .env.prod.example; do if [ -f \"\${asset}\" ]; then sed -i 's/\r\$//' \"\${asset}\"; fi; done; \
         chmod +x deploy.sh; \
         IMAGE_REPO='${IMAGE_REPO}' IMAGE_TAG='${IMAGE_TAG}' ./deploy.sh deploy"
 
