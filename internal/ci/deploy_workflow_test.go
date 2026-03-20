@@ -21,11 +21,11 @@ func readDeployWorkflow(t *testing.T) string {
 func TestDeployWorkflowSupportsSSHKeyOrPassword(t *testing.T) {
 	workflow := readDeployWorkflow(t)
 
-	if !strings.Contains(workflow, "key: ${{ secrets.SERVER_SSH_KEY }}") {
+	if !strings.Contains(workflow, "key: ${{ env.SERVER_SSH_KEY }}") {
 		t.Fatalf("deploy workflow must keep SSH key support")
 	}
 
-	if !strings.Contains(workflow, "password: ${{ secrets.SERVER_PASSWORD }}") {
+	if !strings.Contains(workflow, "password: ${{ env.SERVER_PASSWORD }}") {
 		t.Fatalf("deploy workflow must support SERVER_PASSWORD fallback")
 	}
 }
@@ -63,5 +63,13 @@ func TestDeployWorkflowIncludesSSHKeyFingerprintDebugStep(t *testing.T) {
 
 	if strings.Contains(workflow, "cat \"${tmp}\"") || strings.Contains(workflow, "echo \"${SERVER_SSH_KEY}\"") {
 		t.Fatalf("deploy workflow must not print raw private key content in debug step")
+	}
+
+	if !strings.Contains(workflow, "if: ${{ env.SERVER_SSH_KEY != '' }}") {
+		t.Fatalf("deploy workflow must use env.SERVER_SSH_KEY in debug step condition")
+	}
+
+	if strings.Contains(workflow, "if: ${{ secrets.SERVER_SSH_KEY != '' }}") {
+		t.Fatalf("deploy workflow must not reference secrets directly in step if condition")
 	}
 }
