@@ -16,6 +16,8 @@ CONTAINER_NAME="${CONTAINER_NAME:-schedule-server}"
 COMPOSE_FILE="${DEPLOY_COMPOSE_FILE:-docker-compose.prod.yml}"
 ENV_FILE="${DEPLOY_ENV_FILE:-.env.prod}"
 LOCAL_IMAGE_TAG="${LOCAL_IMAGE_TAG:-schedule-server:local}"
+IMAGE_PULL_RETRIES="${IMAGE_PULL_RETRIES:-3}"
+IMAGE_PULL_RETRY_DELAY_SECONDS="${IMAGE_PULL_RETRY_DELAY_SECONDS:-15}"
 
 # 打印带颜色的消息
 log_info() {
@@ -115,6 +117,34 @@ compose() {
     docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" "$@"
 }
 
+retry_compose_pull() {
+    local attempt=1
+
+    while [ "${attempt}" -le "${IMAGE_PULL_RETRIES}" ]; do
+        if compose pull; then
+            return 0
+        fi
+
+        if [ "${attempt}" -lt "${IMAGE_PULL_RETRIES}" ]; then
+            log_warn "拉取镜像失败（第 ${attempt}/${IMAGE_PULL_RETRIES} 次），${IMAGE_PULL_RETRY_DELAY_SECONDS} 秒后重试..."
+            sleep "${IMAGE_PULL_RETRY_DELAY_SECONDS}"
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    log_error "镜像拉取连续失败，请检查服务器到 ghcr.io 的网络连通性、GHCR 凭据和目标镜像标签后重试。"
+    return 1
+}
+
+remove_conflicting_container() {
+    if docker inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
+        log_warn "发现已有同名容器 ${CONTAINER_NAME}，准备清理后再由 compose 接管..."
+        docker stop "${CONTAINER_NAME}" || true
+        docker rm "${CONTAINER_NAME}" || true
+    fi
+}
+
 # 构建本地调试镜像
 build_local_image() {
     log_info "开始构建本地调试镜像..."
@@ -126,7 +156,8 @@ build_local_image() {
 deploy_stack() {
     mkdir -p "${LOG_DIR:-./logs}" "${UPLOAD_DIR:-./uploads}" "${CONFIG_DIR:-./configs}"
     log_info "开始拉取镜像..."
-    compose pull
+    retry_compose_pull
+    remove_conflicting_container
     log_info "启动生产容器..."
     compose up -d
 }
