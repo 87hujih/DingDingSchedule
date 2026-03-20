@@ -142,3 +142,25 @@ func TestDeployScriptRemovesConflictingLegacyContainerBeforeComposeUp(t *testing
 		t.Fatalf("deploy_stack must remove conflicting container before compose up")
 	}
 }
+
+func TestDeployWorkflowChecksHealthViaSSHOnTargetHost(t *testing.T) {
+	workflow := readDeployWorkflow(t)
+
+	requiredFragments := []string{
+		"- name: Health check",
+		"uses: appleboy/ssh-action@v1.2.0",
+		"curl -fsS http://localhost:26665/health",
+		"for attempt in $(seq 1 12)",
+		"sleep 5",
+	}
+
+	for _, fragment := range requiredFragments {
+		if !strings.Contains(workflow, fragment) {
+			t.Fatalf("deploy workflow missing remote health check fragment: %s", fragment)
+		}
+	}
+
+	if strings.Contains(workflow, "curl -f http://${{ env.SERVER_HOST }}:26665/health") {
+		t.Fatalf("deploy workflow must not rely on runner-side external health check")
+	}
+}
