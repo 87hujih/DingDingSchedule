@@ -25,6 +25,7 @@ docs/deployment/*
 # Temp files
 *.tmp
 *.swp
+.cache/
 .worktrees/
 tasks
 AGENTS.md

@@ -2,7 +2,9 @@
 
 ## 背景
 
-当前实时考勤详情 `GET /api/admin/attendance/record/detail` 在未 finalize 时走现场计算，不依赖 `attendance_records` 快照，因此返回的 `record_id` 会是 `0`。而现有代签接口 `POST /api/admin/attendance/record/sign` 只接受 `record_id`，并且在服务层直接按 `attendance_records.id` 查找并改写已落库快照。
+当前实时考勤详情 `GET /api/admin/attendance/record/detail` 在未 finalize 时走现场计算，
+不依赖 `attendance_records` 快照，因此返回的 `record_id` 会是 `0`。
+而现有代签接口 `POST /api/admin/attendance/record/sign` 只接受 `record_id`，并且在服务层直接按 `attendance_records.id` 查找并改写已落库快照。
 
 这造成两个直接问题：
 
