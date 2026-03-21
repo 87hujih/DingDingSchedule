@@ -1633,7 +1633,17 @@ func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDet
 		for _, u := range detail.Users.Leave {
 			names = append(names, u.Name)
 		}
-		line := "🌱请假(" + intToString(len(detail.Users.Leave)) + "人)：" + joinNames(names)
+		line := "⏳请假(" + intToString(len(detail.Users.Leave)) + "人)：" + joinNames(names)
+		content = append(content, line)
+	}
+
+	// 休息
+	if len(detail.Users.RestDay) > 0 {
+		names := make([]string, 0, len(detail.Users.RestDay))
+		for _, u := range detail.Users.RestDay {
+			names = append(names, u.Name)
+		}
+		line := "😴休息日(" + intToString(len(detail.Users.RestDay)) + "人)：" + joinNames(names)
 		content = append(content, line)
 	}
 
@@ -1659,23 +1669,10 @@ func (s *AttendanceRecordService) formatAttendanceText(detail *dto.AttendanceDet
 		content = append(content, line)
 	}
 
-	// 休息
-	if len(detail.Users.RestDay) > 0 {
-		names := make([]string, 0, len(detail.Users.RestDay))
-		for _, u := range detail.Users.RestDay {
-			names = append(names, u.Name)
-		}
-		line := "😴 休息(" + intToString(len(detail.Users.RestDay)) + "人)：" + joinNames(names)
-		content = append(content, line)
-	}
-
 	// 构建完整文本
-	fullText := title + "\n" + statistics + "\n\n"
-	for i, line := range content {
-		fullText += line
-		if i < len(content)-1 {
-			fullText += "\n\n"
-		}
+	fullText := title + "\n" + statistics
+	for _, line := range content {
+		fullText += "\n" + line
 	}
 
 	return &dto.AttendanceTextResponse{
