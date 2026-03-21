@@ -14,6 +14,7 @@ import (
 	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
 	"schedule_server/internal/response"
+	"schedule_server/internal/tenantctx"
 	"schedule_server/pkg/dingtalk"
 	"schedule_server/pkg/scheduleutil"
 	"schedule_server/pkg/weekutil"
@@ -28,6 +29,7 @@ type AttendanceRecordService struct {
 	courseRepo             repository.CourseRepository
 	leaveRepo              repository.LeaveApprovalRepository
 	attendanceRecordRepo   repository.AttendanceRecordRepository
+	manualOverrideRepo     repository.AttendanceManualOverrideRepository
 	scheduleSettingRepo    repository.ScheduleSettingRepository
 	restDayRepo            repository.UserRestDayRepository
 	dingMgr                *DingTalkClientManager
@@ -48,12 +50,22 @@ type attendanceWindow struct {
 	finalizeAt   time.Time
 }
 
+const attendanceOverrideTypeForceOnTime = "force_on_time"
+
+type attendanceSignSlot struct {
+	date    time.Time
+	week    int
+	section int
+	record  *model.AttendanceRecord
+}
+
 // NewAttendanceRecordService 创建考勤记录服务实例
 func NewAttendanceRecordService(
 	userRepo repository.UserRepository,
 	courseRepo repository.CourseRepository,
 	leaveRepo repository.LeaveApprovalRepository,
 	attendanceRecordRepo repository.AttendanceRecordRepository,
+	manualOverrideRepo repository.AttendanceManualOverrideRepository,
 	scheduleSettingRepo repository.ScheduleSettingRepository,
 	restDayRepo repository.UserRestDayRepository,
 	dingMgr *DingTalkClientManager,
@@ -67,6 +79,7 @@ func NewAttendanceRecordService(
 		courseRepo:           courseRepo,
 		leaveRepo:            leaveRepo,
 		attendanceRecordRepo: attendanceRecordRepo,
+		manualOverrideRepo:   manualOverrideRepo,
 		scheduleSettingRepo:  scheduleSettingRepo,
 		restDayRepo:          restDayRepo,
 		dingMgr:              dingMgr,
@@ -77,7 +90,6 @@ func NewAttendanceRecordService(
 		nowFn:                time.Now,
 	}
 }
-
 func (s *AttendanceRecordService) currentTime() time.Time {
 	if s.nowFn != nil {
 		return s.nowFn()
@@ -143,6 +155,10 @@ func (s *AttendanceRecordService) GetAttendanceDetail(
 	now := s.currentTime()
 	if s.shouldUseRealtimeView(now, window.finalizeAt) {
 		resp, _, err := s.buildAttendanceDetail(ctx, req, window, minTime(now, minTime(window.finalizeAt, window.slotEnd)), true)
+		if err != nil {
+			return nil, err
+		}
+		resp, err = s.applyManualOverridesToDetail(ctx, window.date, req.Section, resp)
 		if err != nil {
 			return nil, err
 		}
@@ -382,6 +398,260 @@ func (s *AttendanceRecordService) buildAttendanceDetail(
 	return resp, notifyUsers, nil
 }
 
+func normalizeAttendanceDate(date time.Time) time.Time {
+	return time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
+}
+
+func (s *AttendanceRecordService) deriveAttendanceWeek(ctx context.Context, date time.Time) int {
+	if s.semesterSrv != nil {
+		semester, err := s.semesterSrv.GetActiveSemester(ctx)
+		if err == nil {
+			if week, err := s.semesterSrv.CalculateWeekFromDate(semester, date); err == nil && week > 0 {
+				return week
+			}
+		}
+	}
+	return 1
+}
+
+func (s *AttendanceRecordService) resolveSignSlot(ctx context.Context, req *dto.SignForUserRequest) (*attendanceSignSlot, error) {
+	if req == nil {
+		return nil, response.ErrInvalidParamWithMsg("请求参数不能为空")
+	}
+	if err := req.Validate(); err != nil {
+		return nil, response.ErrInvalidParamWithMsg(err.Error())
+	}
+
+	if req.RecordID != 0 {
+		record, err := s.attendanceRecordRepo.FindByID(ctx, req.RecordID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, response.ErrNotFoundWithMsg("未找到考勤记录")
+			}
+			return nil, err
+		}
+		return &attendanceSignSlot{
+			date:    normalizeAttendanceDate(record.Date),
+			week:    record.Week,
+			section: record.Section,
+			record:  record,
+		}, nil
+	}
+
+	date, err := time.ParseInLocation("2006-01-02", req.Date, time.Local)
+	if err != nil {
+		return nil, response.ErrInvalidParamWithMsg("日期格式错误")
+	}
+	date = normalizeAttendanceDate(date)
+
+	periods := s.resolveActivePeriods(ctx)
+	if req.Section <= 0 || req.Section > len(periods) {
+		return nil, response.ErrInvalidParamWithMsg("节次无效")
+	}
+
+	slot := &attendanceSignSlot{
+		date:    date,
+		week:    s.deriveAttendanceWeek(ctx, date),
+		section: req.Section,
+	}
+	record, err := s.attendanceRecordRepo.FindByDateSection(ctx, date, req.Section)
+	if err == nil {
+		slot.record = record
+		if record.Week > 0 {
+			slot.week = record.Week
+		}
+		return slot, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+
+	return slot, nil
+}
+
+func (s *AttendanceRecordService) loadAttendanceDetailForSign(ctx context.Context, slot *attendanceSignSlot) (*dto.AttendanceDetailResponse, error) {
+	if slot == nil {
+		return nil, response.NewBizError(response.CodeInternalError, "代签节次未初始化")
+	}
+
+	req := &dto.AttendanceDetailRequest{
+		Date:    slot.date.Format("2006-01-02"),
+		Week:    slot.week,
+		Section: slot.section,
+	}
+	if slot.record != nil {
+		return s.GetAttendanceRecordFromDB(ctx, req)
+	}
+
+	window, err := s.resolveAttendanceWindow(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, _, err := s.buildAttendanceDetail(ctx, req, window, minTime(s.currentTime(), minTime(window.finalizeAt, window.slotEnd)), true)
+	if err != nil {
+		return nil, err
+	}
+	return s.applyManualOverridesToDetail(ctx, slot.date, slot.section, resp)
+}
+
+func (s *AttendanceRecordService) resolveOverrideTenantID(
+	ctx context.Context,
+	slot *attendanceSignSlot,
+	targetUserIDs []uint,
+) uint {
+	if slot != nil && slot.record != nil && slot.record.TenantID != 0 {
+		return slot.record.TenantID
+	}
+	if tenantID, ok := tenantctx.TenantIDFrom(ctx); ok {
+		return tenantID
+	}
+	if s.userRepo == nil || len(targetUserIDs) == 0 {
+		return 0
+	}
+
+	users, err := s.userRepo.ListByIDs(ctx, targetUserIDs)
+	if err != nil || len(users) == 0 {
+		return 0
+	}
+	return users[0].TenantID
+}
+
+func (s *AttendanceRecordService) applyManualOverridesToDetail(
+	ctx context.Context,
+	date time.Time,
+	section int,
+	resp *dto.AttendanceDetailResponse,
+) (*dto.AttendanceDetailResponse, error) {
+	if resp == nil || s.manualOverrideRepo == nil {
+		return resp, nil
+	}
+
+	overrides, err := s.manualOverrideRepo.ListByDateSection(ctx, normalizeAttendanceDate(date), section)
+	if err != nil {
+		return nil, errs.WrapMsgErr("获取人工代签覆盖失败", err)
+	}
+	if len(overrides) == 0 {
+		return resp, nil
+	}
+
+	sourceByID := make(map[uint]dto.AttendanceUserBasic)
+	allowed := make(map[uint]bool)
+
+	addBasic := func(user dto.AttendanceUserBasic) {
+		sourceByID[user.ID] = user
+		allowed[user.ID] = true
+	}
+	addCheck := func(user dto.AttendanceUserCheck) {
+		sourceByID[user.ID] = dto.AttendanceUserBasic{
+			ID:       user.ID,
+			Name:     user.Name,
+			Avatar:   user.Avatar,
+			DeptName: user.DeptName,
+		}
+		allowed[user.ID] = true
+	}
+	addLeave := func(user dto.AttendanceUserLeave) {
+		if _, ok := sourceByID[user.ID]; ok {
+			return
+		}
+		sourceByID[user.ID] = dto.AttendanceUserBasic{
+			ID:       user.ID,
+			Name:     user.Name,
+			Avatar:   user.Avatar,
+			DeptName: user.DeptName,
+		}
+	}
+
+	for _, user := range resp.Users.ShouldAttend {
+		addBasic(user)
+	}
+	for _, user := range resp.Users.OnTime {
+		addCheck(user)
+	}
+	for _, user := range resp.Users.Late {
+		addCheck(user)
+	}
+	for _, user := range resp.Users.NotArrived {
+		addBasic(user)
+	}
+
+	excluded := make(map[uint]bool, len(resp.Users.Leave)+len(resp.Users.RestDay)+len(resp.Users.HasCourse))
+	for _, user := range resp.Users.Leave {
+		excluded[user.ID] = true
+		addLeave(user)
+	}
+	for _, user := range resp.Users.RestDay {
+		excluded[user.ID] = true
+		if _, ok := sourceByID[user.ID]; !ok {
+			sourceByID[user.ID] = user
+		}
+	}
+	for _, user := range resp.Users.HasCourse {
+		excluded[user.ID] = true
+		if _, ok := sourceByID[user.ID]; !ok {
+			sourceByID[user.ID] = user
+		}
+	}
+
+	onTimeIndex := make(map[uint]int, len(resp.Users.OnTime))
+	for i, user := range resp.Users.OnTime {
+		onTimeIndex[user.ID] = i
+	}
+
+	applied := false
+	for _, override := range overrides {
+		if override.OverrideType != attendanceOverrideTypeForceOnTime {
+			continue
+		}
+		if excluded[override.UserID] || !allowed[override.UserID] {
+			continue
+		}
+
+		excludedUser := map[uint]bool{override.UserID: true}
+		resp.Users.Late = filterAttendanceChecks(resp.Users.Late, excludedUser)
+		resp.Users.NotArrived = filterAttendanceBasics(resp.Users.NotArrived, excludedUser)
+
+		if idx, ok := onTimeIndex[override.UserID]; ok {
+			resp.Users.OnTime[idx].CheckTime = override.AppliedAt
+		} else {
+			source := sourceByID[override.UserID]
+			resp.Users.OnTime = append(resp.Users.OnTime, dto.AttendanceUserCheck{
+				ID:        source.ID,
+				Name:      source.Name,
+				Avatar:    source.Avatar,
+				DeptName:  source.DeptName,
+				CheckTime: override.AppliedAt,
+			})
+			onTimeIndex[override.UserID] = len(resp.Users.OnTime) - 1
+		}
+
+		applied = true
+	}
+
+	if !applied {
+		return resp, nil
+	}
+
+	resp.Statistics.OnTime = len(resp.Users.OnTime)
+	resp.Statistics.Late = len(resp.Users.Late)
+	resp.Statistics.NotArrived = len(resp.Users.NotArrived)
+	return resp, nil
+}
+
+func filterAttendanceBasics(users []dto.AttendanceUserBasic, excluded map[uint]bool) []dto.AttendanceUserBasic {
+	if len(excluded) == 0 {
+		return users
+	}
+	filtered := make([]dto.AttendanceUserBasic, 0, len(users))
+	for _, user := range users {
+		if !excluded[user.ID] {
+			filtered = append(filtered, user)
+		}
+	}
+	return filtered
+}
+
 // SaveAttendanceRecord 保存考勤记录到数据库
 func (s *AttendanceRecordService) SaveAttendanceRecord(
 	ctx context.Context,
@@ -460,6 +730,10 @@ func (s *AttendanceRecordService) GetAttendanceRecordFromDB(
 	slotEnd := periods[req.Section-1].End
 
 	resp := dto.NewAttendanceDetailResponseFromRecord(record, slotStart, slotEnd, userMap, userDeptNames)
+	resp, err = s.applyManualOverridesToDetail(ctx, date, req.Section, resp)
+	if err != nil {
+		return nil, err
+	}
 	slotStartAt, _, err := scheduleutil.CalculateSlotTime(date, req.Section, periods)
 	if err == nil {
 		resp.SetViewMetadata("final", true, s.calculateFinalizeAt(slotStartAt))
@@ -477,6 +751,10 @@ func (s *AttendanceRecordService) FinalizeAttendanceRecord(
 	}
 
 	resp, _, err := s.buildAttendanceDetail(ctx, req, window, minTime(window.finalizeAt, window.slotEnd), true)
+	if err != nil {
+		return nil, err
+	}
+	resp, err = s.applyManualOverridesToDetail(ctx, window.date, req.Section, resp)
 	if err != nil {
 		return nil, err
 	}
@@ -1725,106 +2003,98 @@ func getWeekdayName(weekday int) string {
 	return "周?"
 }
 
-// SignForUsers 代签（将指定用户从迟到列表移动到正常签到列表）
+// SignForUsers 代签（支持实时 date+section 和历史 record_id）
 func (s *AttendanceRecordService) SignForUsers(ctx context.Context, req *dto.SignForUserRequest) (*dto.SignForUserResponse, error) {
-	// 1. 获取指定考勤记录
-	record, err := s.attendanceRecordRepo.FindByID(ctx, req.RecordID)
+	slot, err := s.resolveSignSlot(ctx, req)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, response.ErrNotFoundWithMsg("未找到考勤记录")
-		}
 		return nil, err
 	}
 
-	// 2. 解析 NotArrivedIDs 和 OnTimeIDs
-	var notArrivedIDs []uint
-	var onTimeUsers []dto.StoredUserCheck
+	detail, err := s.loadAttendanceDetailForSign(ctx, slot)
+	if err != nil {
+		return nil, err
+	}
+	if s.manualOverrideRepo == nil {
+		return nil, response.NewBizError(response.CodeInternalError, "人工代签覆盖仓储未初始化")
+	}
 
-	if len(record.NotArrivedIDs) > 0 {
-		if err := json.Unmarshal([]byte(record.NotArrivedIDs), &notArrivedIDs); err != nil {
-			s.logger.Errorw("Failed to unmarshal not_arrived_ids", "error", err)
-			return nil, errs.WrapMsgErr("解析未到人员数据失败", err)
+	signable := make(map[uint]bool, len(detail.Users.Late)+len(detail.Users.NotArrived))
+	for _, user := range detail.Users.Late {
+		signable[user.ID] = true
+	}
+	for _, user := range detail.Users.NotArrived {
+		signable[user.ID] = true
+	}
+
+	overrideSet := make(map[uint]bool)
+	overrides, err := s.manualOverrideRepo.ListByDateSection(ctx, slot.date, slot.section)
+	if err != nil {
+		return nil, errs.WrapMsgErr("获取人工代签覆盖失败", err)
+	}
+	for _, override := range overrides {
+		if override.OverrideType == attendanceOverrideTypeForceOnTime {
+			overrideSet[override.UserID] = true
 		}
 	}
-	if len(record.OnTimeIDs) > 0 {
-		if err := json.Unmarshal([]byte(record.OnTimeIDs), &onTimeUsers); err != nil {
-			s.logger.Errorw("Failed to unmarshal on_time_ids", "error", err)
-			return nil, errs.WrapMsgErr("解析已签到人员数据失败", err)
-		}
-	}
-
-	// 3. 处理代签
-	successIDs := make([]uint, 0)
-	failedIDs := make([]uint, 0)
-
-	// 构建迟到用户Map以便快速查找
-	lateMap := make(map[uint]bool)
-	for _, id := range notArrivedIDs {
-		lateMap[id] = true
-	}
-
-	// 构建已签到用户Map防止重复
-	onTimeMap := make(map[uint]bool)
-	for _, u := range onTimeUsers {
-		onTimeMap[u.ID] = true
-	}
-
-	hasChange := false
-	now := time.Now().Unix()
 
 	for _, targetID := range req.TargetUserIDs {
-		if lateMap[targetID] {
-			// 存在于迟到列表 -> 移动
-			delete(lateMap, targetID)
+		if signable[targetID] || overrideSet[targetID] {
+			continue
+		}
+		return nil, response.NewBizError(response.CodeOperationFailed, "目标用户不在当前可代签范围内")
+	}
 
-			// 如果不在已签到列表中，则添加
-			if !onTimeMap[targetID] {
-				onTimeUsers = append(onTimeUsers, dto.StoredUserCheck{
-					ID:        targetID,
-					CheckTime: now,
-				})
-				onTimeMap[targetID] = true
+	appliedAt := s.currentTime()
+	slotDate := normalizeAttendanceDate(slot.date)
+	tenantID := s.resolveOverrideTenantID(ctx, slot, req.TargetUserIDs)
+	successIDs := make([]uint, 0, len(req.TargetUserIDs))
+	for _, targetID := range req.TargetUserIDs {
+		override := &model.AttendanceManualOverride{
+			TenantID:     tenantID,
+			Date:         slotDate,
+			Week:         slot.week,
+			Section:      slot.section,
+			UserID:       targetID,
+			OverrideType: attendanceOverrideTypeForceOnTime,
+			OperatorID:   req.OperatorID,
+			AppliedAt:    appliedAt,
+		}
+		if err := s.manualOverrideRepo.UpsertForceOnTime(ctx, override); err != nil {
+			return nil, errs.WrapMsgErr("写入人工代签覆盖失败", err)
+		}
+		successIDs = append(successIDs, targetID)
+	}
+
+	if slot.record == nil {
+		record, err := s.attendanceRecordRepo.FindByDateSection(ctx, slotDate, slot.section)
+		switch {
+		case err == nil:
+			slot.record = record
+			if record.Week > 0 {
+				slot.week = record.Week
 			}
-			successIDs = append(successIDs, targetID)
-			hasChange = true
-		} else {
-			// 不在迟到列表（可能已经签到，或本来就不需要签到）
-			failedIDs = append(failedIDs, targetID)
+		case err != nil && !errors.Is(err, gorm.ErrRecordNotFound):
+			return nil, err
 		}
 	}
 
-	// 4. 如果有变更，更新数据库
-	if hasChange {
-		// 重建 notArrivedIDs slice
-		newNotArrivedIDs := make([]uint, 0, len(lateMap))
-		for id := range lateMap {
-			newNotArrivedIDs = append(newNotArrivedIDs, id)
-		}
-		// 排序保持一致性 (可选，但推荐)
-		sort.Slice(newNotArrivedIDs, func(i, j int) bool { return newNotArrivedIDs[i] < newNotArrivedIDs[j] })
-
-		// 序列化
-		notArrivedBytes, err := json.Marshal(newNotArrivedIDs)
+	if slot.record != nil {
+		snapshotResp, err := s.GetAttendanceRecordFromDB(ctx, &dto.AttendanceDetailRequest{
+			Date:    slotDate.Format("2006-01-02"),
+			Week:    slot.week,
+			Section: slot.section,
+		})
 		if err != nil {
-			return nil, errs.WrapMsgErr("序列化未到人员数据失败", err)
+			return nil, err
 		}
-
-		onTimeBytes, err := json.Marshal(onTimeUsers)
-		if err != nil {
-			return nil, errs.WrapMsgErr("序列化已签到人员数据失败", err)
-		}
-
-		record.NotArrivedIDs = string(notArrivedBytes)
-		record.OnTimeIDs = string(onTimeBytes)
-
-		if err := s.attendanceRecordRepo.Upsert(ctx, record); err != nil {
-			return nil, errs.WrapMsgErr("更新考勤记录失败", err)
+		if err := s.SaveAttendanceRecord(ctx, snapshotResp); err != nil {
+			return nil, err
 		}
 	}
 
 	return &dto.SignForUserResponse{
 		SuccessIDs: successIDs,
-		FailedIDs:  failedIDs,
+		FailedIDs:  []uint{},
 	}, nil
 }
 

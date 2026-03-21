@@ -77,6 +77,11 @@ func (h *AttendanceRecordHandler) SignForUser(ctx *gin.Context) {
 		response.Fail(ctx, response.CodeInvalidParam, response.TranslateValidationError(err))
 		return
 	}
+	req.OperatorID = ctx.GetUint("user_id")
+	if err := req.Validate(); err != nil {
+		response.FailWithError(ctx, response.ErrInvalidParamWithMsg(err.Error()))
+		return
+	}
 
 	resp, err := h.attendanceRecordSrv.SignForUsers(ctx.Request.Context(), &req)
 	if err != nil {

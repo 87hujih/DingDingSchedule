@@ -12,6 +12,7 @@ import (
 	"schedule_server/internal/dto"
 	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
+	"schedule_server/internal/response"
 	"schedule_server/pkg/dingtalk"
 
 	"go.uber.org/zap"
@@ -344,6 +345,208 @@ func TestFinalizeAttendanceRecordPersistsLateAndNotArrived(t *testing.T) {
 	}
 }
 
+func TestSignForUsersSupportsRealtimeDateSectionAndDetailShowsOverride(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 10, 0, 0, time.Local),
+		records: []dingtalk.CheckRecord{
+			{
+				DingUserID: fixtureDingUserIDOnTime,
+				CheckTime:  time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+			{
+				DingUserID: fixtureDingUserIDLate,
+				CheckTime:  time.Date(2026, 3, 19, 8, 5, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+		},
+	})
+
+	resp, err := fixture.service.SignForUsers(context.Background(), &dto.SignForUserRequest{
+		Date:          fixture.request.Date,
+		Section:       fixture.request.Section,
+		TargetUserIDs: []uint{fixture.users.late.ID},
+	})
+	if err != nil {
+		t.Fatalf("sign for users: %v", err)
+	}
+	if !slices.Equal(resp.SuccessIDs, []uint{fixture.users.late.ID}) {
+		t.Fatalf("unexpected success ids: %+v", resp.SuccessIDs)
+	}
+
+	detail, err := fixture.service.GetAttendanceDetail(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("get attendance detail: %v", err)
+	}
+
+	if got := attendanceCheckNames(detail.Users.OnTime); !slices.Equal(got, []string{"LateUser", "OnTimeUser"}) {
+		t.Fatalf("unexpected on_time users after realtime override: %v", got)
+	}
+	if got := attendanceCheckNames(detail.Users.Late); len(got) != 0 {
+		t.Fatalf("expected late users to be empty after realtime override, got %v", got)
+	}
+	if got := attendanceBasicNames(detail.Users.NotArrived); !slices.Equal(got, []string{"MissingUser"}) {
+		t.Fatalf("unexpected not_arrived users after realtime override: %v", got)
+	}
+}
+
+func TestSignForUsersRejectsRealtimeOverridesForNonAttendTargets(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 10, 0, 0, time.Local),
+		records: []dingtalk.CheckRecord{
+			{
+				DingUserID: fixtureDingUserIDOnTime,
+				CheckTime:  time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+			{
+				DingUserID: fixtureDingUserIDLate,
+				CheckTime:  time.Date(2026, 3, 19, 8, 5, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+		},
+	})
+
+	_, err := fixture.service.SignForUsers(context.Background(), &dto.SignForUserRequest{
+		Date:          fixture.request.Date,
+		Section:       fixture.request.Section,
+		TargetUserIDs: []uint{fixture.users.onTime.ID},
+	})
+	if err == nil {
+		t.Fatalf("expected realtime override for non-attend target to fail")
+	}
+	if !response.IsBizError(err) {
+		t.Fatalf("expected business error, got %T: %v", err, err)
+	}
+
+	overrides, err := fixture.manualOverrideRepo.ListByDateSection(context.Background(), time.Date(2026, 3, 19, 0, 0, 0, 0, time.Local), fixture.request.Section)
+	if err != nil {
+		t.Fatalf("list manual overrides: %v", err)
+	}
+	if len(overrides) != 0 {
+		t.Fatalf("expected no manual override records, got %+v", overrides)
+	}
+}
+
+func TestFinalizeAttendanceRecordKeepsManualOverrideOverLatePunch(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 40, 0, 0, time.Local),
+		records: []dingtalk.CheckRecord{
+			{
+				DingUserID: fixtureDingUserIDLate,
+				CheckTime:  time.Date(2026, 3, 19, 8, 5, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+		},
+	})
+
+	manualOverride := &model.AttendanceManualOverride{
+		TenantID:     fixtureTenantID,
+		Date:         time.Date(2026, 3, 19, 0, 0, 0, 0, time.Local),
+		Week:         fixture.request.Week,
+		Section:      fixture.request.Section,
+		UserID:       fixture.users.late.ID,
+		OverrideType: "force_on_time",
+		OperatorID:   fixture.users.onTime.ID,
+		AppliedAt:    time.Date(2026, 3, 19, 8, 12, 0, 0, time.Local),
+	}
+	if err := fixture.manualOverrideRepo.UpsertForceOnTime(context.Background(), manualOverride); err != nil {
+		t.Fatalf("create manual override: %v", err)
+	}
+
+	resp, err := fixture.service.FinalizeAttendanceRecord(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("finalize attendance record: %v", err)
+	}
+
+	recordDate := time.Date(2026, 3, 19, 0, 0, 0, 0, time.Local)
+	record, err := fixture.recordRepo.FindByDateSection(context.Background(), recordDate, fixture.request.Section)
+	if err != nil {
+		t.Fatalf("query attendance record: %v", err)
+	}
+
+	storedOnTime := mustStoredUserChecks(t, record.OnTimeIDs)
+	if len(storedOnTime) != 1 || storedOnTime[0].ID != fixture.users.late.ID {
+		t.Fatalf("expected manual override to keep late punch in on_time, got %+v", storedOnTime)
+	}
+	storedLate := mustStoredUserChecks(t, record.LateIDs)
+	if len(storedLate) != 0 {
+		t.Fatalf("expected late list to be empty after override, got %+v", storedLate)
+	}
+	if resp.ViewMode != "final" || !resp.IsFinalized {
+		t.Fatalf("expected finalized response metadata, got view_mode=%q is_finalized=%v", resp.ViewMode, resp.IsFinalized)
+	}
+}
+
+func TestSignForUsersWithRecordIDKeepsSnapshotAndDetailConsistent(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 10, 0, 0, time.Local),
+		records: []dingtalk.CheckRecord{
+			{
+				DingUserID: fixtureDingUserIDOnTime,
+				CheckTime:  time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+			{
+				DingUserID: fixtureDingUserIDLate,
+				CheckTime:  time.Date(2026, 3, 19, 8, 5, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+		},
+	})
+
+	recordDate := time.Date(2026, 3, 19, 0, 0, 0, 0, time.Local)
+	record := &model.AttendanceRecord{
+		Date:          recordDate,
+		Week:          fixture.request.Week,
+		Section:       fixture.request.Section,
+		OnTimeIDs:     mustMarshalJSON(t, []dto.StoredUserCheck{{ID: fixture.users.onTime.ID, CheckTime: time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local).Unix()}}),
+		LateIDs:       mustMarshalJSON(t, []dto.StoredUserCheck{{ID: fixture.users.late.ID, CheckTime: time.Date(2026, 3, 19, 8, 5, 0, 0, time.Local).Unix()}}),
+		LeaveIDs:      "[]",
+		NotArrivedIDs: mustMarshalJSON(t, []uint{fixture.users.missing.ID}),
+		RestDayIDs:    "[]",
+		HasCourseIDs:  "[]",
+	}
+	if err := fixture.recordRepo.Upsert(context.Background(), record); err != nil {
+		t.Fatalf("save attendance record: %v", err)
+	}
+
+	_, err := fixture.service.SignForUsers(context.Background(), &dto.SignForUserRequest{
+		RecordID:      record.ID,
+		TargetUserIDs: []uint{fixture.users.late.ID},
+	})
+	if err != nil {
+		t.Fatalf("sign for users with record_id: %v", err)
+	}
+
+	snapshot, err := fixture.service.GetAttendanceRecordFromDB(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("get attendance record from db: %v", err)
+	}
+	detail, err := fixture.service.GetAttendanceDetail(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("get attendance detail: %v", err)
+	}
+
+	if got := attendanceCheckNames(snapshot.Users.OnTime); !slices.Equal(got, attendanceCheckNames(detail.Users.OnTime)) {
+		t.Fatalf("snapshot and detail on_time diverged: snapshot=%v detail=%v", got, attendanceCheckNames(detail.Users.OnTime))
+	}
+	if got := attendanceCheckNames(snapshot.Users.Late); !slices.Equal(got, attendanceCheckNames(detail.Users.Late)) {
+		t.Fatalf("snapshot and detail late diverged: snapshot=%v detail=%v", got, attendanceCheckNames(detail.Users.Late))
+	}
+	if got := attendanceBasicNames(snapshot.Users.NotArrived); !slices.Equal(got, attendanceBasicNames(detail.Users.NotArrived)) {
+		t.Fatalf("snapshot and detail not_arrived diverged: snapshot=%v detail=%v", got, attendanceBasicNames(detail.Users.NotArrived))
+	}
+
+	overrides, err := fixture.manualOverrideRepo.ListByDateSection(context.Background(), time.Date(2026, 3, 19, 0, 0, 0, 0, time.Local), fixture.request.Section)
+	if err != nil {
+		t.Fatalf("list manual overrides: %v", err)
+	}
+	if len(overrides) == 0 {
+		t.Fatalf("expected manual override record to exist after historical sign")
+	}
+}
+
 func TestFormatAttendanceTextFormatsCurrentBody(t *testing.T) {
 	service := &AttendanceRecordService{}
 	detail := &dto.AttendanceDetailResponse{
@@ -483,12 +686,13 @@ type attendanceRealtimeFixtureOptions struct {
 }
 
 type attendanceRealtimeFixture struct {
-	db         *gorm.DB
-	service    *AttendanceRecordService
-	recordRepo repository.AttendanceRecordRepository
-	request    *dto.AttendanceDetailRequest
-	users      attendanceRealtimeUsers
-	records    []dingtalk.CheckRecord
+	db                 *gorm.DB
+	service            *AttendanceRecordService
+	recordRepo         repository.AttendanceRecordRepository
+	manualOverrideRepo repository.AttendanceManualOverrideRepository
+	request            *dto.AttendanceDetailRequest
+	users              attendanceRealtimeUsers
+	records            []dingtalk.CheckRecord
 }
 
 type attendanceRealtimeUsers struct {
@@ -513,6 +717,7 @@ func newAttendanceRealtimeFixture(t *testing.T, opts attendanceRealtimeFixtureOp
 		&model.Course{},
 		&model.LeaveApproval{},
 		&model.AttendanceRecord{},
+		&model.AttendanceManualOverride{},
 		&model.UserRestDay{},
 	); err != nil {
 		t.Fatalf("auto migrate: %v", err)
@@ -547,6 +752,7 @@ func newAttendanceRealtimeFixture(t *testing.T, opts attendanceRealtimeFixtureOp
 		courseRepo:           repository.NewCourseRepository(db),
 		leaveRepo:            repository.NewLeaveApprovalRepository(db),
 		attendanceRecordRepo: recordRepo,
+		manualOverrideRepo:   repository.NewAttendanceManualOverrideRepository(db),
 		restDayRepo:          repository.NewUserRestDayRepository(db),
 		scheduleCfg:          config.Schedule{LateGraceMinutes: 1, Periods: []config.Period{{Name: "第一节", Start: "08:00", End: "09:40"}}},
 		logger:               zap.NewNop().Sugar(),
@@ -557,9 +763,10 @@ func newAttendanceRealtimeFixture(t *testing.T, opts attendanceRealtimeFixtureOp
 	}
 
 	return attendanceRealtimeFixture{
-		db:         db,
-		service:    service,
-		recordRepo: recordRepo,
+		db:                 db,
+		service:            service,
+		recordRepo:         recordRepo,
+		manualOverrideRepo: repository.NewAttendanceManualOverrideRepository(db),
 		request: &dto.AttendanceDetailRequest{
 			Date:    "2026-03-19",
 			Week:    3,
@@ -611,6 +818,17 @@ func TestGetAttendanceDetailDeduplicatesMultiplePunchesFromSameUser(t *testing.T
 		t.Fatalf("expected earliest check time %v, got %v", wantCheckTime, resp.Users.OnTime[0].CheckTime)
 	}
 }
+
+func mustStoredUserChecks(t *testing.T, raw string) []dto.StoredUserCheck {
+	t.Helper()
+
+	var users []dto.StoredUserCheck
+	if err := json.Unmarshal([]byte(raw), &users); err != nil {
+		t.Fatalf("unmarshal attendance users: %v", err)
+	}
+	return users
+}
+
 func attendanceCheckNames(users []dto.AttendanceUserCheck) []string {
 	names := make([]string, 0, len(users))
 	for _, user := range users {

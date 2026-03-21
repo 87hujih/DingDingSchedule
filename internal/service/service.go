@@ -43,6 +43,7 @@ func NewService(repo *repository.Repository, dingMgr *DingTalkClientManager, jwt
 		repo.CourseRepo,
 		repo.LeaveRepo,
 		repo.AttendanceRecordRepo,
+		repo.AttendanceManualOverrideRepo,
 		repo.ScheduleSettingRepo,
 		repo.UserRestDayRepo,
 		dingMgr,

@@ -56,6 +56,7 @@ func AutoMigrate() {
 		&model.SchedulePeriod{},
 		&model.ScheduleSetting{},
 		&model.AttendanceRecord{},
+		&model.AttendanceManualOverride{},
 		&model.AuditLog{},
 		&model.UserRestDay{},
 		&model.SystemLog{},
