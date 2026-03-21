@@ -10,6 +10,7 @@ type SignForUserRequest struct {
 	RecordID      uint   `json:"record_id"`                                // 考勤记录ID
 	Date          string `json:"date"`                                     // 考勤日期
 	Section       int    `json:"section"`                                  // 考勤节次
+	OperatorID    uint   `json:"-"`                                        // 当前操作人ID（由handler注入）
 	TargetUserIDs []uint `json:"target_user_ids" binding:"required,min=1"` // 目标用户ID列表
 }
 

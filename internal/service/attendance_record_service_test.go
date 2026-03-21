@@ -385,8 +385,8 @@ func TestSignForUsersSupportsRealtimeDateSectionAndDetailShowsOverride(t *testin
 	if got := attendanceCheckNames(detail.Users.Late); len(got) != 0 {
 		t.Fatalf("expected late users to be empty after realtime override, got %v", got)
 	}
-	if got := attendanceBasicNames(detail.Users.NotArrived); len(got) != 0 {
-		t.Fatalf("expected not_arrived users to be empty after realtime override, got %v", got)
+	if got := attendanceBasicNames(detail.Users.NotArrived); !slices.Equal(got, []string{"MissingUser"}) {
+		t.Fatalf("unexpected not_arrived users after realtime override: %v", got)
 	}
 }
 
