@@ -42,6 +42,14 @@ func TestSignForUserRequestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "missing record id and negative section fail",
+			req: SignForUserRequest{
+				Section:       -1,
+				TargetUserIDs: []uint{2, 3},
+			},
+			wantErr: true,
+		},
+		{
 			name: "empty target users fail",
 			req: SignForUserRequest{
 				RecordID: 1,
