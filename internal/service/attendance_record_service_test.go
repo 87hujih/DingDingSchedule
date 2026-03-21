@@ -574,6 +574,43 @@ func newAttendanceRealtimeFixture(t *testing.T, opts attendanceRealtimeFixtureOp
 	}
 }
 
+func TestGetAttendanceDetailDeduplicatesMultiplePunchesFromSameUser(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 10, 0, 0, time.Local),
+		records: []dingtalk.CheckRecord{
+			{
+				DingUserID: fixtureDingUserIDOnTime,
+				CheckTime:  time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+			{
+				DingUserID: fixtureDingUserIDOnTime,
+				CheckTime:  time.Date(2026, 3, 19, 8, 2, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+		},
+	})
+
+	resp, err := fixture.service.GetAttendanceDetail(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("get attendance detail: %v", err)
+	}
+
+	if resp.Statistics.OnTime != 1 {
+		t.Fatalf("expected 1 on-time user after duplicate punches, got %d", resp.Statistics.OnTime)
+	}
+	if len(resp.Users.OnTime) != 1 {
+		t.Fatalf("expected on_time list to contain 1 user, got %+v", resp.Users.OnTime)
+	}
+	if got := attendanceCheckNames(resp.Users.OnTime); !slices.Equal(got, []string{"OnTimeUser"}) {
+		t.Fatalf("unexpected on_time users: got %v", got)
+	}
+
+	wantCheckTime := time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local)
+	if !resp.Users.OnTime[0].CheckTime.Equal(wantCheckTime) {
+		t.Fatalf("expected earliest check time %v, got %v", wantCheckTime, resp.Users.OnTime[0].CheckTime)
+	}
+}
 func attendanceCheckNames(users []dto.AttendanceUserCheck) []string {
 	names := make([]string, 0, len(users))
 	for _, user := range users {
