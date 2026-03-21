@@ -34,8 +34,18 @@ func TestSignForUserRequestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "missing record id and date with section present fail",
+			name: "missing record id and malformed date fail",
 			req: SignForUserRequest{
+				Date:          "2026/03/21",
+				Section:       2,
+				TargetUserIDs: []uint{2, 3},
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing record id and invalid date fail",
+			req: SignForUserRequest{
+				Date:          "2026-02-30",
 				Section:       2,
 				TargetUserIDs: []uint{2, 3},
 			},
@@ -44,6 +54,7 @@ func TestSignForUserRequestValidate(t *testing.T) {
 		{
 			name: "missing record id and negative section fail",
 			req: SignForUserRequest{
+				Date:          "2026-03-21",
 				Section:       -1,
 				TargetUserIDs: []uint{2, 3},
 			},

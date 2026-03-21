@@ -1,12 +1,15 @@
 package dto
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // SignForUserRequest 代签请求
 type SignForUserRequest struct {
-	RecordID      uint   `json:"record_id"`                       // 考勤记录ID
-	Date          string `json:"date"`                            // 考勤日期
-	Section       int    `json:"section"`                         // 考勤节次
+	RecordID      uint   `json:"record_id"`                                // 考勤记录ID
+	Date          string `json:"date"`                                     // 考勤日期
+	Section       int    `json:"section"`                                  // 考勤节次
 	TargetUserIDs []uint `json:"target_user_ids" binding:"required,min=1"` // 目标用户ID列表
 }
 
@@ -18,7 +21,7 @@ func (r SignForUserRequest) Validate() error {
 	if r.RecordID != 0 {
 		return nil
 	}
-	if r.Date == "" || r.Section < 1 {
+	if _, err := time.Parse("2006-01-02", r.Date); err != nil || r.Section < 1 {
 		return errors.New("record_id or date and section is required")
 	}
 	return nil
