@@ -1376,7 +1376,7 @@ func (s *AttendanceRecordService) GetWeeklyAttendanceRateRanking(
 
 // buildUserMapWithDeptFilter 构建用户映射（支持部门过滤）
 // - deptIDs 为空：返回所有用户的映射
-// - deptIDs 非空：只返回属于指定部门的用户
+// - deptIDs 非空：只返回属于指定部门且满足考勤候选人口径的用户
 func (s *AttendanceRecordService) buildUserMapWithDeptFilter(
 	ctx context.Context,
 	users []model.User,
@@ -1391,10 +1391,11 @@ func (s *AttendanceRecordService) buildUserMapWithDeptFilter(
 		return userMap, nil
 	}
 
-	// 获取指定部门的用户ID集合
-	deptUsers, err := s.userRepo.ListByScope(ctx, deptIDs, nil)
+	// 快照筛选需要和实时详情保持同一口径：
+	// 只保留“用户启用且命中启用部门”的考勤候选人，而不是简单的部门成员关系。
+	deptUsers, err := s.userRepo.ListAttendanceCandidates(ctx, deptIDs)
 	if err != nil {
-		return nil, errs.WrapMsgErr("获取部门用户失败", err)
+		return nil, errs.WrapMsgErr("获取部门考勤候选人失败", err)
 	}
 
 	deptUserSet := make(map[uint]bool, len(deptUsers))

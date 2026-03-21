@@ -203,6 +203,88 @@ func TestGetAttendanceDetailReturnsFinalSnapshotAfterFinalize(t *testing.T) {
 	}
 }
 
+func TestGetAttendanceDetailSnapshotUsesAttendanceCandidateDeptFilter(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 40, 0, 0, time.Local),
+	})
+
+	disabledDept := model.Department{
+		TenantID: fixtureTenantID,
+		DeptID:   202,
+		Name:     "停用部门",
+		IsLeaf:   true,
+		Status:   1,
+	}
+	if err := fixture.db.Create(&disabledDept).Error; err != nil {
+		t.Fatalf("create disabled department: %v", err)
+	}
+	if err := fixture.db.Model(&model.Department{}).
+		Where("tenant_id = ? AND dept_id = ?", fixtureTenantID, disabledDept.DeptID).
+		Update("status", 0).Error; err != nil {
+		t.Fatalf("disable department: %v", err)
+	}
+
+	disabledUser := model.User{
+		TenantID:   fixtureTenantID,
+		DingUserID: "disabled-dept-user",
+		Name:       "DisabledDeptUser",
+		Status:     1,
+	}
+	if err := fixture.db.Create(&disabledUser).Error; err != nil {
+		t.Fatalf("create disabled department user: %v", err)
+	}
+	if err := fixture.db.Create(&model.UserDepartment{
+		TenantID: fixtureTenantID,
+		UserID:   disabledUser.ID,
+		DeptID:   disabledDept.DeptID,
+	}).Error; err != nil {
+		t.Fatalf("create disabled user department: %v", err)
+	}
+
+	dateOnly := time.Date(2026, 3, 19, 0, 0, 0, 0, time.Local)
+	record := &model.AttendanceRecord{
+		Date:          dateOnly,
+		Week:          fixture.request.Week,
+		Section:       fixture.request.Section,
+		OnTimeIDs:     mustMarshalJSON(t, []dto.StoredUserCheck{{ID: disabledUser.ID, CheckTime: time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local).Unix()}}),
+		LateIDs:       "[]",
+		LeaveIDs:      "[]",
+		NotArrivedIDs: "[]",
+		RestDayIDs:    "[]",
+		HasCourseIDs:  "[]",
+	}
+	if err := fixture.recordRepo.Upsert(context.Background(), record); err != nil {
+		t.Fatalf("save attendance record: %v", err)
+	}
+
+	req := &dto.AttendanceDetailRequest{
+		Date:    fixture.request.Date,
+		Week:    fixture.request.Week,
+		Section: fixture.request.Section,
+		DeptIDs: []int64{disabledDept.DeptID},
+	}
+
+	candidates, err := fixture.service.userRepo.ListAttendanceCandidates(context.Background(), req.DeptIDs)
+	if err != nil {
+		t.Fatalf("list attendance candidates: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("expected disabled department to have no attendance candidates, got %+v", candidates)
+	}
+
+	resp, err := fixture.service.GetAttendanceDetail(context.Background(), req)
+	if err != nil {
+		t.Fatalf("get attendance detail: %v", err)
+	}
+
+	if resp.Statistics.ShouldAttend != 0 {
+		t.Fatalf("expected disabled department snapshot filter to exclude non-candidates, got should_attend=%d", resp.Statistics.ShouldAttend)
+	}
+	if len(resp.Users.OnTime) != 0 {
+		t.Fatalf("expected disabled department snapshot filter to exclude on-time users, got %+v", resp.Users.OnTime)
+	}
+}
+
 func TestFinalizeAttendanceRecordPersistsLateAndNotArrived(t *testing.T) {
 	var capturedEnd time.Time
 
