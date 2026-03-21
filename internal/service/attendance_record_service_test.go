@@ -538,7 +538,7 @@ func TestSignForUsersWithRecordIDKeepsSnapshotAndDetailConsistent(t *testing.T) 
 		t.Fatalf("snapshot and detail not_arrived diverged: snapshot=%v detail=%v", got, attendanceBasicNames(detail.Users.NotArrived))
 	}
 
-	overrides, err := fixture.manualOverrideRepo.ListByDateSection(context.Background(), fixture.request.Date, fixture.request.Section)
+	overrides, err := fixture.manualOverrideRepo.ListByDateSection(context.Background(), time.Date(2026, 3, 19, 0, 0, 0, 0, time.Local), fixture.request.Section)
 	if err != nil {
 		t.Fatalf("list manual overrides: %v", err)
 	}

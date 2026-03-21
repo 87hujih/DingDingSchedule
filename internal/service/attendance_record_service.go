@@ -28,6 +28,7 @@ type AttendanceRecordService struct {
 	courseRepo             repository.CourseRepository
 	leaveRepo              repository.LeaveApprovalRepository
 	attendanceRecordRepo   repository.AttendanceRecordRepository
+	manualOverrideRepo     repository.AttendanceManualOverrideRepository
 	scheduleSettingRepo    repository.ScheduleSettingRepository
 	restDayRepo            repository.UserRestDayRepository
 	dingMgr                *DingTalkClientManager
@@ -54,6 +55,7 @@ func NewAttendanceRecordService(
 	courseRepo repository.CourseRepository,
 	leaveRepo repository.LeaveApprovalRepository,
 	attendanceRecordRepo repository.AttendanceRecordRepository,
+	manualOverrideRepo repository.AttendanceManualOverrideRepository,
 	scheduleSettingRepo repository.ScheduleSettingRepository,
 	restDayRepo repository.UserRestDayRepository,
 	dingMgr *DingTalkClientManager,
@@ -67,6 +69,7 @@ func NewAttendanceRecordService(
 		courseRepo:           courseRepo,
 		leaveRepo:            leaveRepo,
 		attendanceRecordRepo: attendanceRecordRepo,
+		manualOverrideRepo:   manualOverrideRepo,
 		scheduleSettingRepo:  scheduleSettingRepo,
 		restDayRepo:          restDayRepo,
 		dingMgr:              dingMgr,
@@ -77,7 +80,6 @@ func NewAttendanceRecordService(
 		nowFn:                time.Now,
 	}
 }
-
 func (s *AttendanceRecordService) currentTime() time.Time {
 	if s.nowFn != nil {
 		return s.nowFn()
