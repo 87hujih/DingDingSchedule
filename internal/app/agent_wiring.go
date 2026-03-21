@@ -63,6 +63,7 @@ type scheduleAdapter struct {
 	schedulePeriodSrv *service.SchedulePeriodService
 }
 
+// ListMyScheduleByWeek 查询用户指定周次的个人课表，并转换为 Agent 可用的课程数据。
 func (a *scheduleAdapter) ListMyScheduleByWeek(ctx context.Context, userID uint, week int) ([]agenttool.CourseItem, error) {
 	result, err := a.srv.ListByWeek(ctx, userID, 0, userID, week) // viewerID=userID, viewerRole=0 (self)
 	if err != nil {
@@ -82,6 +83,7 @@ func (a *scheduleAdapter) ListMyScheduleByWeek(ctx context.Context, userID uint,
 	return items, nil
 }
 
+// GetFreeUsersBySlot 查询指定周次和节次范围内的空闲人员列表。
 func (a *scheduleAdapter) GetFreeUsersBySlot(ctx context.Context, week, dayStart, dayEnd int, deptID int64) ([]agenttool.FreeSlotResult, error) {
 	// 获取当前活跃的作息时间配置
 	info, err := a.schedulePeriodSrv.GetScheduleInfo(ctx)
@@ -127,6 +129,7 @@ type attendanceDetailService interface {
 	SignForUsers(ctx context.Context, req *dto.SignForUserRequest) (*dto.SignForUserResponse, error)
 }
 
+// GetAttendanceDetail 查询指定条件下的考勤明细，并整理为 Agent 返回结构。
 func (a *attendanceAdapter) GetAttendanceDetail(ctx context.Context, req agenttool.AttendanceQuery) (*agenttool.AttendanceResult, error) {
 	dtoReq := &dto.AttendanceDetailRequest{
 		Date:    req.Date,
@@ -196,6 +199,7 @@ func (a *attendanceAdapter) GetAttendanceDetail(ctx context.Context, req agentto
 	}, nil
 }
 
+// GetAttendanceText 查询指定条件下的考勤文本摘要。
 func (a *attendanceAdapter) GetAttendanceText(ctx context.Context, req agenttool.AttendanceQuery) (string, error) {
 	dtoReq := &dto.AttendanceTextRequest{
 		Date:    req.Date,
@@ -212,6 +216,7 @@ func (a *attendanceAdapter) GetAttendanceText(ctx context.Context, req agenttool
 	return resp.FullText, nil
 }
 
+// GetWeeklyAbsenceRanking 获取当前周的缺勤排名数据。
 func (a *attendanceAdapter) GetWeeklyAbsenceRanking(ctx context.Context) ([]agenttool.RankItem, error) {
 	resp, err := a.srv.GetWeeklyRanking(ctx, &dto.WeeklyAttendanceRankingRequest{WeekOffset: 0})
 	if err != nil {
@@ -227,6 +232,7 @@ func (a *attendanceAdapter) GetWeeklyAbsenceRanking(ctx context.Context) ([]agen
 	return items, nil
 }
 
+// GetWeeklyAttendanceRateRanking 获取当前周的出勤率排名数据。
 func (a *attendanceAdapter) GetWeeklyAttendanceRateRanking(ctx context.Context) ([]agenttool.RankItem, error) {
 	resp, err := a.srv.GetWeeklyAttendanceRateRanking(ctx, &dto.WeeklyAttendanceRankingRequest{WeekOffset: 0})
 	if err != nil {
@@ -243,6 +249,7 @@ func (a *attendanceAdapter) GetWeeklyAttendanceRateRanking(ctx context.Context) 
 	return items, nil
 }
 
+// FindRecordByDateSection 按日期和节次查找考勤记录 ID，不存在时返回 0。
 func (a *attendanceAdapter) FindRecordByDateSection(ctx context.Context, date string, section int) (uint, error) {
 	t, err := time.ParseInLocation("2006-01-02", date, time.Local)
 	if err != nil {
@@ -258,6 +265,7 @@ func (a *attendanceAdapter) FindRecordByDateSection(ctx context.Context, date st
 	return record.ID, nil
 }
 
+// SignForUsers 为指定考勤记录批量执行补签操作。
 func (a *attendanceAdapter) SignForUsers(ctx context.Context, recordID uint, userIDs []uint) error {
 	_, err := a.srv.SignForUsers(ctx, &dto.SignForUserRequest{
 		RecordID:      recordID,
@@ -272,6 +280,7 @@ type leaveAdapter struct {
 	srv *service.LeaveSyncService
 }
 
+// GetRecentLeaves 查询用户最近一段时间的请假记录，并转换为 Agent 展示格式。
 func (a *leaveAdapter) GetRecentLeaves(ctx context.Context, userID uint, days int) ([]agenttool.LeaveItem, error) {
 	records, err := a.srv.GetRecentLeaves(ctx, userID, days)
 	if err != nil {
@@ -290,6 +299,7 @@ func (a *leaveAdapter) GetRecentLeaves(ctx context.Context, userID uint, days in
 	return items, nil
 }
 
+// formatLeaveDuration 将请假起止时间转换为天数或小时的文本描述。
 func formatLeaveDuration(start, end time.Time) string {
 	hours := end.Sub(start).Hours()
 	if hours >= 24 {
@@ -305,6 +315,7 @@ type userAdapter struct {
 	repo repository.UserRepository
 }
 
+// FindByDingUserID 根据钉钉用户 ID 查询用户信息，不存在时返回 nil。
 func (a *userAdapter) FindByDingUserID(ctx context.Context, dingUserID string) (*agenttool.UserInfo, error) {
 	user, err := a.repo.FindByDingUserID(ctx, dingUserID)
 	if err != nil {
@@ -322,6 +333,7 @@ func (a *userAdapter) FindByDingUserID(ctx context.Context, dingUserID string) (
 	}, nil
 }
 
+// SearchByName 按姓名模糊搜索用户，并限制返回数量。
 func (a *userAdapter) SearchByName(ctx context.Context, name string) ([]agenttool.UserInfo, error) {
 	users, _, err := a.repo.SearchWithScope(ctx, name, nil, nil, 1, 10)
 	if err != nil {
@@ -346,6 +358,7 @@ type semesterAdapter struct {
 	srv *service.SemesterService
 }
 
+// GetCurrentWeek 计算当前学期所处周次，并返回学期总周数。
 func (a *semesterAdapter) GetCurrentWeek(ctx context.Context) (int, int, error) {
 	semester, err := a.srv.GetActiveSemester(ctx)
 	if err != nil {
@@ -364,6 +377,7 @@ type schedulePeriodAdapter struct {
 	srv *service.SchedulePeriodService
 }
 
+// GetScheduleInfo 获取当前启用的作息节次信息和模式名称。
 func (a *schedulePeriodAdapter) GetScheduleInfo(ctx context.Context) ([]agenttool.PeriodInfo, string, error) {
 	info, err := a.srv.GetScheduleInfo(ctx)
 	if err != nil {
@@ -386,6 +400,7 @@ type restDayAdapter struct {
 	srv *service.RestDayService
 }
 
+// GetMyRestDay 查询用户的固定休息日信息。
 func (a *restDayAdapter) GetMyRestDay(ctx context.Context, userID uint) (int, string, error) {
 	resp, err := a.srv.GetMyRestDay(ctx, userID)
 	if err != nil {
@@ -400,6 +415,7 @@ type groupSubAdapter struct {
 	repo repository.GroupAttendanceSubscriptionRepository
 }
 
+// Subscribe 为群会话创建或更新考勤订阅配置。
 func (a *groupSubAdapter) Subscribe(ctx context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64) error {
 	deptIDsJSON := ""
 	if len(deptIDs) > 0 {
@@ -418,10 +434,12 @@ func (a *groupSubAdapter) Subscribe(ctx context.Context, tenantID uint, conversa
 	})
 }
 
+// Unsubscribe 取消指定群会话的考勤订阅。
 func (a *groupSubAdapter) Unsubscribe(ctx context.Context, tenantID uint, conversationID string) error {
 	return a.repo.SoftDelete(ctx, tenantID, conversationID)
 }
 
+// GetSubscription 查询群会话当前的考勤订阅状态及配置。
 func (a *groupSubAdapter) GetSubscription(ctx context.Context, tenantID uint, conversationID string) (*agenttool.GroupSubInfo, error) {
 	sub, err := a.repo.FindByConversationID(ctx, tenantID, conversationID)
 	if err != nil {
@@ -451,6 +469,7 @@ type deptAdapter struct {
 	repo repository.DepartmentRepository
 }
 
+// ListDepts 获取所有启用中的叶子部门列表。
 func (a *deptAdapter) ListDepts(ctx context.Context) ([]agent.DeptItem, error) {
 	depts, err := a.repo.FindLeaf(ctx)
 	if err != nil {
@@ -476,6 +495,7 @@ type callLogAdapter struct {
 	db *gorm.DB
 }
 
+// Write 记录一次 Agent 调用日志，并显式跳过租户作用域插件。
 func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 	toolsCalled := ""
 	if len(log.ToolsCalled) > 0 {
@@ -509,6 +529,7 @@ type tenantAdapter struct {
 	repo repository.TenantRepository
 }
 
+// FindTenantIDByCorpID 根据企业 corpID 查找启用中的租户 ID。
 func (a *tenantAdapter) FindTenantIDByCorpID(ctx context.Context, corpID string) (uint, error) {
 	tenant, err := a.repo.FindActiveByCorpID(ctx, corpID)
 	if errors.Is(err, repository.ErrTenantNotFound) {

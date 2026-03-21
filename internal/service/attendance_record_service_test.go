@@ -262,6 +262,131 @@ func TestFinalizeAttendanceRecordPersistsLateAndNotArrived(t *testing.T) {
 	}
 }
 
+func TestFormatAttendanceTextFormatsCurrentBody(t *testing.T) {
+	service := &AttendanceRecordService{}
+	detail := &dto.AttendanceDetailResponse{
+		Date:     "2026-03-13",
+		Week:     2,
+		Section:  1,
+		ViewMode: "current",
+		Statistics: dto.AttendanceStatistics{
+			ShouldAttend: 8,
+			OnTime:       2,
+			Late:         1,
+			Leave:        1,
+			NotArrived:   1,
+			RestDay:      1,
+		},
+		Users: dto.AttendanceUserLists{
+			OnTime: []dto.AttendanceUserCheck{
+				{Name: "曹浩博"},
+				{Name: "熊恒智"},
+			},
+			Leave: []dto.AttendanceUserLeave{
+				{Name: "韩思维"},
+			},
+			RestDay: []dto.AttendanceUserBasic{
+				{Name: "小乐"},
+			},
+			Late: []dto.AttendanceUserCheck{
+				{Name: "韩锐"},
+			},
+			NotArrived: []dto.AttendanceUserBasic{
+				{Name: "小飞"},
+			},
+		},
+	}
+
+	resp := service.formatAttendanceText(detail, model.ScheduleModeSchool, []config.Period{{Name: "第1-2节"}})
+
+	wantStatistics := "⬇️应到8人，准时打卡2人，请假1人，迟到1人，当前未到1人，休息1人"
+	if resp.Statistics != wantStatistics {
+		t.Fatalf("Statistics = %q, want %q", resp.Statistics, wantStatistics)
+	}
+
+	wantContent := []string{
+		"🌟准时到(2人)：曹浩博、熊恒智",
+		"⏳请假(1人)：韩思维",
+		"😴休息日(1人)：小乐",
+		"❗迟到(1人)：韩锐",
+		"⏳当前未到(1人)：小飞",
+	}
+	if !slices.Equal(resp.Content, wantContent) {
+		t.Fatalf("Content = %#v, want %#v", resp.Content, wantContent)
+	}
+
+	wantFullText := "📅 2026-03-13 周五 第2周 第1-2节 考勤\n" +
+		wantStatistics + "\n" +
+		"🌟准时到(2人)：曹浩博、熊恒智\n" +
+		"⏳请假(1人)：韩思维\n" +
+		"😴休息日(1人)：小乐\n" +
+		"❗迟到(1人)：韩锐\n" +
+		"⏳当前未到(1人)：小飞"
+	if resp.FullText != wantFullText {
+		t.Fatalf("FullText = %q, want %q", resp.FullText, wantFullText)
+	}
+}
+
+func TestFormatAttendanceTextFormatsFinalBody(t *testing.T) {
+	service := &AttendanceRecordService{}
+	detail := &dto.AttendanceDetailResponse{
+		Date:     "2026-03-13",
+		Week:     2,
+		Section:  1,
+		ViewMode: "final",
+		Statistics: dto.AttendanceStatistics{
+			ShouldAttend: 6,
+			OnTime:       2,
+			Late:         1,
+			Leave:        1,
+			NotArrived:   2,
+		},
+		Users: dto.AttendanceUserLists{
+			OnTime: []dto.AttendanceUserCheck{
+				{Name: "曹浩博"},
+				{Name: "熊恒智"},
+			},
+			Leave: []dto.AttendanceUserLeave{
+				{Name: "韩思维"},
+			},
+			Late: []dto.AttendanceUserCheck{
+				{Name: "韩锐"},
+			},
+			NotArrived: []dto.AttendanceUserBasic{
+				{Name: "小飞"},
+				{Name: "高婷"},
+			},
+		},
+	}
+
+	resp := service.formatAttendanceText(detail, model.ScheduleModeSchool, []config.Period{{Name: "第1-2节"}})
+
+	wantStatistics := "⬇️应到6人，准时打卡2人，请假1人，迟到1人，未到2人"
+	if resp.Statistics != wantStatistics {
+		t.Fatalf("Statistics = %q, want %q", resp.Statistics, wantStatistics)
+	}
+
+	wantContent := []string{
+		"🌟准时到(2人)：曹浩博、熊恒智",
+		"⏳请假(1人)：韩思维",
+		"❗迟到(1人)：韩锐",
+		"⏳未到(2人)：小飞、高婷",
+	}
+	if !slices.Equal(resp.Content, wantContent) {
+		t.Fatalf("Content = %#v, want %#v", resp.Content, wantContent)
+	}
+
+	wantFullText := "📅 2026-03-13 周五 第2周 第1-2节 考勤\n" +
+		wantStatistics + "\n" +
+		"🌟准时到(2人)：曹浩博、熊恒智\n" +
+		"⏳请假(1人)：韩思维\n" +
+		"❗迟到(1人)：韩锐\n" +
+		"⏳未到(2人)：小飞、高婷"
+	if resp.FullText != wantFullText {
+		t.Fatalf("FullText = %q, want %q", resp.FullText, wantFullText)
+	}
+}
+
 const (
 	fixtureTenantID          = uint(1)
 	fixtureDeptID            = int64(101)
