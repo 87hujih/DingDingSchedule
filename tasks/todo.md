@@ -3,11 +3,17 @@
 ## 当前任务
 - [x] 明确“上一节正常打卡 + 上一节迟到都可顺延到本节”的精确业务边界。
 - [x] 将实施步骤写入 `docs/superpowers/plans/2026-03-23-attendance-carry-forward-late-plan.md`。
-- [ ] 先补打卡顺延回归测试，锁定上一节迟到用户在现有顺延条件下会进入本节 `on_time`。
-- [ ] 以最小改动调整 `applyCarryForward`，保持其它统计口径与优先级不变。
-- [ ] 运行定向测试并补充本次复盘。
+- [x] 先补打卡顺延回归测试，锁定上一节迟到用户在现有顺延条件下会进入本节 `on_time`。
+- [x] 以最小改动调整 `applyCarryForward`，保持其它统计口径与优先级不变。
+- [x] 运行定向测试并补充本次复盘。
 
 ## 当前任务复盘
+- 已新增 `TestGetAttendanceDetailCarryForwardIncludesPreviousLateUsers`，用“第 2 节、上一节已有快照、上一节 `LateIDs` 命中目标用户、当前节该用户属于 `shouldAttend`”复现旧行为，并额外锁定“当前节有课用户不会被误顺延”的保护条件。
+- `internal/service/attendance_record_service.go` 新增 `loadCarryForwardUsers` helper，把顺延来源从“上一节 `OnTimeIDs`”扩展到“上一节 `OnTimeIDs + LateIDs`”，并继续按用户 ID 去重；`applyCarryForward` 的其它触发条件、顺延落点和统计口径保持不变。
+- 实际验证命令：
+  - `go test ./internal/service -run TestGetAttendanceDetailCarryForwardIncludesPreviousLateUsers -v`（先红后绿）
+  - `go test ./internal/service -run "Test(GetAttendanceDetailCarryForwardIncludesPreviousLateUsers|GetAttendanceDetailReturnsCurrentViewBeforeFinalize|GetAttendanceDetailReturnsFinalSnapshotAfterFinalize|FinalizeAttendanceRecordPersistsLateAndNotArrived|AttendanceDetailPrioritizesRestDayAndLeaveOverHasCourse|GetAttendanceDetailDeduplicatesMultiplePunchesFromSameUser)" -v`
+  - `go test ./internal/service -run "Test(SlotAttendanceStatusPrioritizesRestDayAndLeaveOverHasCourse|GetAttendanceDetailCarryForwardIncludesPreviousLateUsers)" -v`
 - [x] 梳理当前项目中“打卡统计”的入口接口、定时任务和核心 service。
 - [x] 追踪统计口径：应到、已到、迟到、未到、请假、休息日、有课的计算来源与优先级。
 - [x] 结合实时视图、最终快照和分析统计代码，输出当前实现的计算流程说明。

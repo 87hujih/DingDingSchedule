@@ -2272,9 +2272,8 @@ func (s *AttendanceRecordService) applyCarryForward(
 		return onTime // 无上一节记录，不顺延
 	}
 
-	// 解析上一节正常打卡人员
-	var prevOnTime []dto.StoredUserCheck
-	if err := json.Unmarshal([]byte(prevRecord.OnTimeIDs), &prevOnTime); err != nil || len(prevOnTime) == 0 {
+	prevCarryForwardUsers := loadCarryForwardUsers(prevRecord)
+	if len(prevCarryForwardUsers) == 0 {
 		return onTime
 	}
 
@@ -2289,7 +2288,7 @@ func (s *AttendanceRecordService) applyCarryForward(
 	}
 
 	// 顺延：上一节正常打卡 且 本节应到 且 本节尚未打卡
-	for _, prev := range prevOnTime {
+	for _, prev := range prevCarryForwardUsers {
 		if currentOnTimeSet[prev.ID] {
 			continue
 		}
@@ -2307,4 +2306,35 @@ func (s *AttendanceRecordService) applyCarryForward(
 	}
 
 	return onTime
+}
+
+func loadCarryForwardUsers(record *model.AttendanceRecord) []dto.StoredUserCheck {
+	if record == nil {
+		return nil
+	}
+
+	appendUnique := func(raw string, seen map[uint]bool, users []dto.StoredUserCheck) []dto.StoredUserCheck {
+		if raw == "" || raw == "[]" || raw == "null" {
+			return users
+		}
+
+		var parsed []dto.StoredUserCheck
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			return users
+		}
+		for _, user := range parsed {
+			if seen[user.ID] {
+				continue
+			}
+			seen[user.ID] = true
+			users = append(users, user)
+		}
+		return users
+	}
+
+	seen := make(map[uint]bool)
+	users := make([]dto.StoredUserCheck, 0)
+	users = appendUnique(record.OnTimeIDs, seen, users)
+	users = appendUnique(record.LateIDs, seen, users)
+	return users
 }

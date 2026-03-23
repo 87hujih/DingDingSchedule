@@ -980,6 +980,85 @@ func TestGetAttendanceDetailDeduplicatesMultiplePunchesFromSameUser(t *testing.T
 	}
 }
 
+func TestGetAttendanceDetailCarryForwardIncludesPreviousLateUsers(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 55, 0, 0, time.Local),
+		records: []dingtalk.CheckRecord{
+			{
+				DingUserID: fixtureDingUserIDOnTime,
+				CheckTime:  time.Date(2026, 3, 19, 8, 50, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+		},
+	})
+
+	fixture.service.scheduleCfg.Periods = []config.Period{
+		{Name: "第一节", Start: "08:00", End: "08:45"},
+		{Name: "第二节", Start: "08:50", End: "09:35"},
+	}
+	fixture.service.scheduleCfg.MaxCarryForwardGapMinutes = 10
+	fixture.request.Section = 2
+
+	if err := fixture.db.Create(&model.Course{
+		TenantID:   fixtureTenantID,
+		UserID:     fixture.users.missing.ID,
+		CourseName: "高数",
+		DayOfWeek:  4,
+		Section:    2,
+		WeekList:   "3",
+	}).Error; err != nil {
+		t.Fatalf("create section-2 course: %v", err)
+	}
+
+	dateOnly := time.Date(2026, 3, 19, 0, 0, 0, 0, time.Local)
+	prevRecord := &model.AttendanceRecord{
+		Date:    dateOnly,
+		Week:    fixture.request.Week,
+		Section: 1,
+		OnTimeIDs: mustMarshalJSON(t, []dto.StoredUserCheck{
+			{
+				ID:        fixture.users.onTime.ID,
+				CheckTime: time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local).Unix(),
+			},
+		}),
+		LateIDs: mustMarshalJSON(t, []dto.StoredUserCheck{
+			{
+				ID:        fixture.users.late.ID,
+				CheckTime: time.Date(2026, 3, 19, 8, 5, 0, 0, time.Local).Unix(),
+			},
+			{
+				ID:        fixture.users.missing.ID,
+				CheckTime: time.Date(2026, 3, 19, 8, 6, 0, 0, time.Local).Unix(),
+			},
+		}),
+		LeaveIDs:      "[]",
+		NotArrivedIDs: "[]",
+		RestDayIDs:    "[]",
+		HasCourseIDs:  "[]",
+	}
+	if err := fixture.recordRepo.Upsert(context.Background(), prevRecord); err != nil {
+		t.Fatalf("save previous section record: %v", err)
+	}
+
+	resp, err := fixture.service.GetAttendanceDetail(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("get attendance detail: %v", err)
+	}
+
+	if resp.Statistics.OnTime != 2 {
+		t.Fatalf("expected 2 on_time users after carry-forward, got %d", resp.Statistics.OnTime)
+	}
+	if got := attendanceCheckNames(resp.Users.OnTime); !slices.Equal(got, []string{"LateUser", "OnTimeUser"}) {
+		t.Fatalf("unexpected on_time users after carry-forward: got %v", got)
+	}
+	if resp.Statistics.NotArrived != 0 {
+		t.Fatalf("expected 0 not_arrived users after carry-forward, got %d", resp.Statistics.NotArrived)
+	}
+	if got := attendanceBasicNames(resp.Users.HasCourse); !slices.Equal(got, []string{"MissingUser"}) {
+		t.Fatalf("unexpected has_course users: got %v", got)
+	}
+}
+
 func mustStoredUserChecks(t *testing.T, raw string) []dto.StoredUserCheck {
 	t.Helper()
 
