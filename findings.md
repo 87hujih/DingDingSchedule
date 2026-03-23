@@ -1,5 +1,35 @@
 # 发现与决策
 
+## 2026-03-23：README 补全与项目总览整理
+
+### 需求
+- 用户要求基于当前 GitHub 仓库的真实实现，整体分析项目并生成缺失的 `README.md`。
+- README 需要能承担仓库首页说明作用，而不是只面向本地开发者的零散笔记。
+
+### 调研发现
+- 服务入口为 `cmd/main.go -> inits.Init() -> app.RunServer()`；进程启动时会初始化配置、日志、MySQL、AutoMigrate、GORM 租户隔离插件，并在启用时同时启动钉钉 Stream 客户端、AI Agent 和考勤调度器。
+- HTTP API 统一挂在 `/api` 下，当前已实现认证、用户、部门、课表、考勤、学期、作息设置、休息日和审计日志模块；`/health` 用于容器与部署健康检查。
+- 数据访问层通过 `internal/repository/tenant_gorm_plugin.go` 自动对带 `tenant_id` 的模型注入查询/写入隔离，当前自动迁移包含租户、用户、部门、课表、请假、考勤快照、人工补签覆盖、群订阅、Agent 调用日志等 17 张表。
+- AI 能力不是独立 HTTP 接口，而是通过钉钉 Stream 消息接入；`internal/agent` 当前注册了课表查询、考勤查询、考勤文本生成、周排行、休息日/请假查询、群订阅管理、补签、统计分析和交叉分析等工具。
+- 配置加载依赖 `CONFIG_ENV` 与可选的 `CONFIG_PATH`；默认读取 `./configs/<env>.yaml`，Docker 和生产 compose 都通过挂载 `/app/configs` 提供配置。
+- 本地开发入口以 `make run` / `go run ./cmd/main.go` 为主，容器化入口使用 `docker-compose.yml`；正式发布走 `.github/workflows/ci.yml` + `.github/workflows/deploy.yml` + GHCR + `deploy.sh` + `docker-compose.prod.yml`，应急路径仍保留 `one-click-deploy.sh` 源码包部署。
+- 仓库当前缺少根目录 `README.md`，但已经存在较完整的代码、部署脚本、配置文件和专项文档，可作为事实来源。
+- `tasks/todo.md` 已沉淀大量近期工作记录，说明 README 需要反映项目目前已经具备的 AI、考勤、课表和部署能力，而不是停留在早期形态。
+
+### 技术决策
+| 决定 | 原因 |
+|------|------|
+| 先从源码与脚本提炼事实，再写 README | 避免文档继续复制历史漂移信息 |
+| README 采用“项目定位 -> 核心能力 -> 技术栈 -> 运行与部署 -> 目录结构”的结构 | 适合 GitHub 首页阅读节奏 |
+
+### 参考资源
+- `G:\gofile\schedule_server\AGENTS.md`
+- `G:\gofile\schedule_server\tasks\todo.md`
+- `G:\gofile\schedule_server\cmd`
+- `G:\gofile\schedule_server\internal`
+- `G:\gofile\schedule_server\configs`
+- `G:\gofile\schedule_server\Makefile`
+- `G:\gofile\schedule_server\.github\workflows`
 ## 需求
 - 以代码审查方式分析 `internal/agent`，而不是直接进入实现。
 - 优先关注明确的 bug、风险、行为回归和缺失的保护措施。

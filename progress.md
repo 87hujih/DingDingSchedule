@@ -1,5 +1,20 @@
 # 进度日志
 
+## 会话：2026-03-23（README 补全与项目总览整理）
+
+### 阶段 1：范围确认与跟踪文件初始化
+- **状态：** 已完成
+- **开始时间：** 2026-03-23 16:15:00
+- 已执行动作：
+  - 阅读了 `using-superpowers`、`brainstorming`、`planning-with-files` 的技能说明，确认本次任务采用文件化跟踪方式推进。
+  - 检查了 `tasks/lessons.md`、`tasks/todo.md`、`task_plan.md`、`findings.md` 和 `progress.md` 的当前状态。
+  - 为本次 README 任务补充了新的任务清单、计划、发现和进度记录。
+- 创建/修改的文件：
+  - `G:\gofile\schedule_server\tasks\todo.md`（已更新）
+  - `G:\gofile\schedule_server\task_plan.md`（已更新）
+  - `G:\gofile\schedule_server\findings.md`（已更新）
+  - `G:\gofile\schedule_server\progress.md`（已更新）
+
 ## 会话：2026-03-17
 
 ### 阶段 1：范围确认与初步梳理
@@ -245,3 +260,31 @@
   - `G:\gofile\schedule_server\task_plan.md`（已更新）
   - `G:\gofile\schedule_server\findings.md`（已更新）
   - `G:\gofile\schedule_server\progress.md`（已更新）
+
+### 阶段 2：源码与部署事实采集
+- **状态：** 已完成
+- 已执行动作：
+  - 阅读了 `go.mod`、`Makefile`、`cmd/main.go`、`inits/*`、`config/config.go`，确认运行时依赖、配置加载方式与本地启动命令。
+  - 审读了 `internal/app/*`、`internal/service/service.go`、`internal/scheduler/attendance_scheduler.go`、`internal/agent/*` 与 `internal/agent/tools/*`，收敛 HTTP 模块、AI Agent 能力、多租户隔离和调度行为。
+  - 审读了 `.github/workflows/*`、`Dockerfile`、`docker-compose*.yml`、`deploy.sh`、`one-click-deploy.sh` 与 `docs/deployment/*`，确认正式部署与应急部署链路。
+- 创建/修改的文件：
+  - `G:\gofile\schedule_server\findings.md`（已更新）
+  - `G:\gofile\schedule_server\progress.md`（已更新）
+
+### 阶段 3：README 结构与正文落盘
+- **状态：** 已完成
+- 已执行动作：
+  - 基于已核实的代码与脚本事实，设计了面向 GitHub 首页的 README 结构。
+  - 新建了根目录 `README.md`，覆盖项目定位、能力、技术栈、目录结构、快速开始、部署方式和安全提示。
+- 创建/修改的文件：
+  - `G:\gofile\schedule_server\README.md`（新建）
+
+### 阶段 4：核对与交付
+- **状态：** 已完成
+- 已执行动作：
+  - 回读 `README.md` 并逐项核对 `CONFIG_ENV`、`/health`、AI Agent、正式部署和应急部署等关键表述。
+  - 执行 `git diff -- README.md task_plan.md findings.md progress.md tasks/todo.md`、`git status --short README.md task_plan.md findings.md progress.md` 和 `rg -n "CONFIG_ENV|/health|one-click-deploy.sh|docker-compose.prod.yml|dingtalk.stream_mode|tenant_id|AutoMigrate" README.md` 作为本次文档任务的核验证据。
+- 创建/修改的文件：
+  - `G:\gofile\schedule_server\tasks\todo.md`（已更新）
+  - `G:\gofile\schedule_server\progress.md`（已更新）
+
