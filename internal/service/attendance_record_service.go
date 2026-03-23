@@ -200,30 +200,29 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 		return nil, nil, response.NewBizError(response.CodeInternalError, err.Error())
 	}
 
-	// 5. 获取应到人员
-	shouldAttend, hasCourseUsers, err := s.getShouldAttendUsers(ctx, date, req.Week, req.Section, req.DeptIDs)
+	// 5. 获取考勤候选人与原始有课人员
+	activeUsers, hasCourseUsers, err := s.getAttendanceCandidatesWithCourseUsers(ctx, date, req.Week, req.Section, req.DeptIDs)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// 5.5 新增：查询休息日用户，从应到名单中移除
+	// 5.5 先处理休息日：rest_day > leave > has_course
 	dayOfWeek := scheduleutil.WeekdayMon1Sun7(date)
-	restDayUsers := s.filterRestDayUsers(ctx, shouldAttend, dayOfWeek)
-	if len(restDayUsers) > 0 {
-		restDaySet := make(map[uint]bool, len(restDayUsers))
-		for _, u := range restDayUsers {
-			restDaySet[u.ID] = true
-		}
-		filtered := make([]model.User, 0, len(shouldAttend))
-		for _, u := range shouldAttend {
-			if !restDaySet[u.ID] {
-				filtered = append(filtered, u)
-			}
-		}
-		shouldAttend = filtered
-	}
+	restDayUsers := s.filterRestDayUsers(ctx, activeUsers, dayOfWeek)
+	restDaySet := userIDBoolSet(restDayUsers)
+	nonRestUsers := filterModelUsers(activeUsers, restDaySet)
 
-	hasCourseBasic := toBasicList(hasCourseUsers)
+	// 5.6 再处理请假：leave > has_course
+	leave, err := s.getLeaveUsers(ctx, nonRestUsers, slotStart, slotEnd)
+	if err != nil {
+		return nil, nil, err
+	}
+	leaveSet := attendanceLeaveIDBoolSet(leave)
+
+	filteredHasCourseUsers := filterModelUsers(hasCourseUsers, mergeBoolSets(restDaySet, leaveSet))
+	hasCourseBasic := toBasicList(filteredHasCourseUsers)
+	hasCourseSet := userIDBoolSet(filteredHasCourseUsers)
+	shouldAttend := filterModelUsers(activeUsers, mergeBoolSets(restDaySet, hasCourseSet))
 
 	if len(shouldAttend) == 0 {
 		// 构建休息日用户基础信息
@@ -251,39 +250,8 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 	// 6.5 连续节次打卡顺延
 	onTime = s.applyCarryForward(ctx, date, req.Section, periods, shouldAttend, onTime)
 
-	// 7. 获取请假人员
-	leave, err := s.getLeaveUsers(ctx, shouldAttend, slotStart, slotEnd)
-	if err != nil {
-		return nil, nil, err
-	}
-
 	// 7.5 优先级处理：请假 > 已到，休息 > 已到，从 onTime 中移除对应用户
-	if len(leave) > 0 {
-		leaveSet := make(map[uint]bool, len(leave))
-		for _, u := range leave {
-			leaveSet[u.ID] = true
-		}
-		filtered := make([]dto.AttendanceUserCheck, 0, len(onTime))
-		for _, u := range onTime {
-			if !leaveSet[u.ID] {
-				filtered = append(filtered, u)
-			}
-		}
-		onTime = filtered
-	}
-	if len(restDayUsers) > 0 {
-		restSet := make(map[uint]bool, len(restDayUsers))
-		for _, u := range restDayUsers {
-			restSet[u.ID] = true
-		}
-		filtered := make([]dto.AttendanceUserCheck, 0, len(onTime))
-		for _, u := range onTime {
-			if !restSet[u.ID] {
-				filtered = append(filtered, u)
-			}
-		}
-		onTime = filtered
-	}
+	onTime = filterAttendanceChecks(onTime, mergeBoolSets(leaveSet, restDaySet))
 
 	// 8. 计算未到人员（应到 - 正常打卡 - 请假）
 	notArrived := s.calculateNotArrived(shouldAttend, onTime, leave)
@@ -312,29 +280,26 @@ func (s *AttendanceRecordService) buildAttendanceDetail(
 		return nil, nil, response.NewBizError(response.CodeInternalError, "考勤时间窗口未初始化")
 	}
 
-	shouldAttend, hasCourseUsers, err := s.getShouldAttendUsers(ctx, window.date, req.Week, req.Section, req.DeptIDs)
+	activeUsers, hasCourseUsers, err := s.getAttendanceCandidatesWithCourseUsers(ctx, window.date, req.Week, req.Section, req.DeptIDs)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	dayOfWeek := scheduleutil.WeekdayMon1Sun7(window.date)
-	restDayUsers := s.filterRestDayUsers(ctx, shouldAttend, dayOfWeek)
-	if len(restDayUsers) > 0 {
-		restDaySet := make(map[uint]bool, len(restDayUsers))
-		for _, user := range restDayUsers {
-			restDaySet[user.ID] = true
-		}
+	restDayUsers := s.filterRestDayUsers(ctx, activeUsers, dayOfWeek)
+	restDaySet := userIDBoolSet(restDayUsers)
+	nonRestUsers := filterModelUsers(activeUsers, restDaySet)
 
-		filtered := make([]model.User, 0, len(shouldAttend))
-		for _, user := range shouldAttend {
-			if !restDaySet[user.ID] {
-				filtered = append(filtered, user)
-			}
-		}
-		shouldAttend = filtered
+	leave, err := s.getLeaveUsers(ctx, nonRestUsers, window.slotStart, window.slotEnd)
+	if err != nil {
+		return nil, nil, err
 	}
+	leaveSet := attendanceLeaveIDBoolSet(leave)
 
-	hasCourseBasic := toBasicList(hasCourseUsers)
+	filteredHasCourseUsers := filterModelUsers(hasCourseUsers, mergeBoolSets(restDaySet, leaveSet))
+	hasCourseBasic := toBasicList(filteredHasCourseUsers)
+	hasCourseSet := userIDBoolSet(filteredHasCourseUsers)
+	shouldAttend := filterModelUsers(activeUsers, mergeBoolSets(restDaySet, hasCourseSet))
 	restDayBasic := toRestDayBasicList(restDayUsers)
 	if len(shouldAttend) == 0 {
 		resp := dto.NewAttendanceDetailResponse(
@@ -357,18 +322,7 @@ func (s *AttendanceRecordService) buildAttendanceDetail(
 	}
 	onTime = s.applyCarryForward(ctx, window.date, req.Section, window.periods, shouldAttend, onTime)
 
-	leave, err := s.getLeaveUsers(ctx, shouldAttend, window.slotStart, window.slotEnd)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	excluded := make(map[uint]bool, len(leave)+len(restDayUsers))
-	for _, user := range leave {
-		excluded[user.ID] = true
-	}
-	for _, user := range restDayUsers {
-		excluded[user.ID] = true
-	}
+	excluded := mergeBoolSets(leaveSet, restDaySet)
 
 	onTime = filterAttendanceChecks(onTime, excluded)
 	late = filterAttendanceChecks(late, excluded)
@@ -652,6 +606,49 @@ func filterAttendanceBasics(users []dto.AttendanceUserBasic, excluded map[uint]b
 	return filtered
 }
 
+func filterModelUsers(users []model.User, excluded map[uint]bool) []model.User {
+	if len(excluded) == 0 {
+		return users
+	}
+	filtered := make([]model.User, 0, len(users))
+	for _, user := range users {
+		if !excluded[user.ID] {
+			filtered = append(filtered, user)
+		}
+	}
+	return filtered
+}
+
+func userIDBoolSet(users []model.User) map[uint]bool {
+	set := make(map[uint]bool, len(users))
+	for _, user := range users {
+		set[user.ID] = true
+	}
+	return set
+}
+
+func attendanceLeaveIDBoolSet(users []dto.AttendanceUserLeave) map[uint]bool {
+	set := make(map[uint]bool, len(users))
+	for _, user := range users {
+		set[user.ID] = true
+	}
+	return set
+}
+
+func mergeBoolSets(sets ...map[uint]bool) map[uint]bool {
+	total := 0
+	for _, set := range sets {
+		total += len(set)
+	}
+	merged := make(map[uint]bool, total)
+	for _, set := range sets {
+		for id := range set {
+			merged[id] = true
+		}
+	}
+	return merged
+}
+
 // SaveAttendanceRecord 保存考勤记录到数据库
 func (s *AttendanceRecordService) SaveAttendanceRecord(
 	ctx context.Context,
@@ -849,10 +846,10 @@ func (s *AttendanceRecordService) loadAttendanceRecords(
 	return dingClient.GetAttendanceRecords(ctx, dingUserIDs, startAt, endAt)
 }
 
-// getShouldAttendUsers 获取应到人员（候选人 - 有课人员）
-// deptIDs 为空时返回所有部门启用且用户状态启用的候选人，否则仅返回指定启用部门的候选人
-// 返回值：应到用户列表、有课用户列表
-func (s *AttendanceRecordService) getShouldAttendUsers(
+// getAttendanceCandidatesWithCourseUsers 获取考勤候选人与原始有课人员。
+// deptIDs 为空时返回所有部门启用且用户状态启用的候选人，否则仅返回指定启用部门的候选人。
+// 返回值：候选用户列表、有课用户列表。
+func (s *AttendanceRecordService) getAttendanceCandidatesWithCourseUsers(
 	ctx context.Context,
 	date time.Time,
 	week, section int,
@@ -894,17 +891,32 @@ func (s *AttendanceRecordService) getShouldAttendUsers(
 		}
 	}
 
-	// 5. 应到人员 = 候选人 - 有课人员
-	shouldAttend := make([]model.User, 0, len(activeUsers))
 	hasCourse := make([]model.User, 0, len(busyUserSet))
 	for _, u := range activeUsers {
 		if busyUserSet[u.ID] {
 			hasCourse = append(hasCourse, u)
-		} else {
-			shouldAttend = append(shouldAttend, u)
 		}
 	}
 
+	return activeUsers, hasCourse, nil
+}
+
+// getShouldAttendUsers 获取应到人员（候选人 - 有课人员）
+// deptIDs 为空时返回所有部门启用且用户状态启用的候选人，否则仅返回指定启用部门的候选人
+// 返回值：应到用户列表、有课用户列表
+func (s *AttendanceRecordService) getShouldAttendUsers(
+	ctx context.Context,
+	date time.Time,
+	week, section int,
+	deptIDs []int64,
+) ([]model.User, []model.User, error) {
+	activeUsers, hasCourse, err := s.getAttendanceCandidatesWithCourseUsers(ctx, date, week, section, deptIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// 5. 应到人员 = 候选人 - 有课人员
+	shouldAttend := filterModelUsers(activeUsers, userIDBoolSet(hasCourse))
 	return shouldAttend, hasCourse, nil
 }
 

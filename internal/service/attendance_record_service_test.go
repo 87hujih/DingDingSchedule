@@ -286,6 +286,111 @@ func TestGetAttendanceDetailSnapshotUsesAttendanceCandidateDeptFilter(t *testing
 	}
 }
 
+func TestAttendanceDetailPrioritizesRestDayAndLeaveOverHasCourse(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 10, 0, 0, time.Local),
+	})
+
+	priorityUsers := []model.User{
+		{TenantID: fixtureTenantID, DingUserID: "user-has-course", Name: "HasCourseUser", Status: 1},
+		{TenantID: fixtureTenantID, DingUserID: "user-leave-course", Name: "LeaveCourseUser", Status: 1},
+		{TenantID: fixtureTenantID, DingUserID: "user-rest-course", Name: "RestDayCourseUser", Status: 1},
+	}
+	if err := fixture.db.Create(&priorityUsers).Error; err != nil {
+		t.Fatalf("create priority users: %v", err)
+	}
+
+	priorityUserDepts := []model.UserDepartment{
+		{TenantID: fixtureTenantID, UserID: priorityUsers[0].ID, DeptID: fixtureDeptID},
+		{TenantID: fixtureTenantID, UserID: priorityUsers[1].ID, DeptID: fixtureDeptID},
+		{TenantID: fixtureTenantID, UserID: priorityUsers[2].ID, DeptID: fixtureDeptID},
+	}
+	if err := fixture.db.Create(&priorityUserDepts).Error; err != nil {
+		t.Fatalf("create priority user departments: %v", err)
+	}
+
+	courses := []model.Course{
+		{TenantID: fixtureTenantID, UserID: priorityUsers[0].ID, CourseName: "课程A", DayOfWeek: 4, Section: fixture.request.Section, WeekList: "3"},
+		{TenantID: fixtureTenantID, UserID: priorityUsers[1].ID, CourseName: "课程B", DayOfWeek: 4, Section: fixture.request.Section, WeekList: "3"},
+		{TenantID: fixtureTenantID, UserID: priorityUsers[2].ID, CourseName: "课程C", DayOfWeek: 4, Section: fixture.request.Section, WeekList: "3"},
+	}
+	if err := fixture.db.Create(&courses).Error; err != nil {
+		t.Fatalf("create courses: %v", err)
+	}
+
+	dayOfWeek := 4
+	if err := fixture.db.Create(&model.UserRestDay{TenantID: fixtureTenantID, UserID: priorityUsers[2].ID, DayOfWeek: &dayOfWeek}).Error; err != nil {
+		t.Fatalf("create rest day: %v", err)
+	}
+
+	leaveStart := time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local)
+	leaveEnd := time.Date(2026, 3, 19, 9, 40, 0, 0, time.Local)
+	leave := &model.LeaveApproval{
+		TenantID:          fixtureTenantID,
+		ProcessInstanceID: "pi-leave-course-user",
+		DingUserID:        priorityUsers[1].DingUserID,
+		UserID:            priorityUsers[1].ID,
+		UserName:          priorityUsers[1].Name,
+		StartAt:           leaveStart,
+		EndAt:             leaveEnd,
+		LeaveType:         "事假",
+		Reason:            "优先级测试",
+	}
+	if err := fixture.db.Create(leave).Error; err != nil {
+		t.Fatalf("create leave approval: %v", err)
+	}
+
+	assertPriority := func(label string, resp *dto.AttendanceDetailResponse) {
+		t.Helper()
+		if resp.Statistics.RestDay != 1 {
+			t.Fatalf("%s: expected 1 rest day user, got %d", label, resp.Statistics.RestDay)
+		}
+		if resp.Statistics.Leave != 1 {
+			t.Fatalf("%s: expected 1 leave user, got %d", label, resp.Statistics.Leave)
+		}
+		if resp.Statistics.HasCourse != 1 {
+			t.Fatalf("%s: expected 1 has-course user, got %d", label, resp.Statistics.HasCourse)
+		}
+		if resp.Statistics.ShouldAttend != 4 {
+			t.Fatalf("%s: expected should_attend=4 after excluding rest day and has-course, got %d", label, resp.Statistics.ShouldAttend)
+		}
+		if got := attendanceBasicNames(resp.Users.RestDay); !slices.Equal(got, []string{"RestDayCourseUser"}) {
+			t.Fatalf("%s: unexpected rest day users: got %v", label, got)
+		}
+		leaveNames := make([]string, 0, len(resp.Users.Leave))
+		for _, user := range resp.Users.Leave {
+			leaveNames = append(leaveNames, user.Name)
+		}
+		slices.Sort(leaveNames)
+		if !slices.Equal(leaveNames, []string{"LeaveCourseUser"}) {
+			t.Fatalf("%s: unexpected leave users: got %v", label, leaveNames)
+		}
+		if got := attendanceBasicNames(resp.Users.HasCourse); !slices.Equal(got, []string{"HasCourseUser"}) {
+			t.Fatalf("%s: unexpected has-course users: got %v", label, got)
+		}
+		if got := attendanceBasicNames(resp.Users.NotArrived); !slices.Equal(got, []string{"LateUser", "MissingUser", "OnTimeUser"}) {
+			t.Fatalf("%s: unexpected not-arrived users: got %v", label, got)
+		}
+	}
+
+	current, err := fixture.service.GetAttendanceDetail(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("get attendance detail: %v", err)
+	}
+	assertPriority("current detail", current)
+
+	finalized, err := fixture.service.FinalizeAttendanceRecord(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("finalize attendance record: %v", err)
+	}
+	assertPriority("finalize response", finalized)
+
+	snapshot, err := fixture.service.GetAttendanceRecordFromDB(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("get attendance record from db: %v", err)
+	}
+	assertPriority("snapshot detail", snapshot)
+}
 func TestFinalizeAttendanceRecordPersistsLateAndNotArrived(t *testing.T) {
 	var capturedEnd time.Time
 
