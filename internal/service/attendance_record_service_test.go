@@ -834,9 +834,9 @@ func newAttendanceRealtimeFixture(t *testing.T, opts attendanceRealtimeFixtureOp
 	}
 
 	users := []model.User{
-		{TenantID: fixtureTenantID, DingUserID: fixtureDingUserIDOnTime, Name: "OnTimeUser", Status: 1},
-		{TenantID: fixtureTenantID, DingUserID: fixtureDingUserIDLate, Name: "LateUser", Status: 1},
-		{TenantID: fixtureTenantID, DingUserID: fixtureDingUserIDMissing, Name: "MissingUser", Status: 1},
+		{TenantID: fixtureTenantID, DingUserID: fixtureDingUserIDOnTime, Name: "OnTimeUser", Avatar: "on-time.png", Status: 1},
+		{TenantID: fixtureTenantID, DingUserID: fixtureDingUserIDLate, Name: "LateUser", Avatar: "late.png", Status: 1},
+		{TenantID: fixtureTenantID, DingUserID: fixtureDingUserIDMissing, Name: "MissingUser", Avatar: "missing.png", Status: 1},
 	}
 	if err := db.Create(&users).Error; err != nil {
 		t.Fatalf("create users: %v", err)
@@ -884,6 +884,62 @@ func newAttendanceRealtimeFixture(t *testing.T, opts attendanceRealtimeFixtureOp
 		},
 		records: opts.records,
 	}
+}
+
+func TestGetAttendanceDetailRealtimePopulatesAvatarAndDeptName(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 10, 0, 0, time.Local),
+		records: []dingtalk.CheckRecord{
+			{
+				DingUserID: fixtureDingUserIDOnTime,
+				CheckTime:  time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+			{
+				DingUserID: fixtureDingUserIDLate,
+				CheckTime:  time.Date(2026, 3, 19, 8, 5, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+		},
+	})
+
+	resp, err := fixture.service.GetAttendanceDetail(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("get attendance detail: %v", err)
+	}
+
+	assertBasic := func(label string, users []dto.AttendanceUserBasic, wantName, wantAvatar, wantDept string) {
+		t.Helper()
+		for _, user := range users {
+			if user.Name != wantName {
+				continue
+			}
+			if user.Avatar != wantAvatar || user.DeptName != wantDept {
+				t.Fatalf("%s user profile mismatch: got avatar=%q dept=%q want avatar=%q dept=%q", label, user.Avatar, user.DeptName, wantAvatar, wantDept)
+			}
+			return
+		}
+		t.Fatalf("%s user %q not found", label, wantName)
+	}
+
+	assertCheck := func(label string, users []dto.AttendanceUserCheck, wantName, wantAvatar, wantDept string) {
+		t.Helper()
+		for _, user := range users {
+			if user.Name != wantName {
+				continue
+			}
+			if user.Avatar != wantAvatar || user.DeptName != wantDept {
+				t.Fatalf("%s user profile mismatch: got avatar=%q dept=%q want avatar=%q dept=%q", label, user.Avatar, user.DeptName, wantAvatar, wantDept)
+			}
+			return
+		}
+		t.Fatalf("%s user %q not found", label, wantName)
+	}
+
+	assertBasic("should_attend", resp.Users.ShouldAttend, "MissingUser", "missing.png", "行政部")
+	assertCheck("on_time", resp.Users.OnTime, "OnTimeUser", "on-time.png", "行政部")
+	assertCheck("late", resp.Users.Late, "LateUser", "late.png", "行政部")
+	assertBasic("not_arrived", resp.Users.NotArrived, "MissingUser", "missing.png", "行政部")
 }
 
 func TestGetAttendanceDetailDeduplicatesMultiplePunchesFromSameUser(t *testing.T) {

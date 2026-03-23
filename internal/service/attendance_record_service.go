@@ -227,7 +227,7 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 	if len(shouldAttend) == 0 {
 		// 构建休息日用户基础信息
 		restDayBasic := toRestDayBasicList(restDayUsers)
-		return dto.NewAttendanceDetailResponse(
+		resp := dto.NewAttendanceDetailResponse(
 			req.Date, req.Week, req.Section,
 			periods[req.Section-1].Start,
 			periods[req.Section-1].End,
@@ -237,7 +237,11 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 			[]dto.AttendanceUserBasic{},
 			restDayBasic,
 			hasCourseBasic,
-		), nil, nil
+		)
+		if err := s.enrichAttendanceDetailUsers(ctx, activeUsers, resp); err != nil {
+			return nil, nil, err
+		}
+		return resp, nil, nil
 	}
 
 	// 6. 获取打卡记录（只返回正常打卡的人）
@@ -261,12 +265,16 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 
 	// 10. 构建响应（包含休息日用户）
 	restDayBasic := toRestDayBasicList(restDayUsers)
-	return dto.NewAttendanceDetailResponse(
+	resp := dto.NewAttendanceDetailResponse(
 		req.Date, req.Week, req.Section,
 		periods[req.Section-1].Start,
 		periods[req.Section-1].End,
 		shouldAttend, onTime, leave, notArrived, restDayBasic, hasCourseBasic,
-	), notifyUsers, nil
+	)
+	if err := s.enrichAttendanceDetailUsers(ctx, activeUsers, resp); err != nil {
+		return nil, nil, err
+	}
+	return resp, notifyUsers, nil
 }
 
 func (s *AttendanceRecordService) buildAttendanceDetail(
@@ -313,6 +321,9 @@ func (s *AttendanceRecordService) buildAttendanceDetail(
 			restDayBasic,
 			hasCourseBasic,
 		)
+		if err := s.enrichAttendanceDetailUsers(ctx, activeUsers, resp); err != nil {
+			return nil, nil, err
+		}
 		return resp, nil, nil
 	}
 
@@ -348,8 +359,81 @@ func (s *AttendanceRecordService) buildAttendanceDetail(
 		resp.Users.Late = late
 		resp.Statistics.Late = len(late)
 	}
+	if err := s.enrichAttendanceDetailUsers(ctx, activeUsers, resp); err != nil {
+		return nil, nil, err
+	}
 
 	return resp, notifyUsers, nil
+}
+
+func (s *AttendanceRecordService) enrichAttendanceDetailUsers(
+	ctx context.Context,
+	users []model.User,
+	resp *dto.AttendanceDetailResponse,
+) error {
+	if resp == nil || len(users) == 0 {
+		return nil
+	}
+
+	userMap := make(map[uint]model.User, len(users))
+	userIDs := make([]uint, 0, len(users))
+	for _, user := range users {
+		if _, ok := userMap[user.ID]; ok {
+			continue
+		}
+		userMap[user.ID] = user
+		userIDs = append(userIDs, user.ID)
+	}
+
+	deptNameMap := make(map[uint]string)
+	if s.userRepo != nil && len(userIDs) > 0 {
+		deptNames, err := s.userRepo.GetUserDepartmentNames(ctx, userIDs)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warnw("查询用户部门名称失败，部门信息将为空", "error", err)
+			}
+		} else {
+			deptNameMap = deptNames
+		}
+	}
+
+	fillBasic := func(list []dto.AttendanceUserBasic) {
+		for i := range list {
+			if user, ok := userMap[list[i].ID]; ok {
+				list[i].Name = user.Name
+				list[i].Avatar = user.Avatar
+				list[i].DeptName = deptNameMap[list[i].ID]
+			}
+		}
+	}
+	fillCheck := func(list []dto.AttendanceUserCheck) {
+		for i := range list {
+			if user, ok := userMap[list[i].ID]; ok {
+				list[i].Name = user.Name
+				list[i].Avatar = user.Avatar
+				list[i].DeptName = deptNameMap[list[i].ID]
+			}
+		}
+	}
+	fillLeave := func(list []dto.AttendanceUserLeave) {
+		for i := range list {
+			if user, ok := userMap[list[i].ID]; ok {
+				list[i].Name = user.Name
+				list[i].Avatar = user.Avatar
+				list[i].DeptName = deptNameMap[list[i].ID]
+			}
+		}
+	}
+
+	fillBasic(resp.Users.ShouldAttend)
+	fillCheck(resp.Users.OnTime)
+	fillCheck(resp.Users.Late)
+	fillLeave(resp.Users.Leave)
+	fillBasic(resp.Users.NotArrived)
+	fillBasic(resp.Users.RestDay)
+	fillBasic(resp.Users.HasCourse)
+
+	return nil
 }
 
 func normalizeAttendanceDate(date time.Time) time.Time {
