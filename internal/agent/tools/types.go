@@ -57,6 +57,7 @@ type AttendancePort interface {
 	GetWeeklyAttendanceRateRanking(ctx context.Context) ([]RankItem, error)
 	FindRecordByDateSection(ctx context.Context, date string, section int) (uint, error)
 	SignForUsers(ctx context.Context, recordID uint, userIDs []uint) error
+	SignForUsersBySlot(ctx context.Context, date string, section int, userIDs []uint) error
 }
 
 // LeavePort 请假能力

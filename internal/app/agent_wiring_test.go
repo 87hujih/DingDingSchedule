@@ -116,6 +116,32 @@ func TestAttendanceAdapterUsesSnapshotForHistoryQueries(t *testing.T) {
 	}
 }
 
+func TestAttendanceAdapterSignForUsersBySlotUsesDateAndSection(t *testing.T) {
+	service := &fakeAttendanceDetailService{}
+	adapter := &attendanceAdapter{srv: service}
+
+	err := adapter.SignForUsersBySlot(context.Background(), "2026-03-25", 1, []uint{9})
+	if err != nil {
+		t.Fatalf("SignForUsersBySlot() error = %v", err)
+	}
+
+	if service.lastSignReq == nil {
+		t.Fatalf("service sign request was not captured")
+	}
+	if service.lastSignReq.RecordID != 0 {
+		t.Fatalf("RecordID = %d, want 0", service.lastSignReq.RecordID)
+	}
+	if service.lastSignReq.Date != "2026-03-25" {
+		t.Fatalf("Date = %q, want 2026-03-25", service.lastSignReq.Date)
+	}
+	if service.lastSignReq.Section != 1 {
+		t.Fatalf("Section = %d, want 1", service.lastSignReq.Section)
+	}
+	if !slices.Equal(service.lastSignReq.TargetUserIDs, []uint{9}) {
+		t.Fatalf("TargetUserIDs = %v, want [9]", service.lastSignReq.TargetUserIDs)
+	}
+}
+
 type fakeAttendanceDetailService struct {
 	detailResp  *dto.AttendanceDetailResponse
 	detailErr   error
@@ -128,6 +154,7 @@ type fakeAttendanceDetailService struct {
 	signErr     error
 	detailCalls int
 	lastReq     *dto.AttendanceDetailRequest
+	lastSignReq *dto.SignForUserRequest
 }
 
 func (f *fakeAttendanceDetailService) GetAttendanceDetail(_ context.Context, req *dto.AttendanceDetailRequest) (*dto.AttendanceDetailResponse, error) {
@@ -163,7 +190,11 @@ func (f *fakeAttendanceDetailService) GetWeeklyAttendanceRateRanking(context.Con
 	return f.rateResp, nil
 }
 
-func (f *fakeAttendanceDetailService) SignForUsers(context.Context, *dto.SignForUserRequest) (*dto.SignForUserResponse, error) {
+func (f *fakeAttendanceDetailService) SignForUsers(_ context.Context, req *dto.SignForUserRequest) (*dto.SignForUserResponse, error) {
+	if req != nil {
+		copied := *req
+		f.lastSignReq = &copied
+	}
 	if f.signErr != nil {
 		return nil, f.signErr
 	}

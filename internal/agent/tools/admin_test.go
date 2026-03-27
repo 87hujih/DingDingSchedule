@@ -7,7 +7,15 @@ import (
 	"testing"
 )
 
-type testAttendancePort struct{}
+type testAttendancePort struct {
+	findRecordID  uint
+	signCalls     int
+	lastRecordID  uint
+	lastUserIDs   []uint
+	slotSignCalls int
+	lastDate      string
+	lastSection   int
+}
 
 func (testAttendancePort) GetAttendanceDetail(context.Context, AttendanceQuery) (*AttendanceResult, error) {
 	return nil, nil
@@ -25,11 +33,22 @@ func (testAttendancePort) GetWeeklyAttendanceRateRanking(context.Context) ([]Ran
 	return nil, nil
 }
 
-func (testAttendancePort) FindRecordByDateSection(context.Context, string, int) (uint, error) {
-	return 0, nil
+func (p *testAttendancePort) FindRecordByDateSection(context.Context, string, int) (uint, error) {
+	return p.findRecordID, nil
 }
 
-func (testAttendancePort) SignForUsers(context.Context, uint, []uint) error {
+func (p *testAttendancePort) SignForUsers(_ context.Context, recordID uint, userIDs []uint) error {
+	p.signCalls++
+	p.lastRecordID = recordID
+	p.lastUserIDs = append([]uint(nil), userIDs...)
+	return nil
+}
+
+func (p *testAttendancePort) SignForUsersBySlot(_ context.Context, date string, section int, userIDs []uint) error {
+	p.slotSignCalls++
+	p.lastDate = date
+	p.lastSection = section
+	p.lastUserIDs = append([]uint(nil), userIDs...)
 	return nil
 }
 
@@ -71,7 +90,7 @@ func TestSubscribeAttendancePushRejectsMalformedParams(t *testing.T) {
 
 	registry := NewRegistry()
 	groupSub := &testGroupSubPort{}
-	RegisterAdminTools(registry, testAttendancePort{}, testAdminUserPort{}, groupSub, testDeptPort{})
+	RegisterAdminTools(registry, &testAttendancePort{}, testAdminUserPort{}, groupSub, testDeptPort{})
 
 	result, err := registry.Dispatch(context.Background(), &UserContext{
 		TenantID:         42,
@@ -89,4 +108,56 @@ func TestSubscribeAttendancePushRejectsMalformedParams(t *testing.T) {
 	if groupSub.subscribeCalls != 0 {
 		t.Fatalf("Subscribe() call count = %d, want 0", groupSub.subscribeCalls)
 	}
+}
+
+func TestSignForUserDoesNotRequirePreexistingRecord(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	attendance := &testAttendancePort{findRecordID: 0}
+	RegisterAdminTools(registry, attendance, testAdminUserPortWithSearchResult{
+		users: []UserInfo{{ID: 9, Name: "张三"}},
+	}, &testGroupSubPort{}, testDeptPort{})
+
+	result, err := registry.Dispatch(context.Background(), &UserContext{
+		TenantID: 42,
+		UserID:   7,
+		UserRole: 1,
+	}, "sign_for_user", json.RawMessage(`{"user_name":"张三","date":"2026-03-25","section":1}`))
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+	if strings.Contains(result, "请等待系统自动统计后再操作") {
+		t.Fatalf("Dispatch() result = %s, want realtime sign to proceed without preexisting record", result)
+	}
+	if !strings.Contains(result, `"success":true`) {
+		t.Fatalf("Dispatch() result = %s, want success payload", result)
+	}
+	if attendance.signCalls != 0 {
+		t.Fatalf("legacy SignForUsers() call count = %d, want 0", attendance.signCalls)
+	}
+	if attendance.slotSignCalls != 1 {
+		t.Fatalf("SignForUsersBySlot() call count = %d, want 1", attendance.slotSignCalls)
+	}
+	if attendance.lastDate != "2026-03-25" {
+		t.Fatalf("SignForUsersBySlot() date = %q, want 2026-03-25", attendance.lastDate)
+	}
+	if attendance.lastSection != 1 {
+		t.Fatalf("SignForUsersBySlot() section = %d, want 1", attendance.lastSection)
+	}
+	if len(attendance.lastUserIDs) != 1 || attendance.lastUserIDs[0] != 9 {
+		t.Fatalf("SignForUsersBySlot() userIDs = %v, want [9]", attendance.lastUserIDs)
+	}
+}
+
+type testAdminUserPortWithSearchResult struct {
+	users []UserInfo
+}
+
+func (p testAdminUserPortWithSearchResult) FindByDingUserID(context.Context, string) (*UserInfo, error) {
+	return nil, nil
+}
+
+func (p testAdminUserPortWithSearchResult) SearchByName(context.Context, string) ([]UserInfo, error) {
+	return p.users, nil
 }

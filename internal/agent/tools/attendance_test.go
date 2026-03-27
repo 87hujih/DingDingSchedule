@@ -46,6 +46,10 @@ func (*attendanceToolTestPort) SignForUsers(context.Context, uint, []uint) error
 	return nil
 }
 
+func (*attendanceToolTestPort) SignForUsersBySlot(context.Context, string, int, []uint) error {
+	return nil
+}
+
 type attendanceToolSemesterPort struct{}
 
 func (attendanceToolSemesterPort) GetCurrentWeek(context.Context) (int, int, error) {

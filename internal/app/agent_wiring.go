@@ -274,6 +274,16 @@ func (a *attendanceAdapter) SignForUsers(ctx context.Context, recordID uint, use
 	return err
 }
 
+// SignForUsersBySlot 为指定日期和节次批量执行补签，适用于实时阶段无快照记录的场景。
+func (a *attendanceAdapter) SignForUsersBySlot(ctx context.Context, date string, section int, userIDs []uint) error {
+	_, err := a.srv.SignForUsers(ctx, &dto.SignForUserRequest{
+		Date:          date,
+		Section:       section,
+		TargetUserIDs: userIDs,
+	})
+	return err
+}
+
 // ────────────── leaveAdapter ──────────────
 
 type leaveAdapter struct {

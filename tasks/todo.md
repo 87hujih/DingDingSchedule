@@ -1,6 +1,72 @@
 # 任务清单
 
 ## 当前任务
+- [x] 设计第 2 批 `docs/agent-knowledge/` 的最小范围，补齐系统总览与后台操作说明。
+- [x] 生成 `system-overview.md`，用业务与能力导向方式整理系统定位、入口、角色与典型链路。
+- [x] 生成 `admin-operations-guide.md`，整理 GoAdmin 后台的启用、初始化、入口、常见页面与排障方法。
+- [x] 回读新增文档并更新本次复盘，确认它们与第 1 批规则文档边界清晰。
+
+## 当前任务复盘
+- 已在 `docs/agent-knowledge/` 下补齐第 2 批知识文档：`system-overview.md` 和 `admin-operations-guide.md`。前者聚焦系统定位、适用场景、四条运行入口、角色和典型业务链路；后者聚焦 GoAdmin 后台的启用条件、初始化前置、默认入口、常见页面和排障方法。
+- 这两份文档继续沿用“适用范围 + 来源 + 稳定事实 + FAQ”结构，来源收敛在 `docs/项目介绍.md`、`README.md`、`docs/adminui.md` 以及当前 `router/adminui/config` 代码，不引入设计方案、部署细节或临时任务记录。
+- 文档边界已和第 1 批保持清晰：第 1 批负责规则知识和业务判定口径，第 2 批负责系统整体认知和后台运维入口，不重复解释具体考勤规则、请假同步细节或作息模式判定逻辑。
+- 本次仍为文档提纯工作，未修改业务代码，也未运行 Go 测试；核验方式为回读 `docs/agent-knowledge/system-overview.md`、`docs/agent-knowledge/admin-operations-guide.md`，并执行 `git status --short -- docs/agent-knowledge tasks/todo.md` 确认文件已落盘。
+
+## 当前任务
+- [x] 盘点主仓库现有 Markdown 文档，划分“可直接入库 / 需要改写 / 不建议入库”。
+- [x] 基于现有稳定业务文档，设计 `docs/agent-knowledge/` 的最小知识语料范围和文件结构。
+- [x] 在用户确认范围后，生成提纯后的知识文档并回读校验内容与来源一致。
+
+## 当前任务复盘
+- 已在 `docs/agent-knowledge/` 下生成第一批最小知识语料：`schedule-mode-guide.md`、`leave-sync-guide.md`、`attendance-rules.md`，分别覆盖作息模式、请假审批同步和考勤分类规则。
+- 三份文档均采用“稳定事实 + 常见问题”结构，来源限定在现有业务说明文档和当前 service / dto 实现，显式避开了 plans、specs、任务记录和未来方案。
+- 其中 `attendance-rules.md` 额外对齐了当前代码行为，包括实时视图与最终快照、`rest_day > leave > has_course > should_attend` 优先级、连续节次顺延，以及人工代签优先于后续迟到打卡的规则。
+- 本次为文档提纯工作，未修改业务代码，也未运行 Go 测试；核验方式为回读 `docs/agent-knowledge/*.md` 和执行 `git status --short -- docs/agent-knowledge tasks/todo.md`，确认文件已落盘且任务记录已更新。
+
+## 当前任务
+- [x] 追踪 `record.POST("/sign", ..., SignForUser)` 的请求契约，确认代签当前依赖的是 `record_id` 还是 `date + section`。
+- [x] 对照 `/attendance/record/detail` 在考勤后 30 分钟前后的分支逻辑，确认 `record_id` 在两个阶段的返回差异。
+- [x] 结合 service 实现与现有测试，分析“半小时内代签报缺少 `record_id`、半小时后恢复正常”的根因，并补充复盘记录。
+
+## 当前任务复盘
+- 已确认 `AttendanceRecordService.SignForUsers` 现在同时支持两种入参：历史快照走 `record_id`，实时阶段可直接走 `date + section`；因此底层代签 service 本身并不要求必须先拿到 `record_id`。
+- `/attendance/record/detail` 在上课开始后 30 分钟内走实时分支，只会返回 `NewAttendanceDetailResponse` 构造的 current 视图；该构造函数不会填 `RecordID`。到 `slotStart + 30m` 后，接口切到 `GetAttendanceRecordFromDB`，这时才会从 `attendance_records.id` 回填 `record_id`。
+- 这解释了“半小时内报缺少 record_id、半小时后恢复正常”的现象：阻塞点不在 `/sign` service，而在上游调用方仍按旧契约先依赖 `/detail.data.record_id`。仓库内 agent 管理工具也仍保留了这条旧路径，会先查 `FindRecordByDateSection`，查不到就拒绝补签。
+- 核验方式为静态审读 `internal/service/attendance_record_service.go`、`internal/dto/attendance_record.go`、`internal/dto/sign_attendance.go`、`internal/agent/tools/admin.go`、`internal/app/agent_wiring.go`，并执行 `go test ./internal/service -run "Test(GetAttendanceDetailReturnsCurrentViewBeforeFinalize|GetAttendanceDetailReturnsFinalSnapshotAfterFinalize|SignForUsersSupportsRealtimeDateSectionAndDetailShowsOverride|SignForUsersWithRecordIDKeepsSnapshotAndDetailConsistent)" -v`。
+## 当前任务
+- [x] 基于已确认的 `Agent RAG Eval Observability Design`，梳理当前 Agent wiring、调用日志、迁移入口和测试布局，收敛实施边界。
+- [x] 将增强方案拆解为可执行 implementation plan，明确文件职责、TDD 顺序、验证命令和建议提交粒度。
+- [x] 将计划文档写入 `docs/superpowers/plans/2026-03-25-agent-rag-eval-observability-plan.md`，并回读核对其与 spec 一致。
+
+## 当前任务复盘
+- 已确认本轮只规划一个子项目：在现有单 Agent 架构上补齐知识检索增强、离线评测和调用观测，不引入多智能体、MCP 平台或外部向量库集群。
+- 实施计划已落在 `docs/superpowers/plans/2026-03-25-agent-rag-eval-observability-plan.md`，任务按五个阶段拆分：租户级知识存储与检索、知识导入脚本、Agent 路由与 RAG/mixed 执行、评测脚本与样本、调用日志扩展与文档收尾。
+- 计划显式对齐了当前代码边界：知识检索依赖新增 `internal/model` / `internal/repository` / `internal/service` 单元，Agent 集成落在 `internal/agent/*` 与 `internal/app/agent_wiring.go`，调用观测沿用 `agent_call_logs` 与 GoAdmin 展示链路。
+- 本次仅产出实施计划文档，未修改业务代码，也未运行 Go 测试；核验方式为静态审读 `docs/superpowers/specs/2026-03-24-agent-rag-eval-observability-design.md`、`internal/app/agent_wiring.go`、`internal/agent/tools/types.go`、`inits/database.go`、`internal/agent/agent_test.go`，并回读新计划文件确认路径、任务顺序和验证命令完整。
+
+## 当前任务
+- [x] 基于当前 internal/agent 与 pkg/dingtalk 实现，整理“非多 Agent 的最小超时优化”实施范围。
+- [x] 输出新的实施计划文档，明确任务拆分、文件边界、测试策略和优先级。
+- [x] 复核计划与既有 timeout 修复文档的关系，避免重复和范围漂移。
+
+## 当前任务复盘
+- 已确认 2026-03-19-agent-llm-timeout-alignment-plan.md 解决的是“底层 HTTP 50s 硬超时抢先截断”问题；本次新计划聚焦的是该修复之后仍然存在的超时概率问题，即父级预算未贯穿、同轮工具串行和可直返文本工具仍要再走一轮 LLM 总结。
+- 新计划保持单 Agent ReAct 架构不变，不引入多 Agent；优先级收敛为三项最小改动：agent.Chat 继承外层 context、同轮多工具并行执行且保持 transcript 顺序、generate_attendance_text 这类原生文本工具跳过额外总结轮次。
+- 本次仅产出实施计划文档，未修改业务代码；核验方式为静态审读 internal/agent/agent.go、internal/agent/client.go、internal/agent/tools/registry.go、internal/agent/tools/types.go、pkg/dingtalk/stream.go、既有 timeout 设计/计划文档，并准备后续实施所需的测试入口。
+
+## 当前任务
+- [x] 审读 `docs/项目介绍.md`、`README.md`、核心路由与 Agent 相关代码，找出与当前实现不一致的项目介绍内容。
+- [x] 汇总本轮新增代码反映出的能力变化，重点核对 AI Agent、考勤补签覆盖、统计分析和部署入口。
+- [x] 更新 `docs/项目介绍.md`，补齐系统定位、核心能力、架构与目录说明。
+- [x] 复核文档表述与当前代码的一致性，并在任务清单中补充本次复盘与验证记录。
+
+## 当前任务复盘
+- 已重写 `docs/项目介绍.md` 的项目定位、核心能力、技术栈、系统架构、目录结构、数据模型、接口入口、部署方式和关键业务规则，去掉了旧版“纯排课考勤系统”视角，补齐了当前代码已经存在的 AI Agent、群考勤订阅、人工覆盖、统计分析和部署链路。
+- 文档新增并明确了 `attendance_manual_overrides`、`group_attendance_subscriptions`、`agent_call_logs` 三类当前版本关键模型，同时把自动迁移表数量从旧文档的 14 张更新为当前代码中的 17 张。
+- HTTP 与 Stream 入口已按当前实现重写：路由说明对齐 `internal/app/router.go`、`internal/app/routers_*.go`，AI 工具能力对齐 `internal/agent/tools/*.go`，运行时行为对齐 `internal/app/app.go`、`internal/scheduler/attendance_scheduler.go`。
+- 本次为文档更新，未运行 Go 测试；核验方式为静态回读 `docs/项目介绍.md`，并对照 `README.md`、`inits/database.go`、`internal/model/*.go`、`internal/app/*.go`、`internal/agent/*.go`、`internal/agent/tools/*.go`、`config/config.go`、部署脚本与工作流进行逐项交叉检查。
+
+## 当前任务
 - [x] 明确“上一节正常打卡 + 上一节迟到都可顺延到本节”的精确业务边界。
 - [x] 将实施步骤写入 `docs/superpowers/plans/2026-03-23-attendance-carry-forward-late-plan.md`。
 - [x] 先补打卡顺延回归测试，锁定上一节迟到用户在现有顺延条件下会进入本节 `on_time`。
@@ -453,3 +519,15 @@ g -n "schedule_server_deploy|docker build|docker run|GitHub Actions|GHCR|./deplo
 - 同次修改把 `on_leave` 用户补进了部门名称查询，避免请假名单此前因为未参与 `GetUserDepartmentNames` 聚合而丢失 `dept_name`。
 - 验证命令：`go test ./internal/service -run TestSlotAttendanceStatusPrioritizesRestDayAndLeaveOverHasCourse -v`、`go test ./internal/service -run "Test(SlotAttendanceStatusPrioritizesRestDayAndLeaveOverHasCourse|AttendanceDetailPrioritizesRestDayAndLeaveOverHasCourse)" -v`、`go test ./internal/service -v`。
 
+
+
+## 当前任务
+- [x] 为仓库内 agent / adapter 补签链路补失败回归测试，锁定“实时阶段不再要求先有 `record_id`”。
+- [x] 以最小改动调整 `internal/agent/tools/admin.go`、`internal/agent/tools/types.go`、`internal/app/agent_wiring.go`，统一改走 `date + section` 补签。
+- [x] 运行定向与范围回归测试，并补充复盘记录。
+
+## 当前任务复盘
+- 已新增 `TestSignForUserDoesNotRequirePreexistingRecord`，先复现 agent 管理工具在查不到快照记录时直接返回“请等待系统自动统计后再操作”的旧行为，再锁定补签应直接走实时槽位。
+- `internal/agent/tools/admin.go` 不再先查 `record_id`；现在会直接调用 attendance port 的 `SignForUsersBySlot(date, section, userIDs)`，把实时阶段是否可补签交给 `AttendanceRecordService` 现有的 `date + section` 逻辑判断。
+- `internal/app/agent_wiring.go` 新增 `attendanceAdapter.SignForUsersBySlot`，内部组装 `dto.SignForUserRequest{Date, Section, TargetUserIDs}` 下发到 service；旧的 `SignForUsers(recordID, userIDs)` 兼容路径保留，未影响历史快照代签。
+- 实际验证命令：`go test ./internal/agent/tools -run TestSignForUserDoesNotRequirePreexistingRecord -v`（先红后绿）；`go test ./internal/app -run TestAttendanceAdapterSignForUsersBySlotUsesDateAndSection -v`；`go test ./internal/agent/tools -v`；`go test ./internal/app -v`；`go test ./internal/service -run "Test(SignForUsersSupportsRealtimeDateSectionAndDetailShowsOverride|SignForUsersWithRecordIDKeepsSnapshotAndDetailConsistent)" -v`。

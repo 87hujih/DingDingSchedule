@@ -62,19 +62,8 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 
 		targetUser := users[0]
 
-		// 2. 查找考勤记录
-		recordID, err := attendance.FindRecordByDateSection(ctx, p.Date, p.Section)
-		if err != nil {
-			return "", err
-		}
-		if recordID == 0 {
-			return marshalJSON(map[string]interface{}{
-				"error": "该节次尚未统计，请等待系统自动统计后再操作",
-			})
-		}
-
-		// 3. 补签
-		if err := attendance.SignForUsers(ctx, recordID, []uint{targetUser.ID}); err != nil {
+		// 2. 直接按日期和节次补签，避免实时阶段依赖已落库快照
+		if err := attendance.SignForUsersBySlot(ctx, p.Date, p.Section, []uint{targetUser.ID}); err != nil {
 			return "", err
 		}
 
