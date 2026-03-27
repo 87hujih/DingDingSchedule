@@ -62,6 +62,8 @@ func AutoMigrate() {
 		&model.SystemLog{},
 		&model.GroupAttendanceSubscription{},
 		&model.AgentCallLog{},
+		&model.AgentKnowledgeDocument{},
+		&model.AgentKnowledgeChunk{},
 	); err != nil {
 		global.Log.Fatalf("数据库迁移失败: %v", err)
 	}

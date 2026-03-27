@@ -106,6 +106,11 @@ type DeptPort interface {
 	ListDepts(ctx context.Context) ([]DeptItem, error)
 }
 
+// KnowledgePort 规则知识检索能力
+type KnowledgePort interface {
+	Search(ctx context.Context, tenantID uint, query string, topK int) ([]KnowledgeHit, error)
+}
+
 // ────────────── Agent 数据类型 ──────────────
 
 // CourseItem 课程条目
@@ -189,19 +194,36 @@ type UserInfo struct {
 	TenantID   uint   `json:"tenant_id"`
 }
 
+// KnowledgeHit 规则知识检索命中的切片
+type KnowledgeHit struct {
+	Title      string `json:"title"`
+	SourcePath string `json:"source_path"`
+	ChunkIndex int    `json:"chunk_index"`
+	Heading    string `json:"heading"`
+	Body       string `json:"body"`
+	SourceRef  string `json:"source_ref"`
+	Score      int    `json:"score"`
+}
+
 // CallLog 一次对话的调用记录
 type CallLog struct {
-	TenantID    uint
-	UserID      uint
-	UserName    string
-	ConvType    string // "1"=单聊, "2"=群聊
-	Question    string
-	ToolsCalled []string // 调用的工具名列表
-	Reply       string
-	Rounds      int
-	DurationMs  int64
-	Status      string // success / failed / timeout
-	ErrorMsg    string
+	TenantID            uint
+	UserID              uint
+	UserName            string
+	ConvType            string // "1"=单聊, "2"=群聊
+	QueryType           string // tool / rag / mixed
+	Question            string
+	ToolsCalled         []string // 调用的工具名列表
+	ToolCallCount       int
+	Reply               string
+	SourceRefs          []string
+	RetrievalHitCount   int
+	RetrievalDurationMs int64
+	LLMDurationMs       int64
+	Rounds              int
+	DurationMs          int64
+	Status              string // success / failed / timeout
+	ErrorMsg            string
 }
 
 // CallLogPort 调用日志写入能力

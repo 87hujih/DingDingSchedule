@@ -13,6 +13,7 @@ type (
 	RestDayPort         = tools.RestDayPort
 	GroupSubPort        = tools.GroupSubPort
 	DeptPort            = tools.DeptPort
+	KnowledgePort       = tools.KnowledgePort
 	CallLogPort         = tools.CallLogPort
 	AttendanceStatsPort = tools.AttendanceStatsPort
 	UserCrossPort       = tools.UserCrossPort
@@ -29,6 +30,7 @@ type (
 	RankItem             = tools.RankItem
 	LeaveItem            = tools.LeaveItem
 	UserInfo             = tools.UserInfo
+	KnowledgeHit         = tools.KnowledgeHit
 	PeriodInfo           = tools.PeriodInfo
 	DeptItem             = tools.DeptItem
 	AttendanceStatsQuery = tools.AttendanceStatsQuery

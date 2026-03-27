@@ -8,6 +8,7 @@ type Repository struct {
 	DeptRepo                     DepartmentRepository
 	CourseRepo                   CourseRepository
 	TenantRepo                   TenantRepository
+	AgentKnowledgeRepo           AgentKnowledgeRepository
 	LeaveRepo                    LeaveApprovalRepository
 	SemesterRepo                 SemesterRepository
 	AttendanceRecordRepo         AttendanceRecordRepository
@@ -27,6 +28,7 @@ func NewRepository(db *gorm.DB) *Repository {
 		DeptRepo:                     NewDepartmentRepository(db),
 		CourseRepo:                   NewCourseRepository(db),
 		TenantRepo:                   NewTenantRepository(db),
+		AgentKnowledgeRepo:           NewAgentKnowledgeRepository(db),
 		LeaveRepo:                    NewLeaveApprovalRepository(db),
 		SemesterRepo:                 NewSemesterRepository(db),
 		AttendanceRecordRepo:         NewAttendanceRecordRepository(db),

@@ -32,6 +32,7 @@ type Deps struct {
 	RestDay         RestDayPort
 	GroupSub        GroupSubPort
 	Dept            DeptPort
+	Knowledge       KnowledgePort
 	CallLog         CallLogPort
 	AttendanceStats AttendanceStatsPort
 	UserCross       UserCrossPort
@@ -45,10 +46,19 @@ type Agent struct {
 	deps        Deps
 	llmClient   *LLMClient
 	registry    *tools.Registry
+	router      *queryRouter
 	sessions    *sessionManager
 	limiter     *rateLimiter
 	stopCleanup chan struct{}
 	once        sync.Once
+}
+
+type callMetrics struct {
+	QueryType           queryKind
+	LLMDurationMs       int64
+	RetrievalDurationMs int64
+	RetrievalHitCount   int
+	SourceRefs          []string
 }
 
 // NewAgent 创建 Agent
@@ -57,6 +67,7 @@ func NewAgent(deps Deps) *Agent {
 		deps:        deps,
 		llmClient:   NewLLMClient(deps.LLMBaseURL, deps.LLMAPIKey, deps.LLMModel),
 		sessions:    newSessionManager(),
+		router:      newQueryRouter(),
 		limiter:     newRateLimiter(),
 		stopCleanup: make(chan struct{}),
 	}
@@ -173,16 +184,38 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	// 6. 加载历史消息
 	history := a.sessions.getMessages(sessionKey)
 	userMsg := tools.Message{Role: "user", Content: msg.Content}
+	route := a.router.Route(msg.Content)
+	metrics := callMetrics{QueryType: route.Kind}
 
 	// 7. 构建完整消息列表（system + history + 当前用户消息）
 	systemMsg := tools.Message{Role: "system", Content: a.buildSystemPrompt(ctx, uctx)}
-	messages := make([]tools.Message, 0, 1+len(history)+1)
+	messages := make([]tools.Message, 0, 2+len(history)+1)
 	messages = append(messages, systemMsg)
+	if route.Kind != queryKindTool {
+		retrievalStart := time.Now()
+		hits, err := a.retrieveKnowledge(ctx, uctx.TenantID, msg.Content)
+		metrics.RetrievalDurationMs = elapsedMs(retrievalStart)
+		if err != nil {
+			a.deps.Logger.Errorw("知识检索失败", "user", uctx.Name, "route", route.Kind, "err", err)
+			if route.Kind == queryKindRAG {
+				return "规则知识检索暂时不可用，请稍后重试", nil
+			}
+		} else if prompt := buildKnowledgePrompt(hits); prompt != "" {
+			metrics.RetrievalHitCount = len(hits)
+			metrics.SourceRefs = collectKnowledgeSourceRefs(hits)
+			messages = append(messages, tools.Message{Role: "system", Content: prompt})
+		} else if route.Kind == queryKindRAG {
+			return "抱歉，我没有检索到相关规则说明，请联系管理员补充知识库", nil
+		}
+	}
 	messages = append(messages, history...)
 	messages = append(messages, userMsg)
 
 	// 8. 获取该用户可用的工具列表
 	toolDefs := a.registry.ToToolDefs(uctx.UserRole)
+	if route.Kind == queryKindRAG {
+		toolDefs = nil
+	}
 
 	// 9. ReAct Loop
 	for round := 0; round < maxReactRounds; round++ {
@@ -193,11 +226,13 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 			llmTimeout = 90 * time.Second
 		}
 		llmCtx, llmCancel := context.WithTimeout(context.Background(), llmTimeout)
+		llmStart := time.Now()
 		resp, err := a.llmClient.Chat(llmCtx, messages, toolDefs)
+		metrics.LLMDurationMs += elapsedMs(llmStart)
 		llmCancel()
 		if err != nil {
 			a.deps.Logger.Errorw("LLM 调用失败", "round", round, "err", err)
-			a.writeCallLog(ctx, uctx, msg.Content, "", toolsCalled, round, startTime, "failed", err.Error())
+			a.writeCallLog(ctx, uctx, msg.Content, "", toolsCalled, round, startTime, "failed", err.Error(), metrics)
 			return "AI 服务暂时不可用，请稍后重试", nil
 		}
 
@@ -208,7 +243,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 				reply = "抱歉，我无法理解您的问题，请换个方式描述"
 			}
 			a.deps.Logger.Infow("回复完成", "user", uctx.Name, "rounds", round+1, "reply", reply)
-			a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, round+1, startTime, "success", "")
+			a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, round+1, startTime, "success", "", metrics)
 			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 			return reply, nil
 		}
@@ -238,27 +273,33 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 
 	// 超出最大轮数
 	a.deps.Logger.Warnw("ReAct Loop 超出最大轮数", "sessionKey", sessionKey)
-	a.writeCallLog(ctx, uctx, msg.Content, "", toolsCalled, maxReactRounds, startTime, "failed", "超出最大轮数")
+	a.writeCallLog(ctx, uctx, msg.Content, "", toolsCalled, maxReactRounds, startTime, "failed", "超出最大轮数", metrics)
 	return "处理轮次过多，请简化您的问题后重试", nil
 }
 
 // writeCallLog 异步写入调用记录，不阻塞对话响应
-func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, question, reply string, toolsCalled []string, rounds int, startTime time.Time, status, errMsg string) {
+func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, question, reply string, toolsCalled []string, rounds int, startTime time.Time, status, errMsg string, metrics callMetrics) {
 	if a.deps.CallLog == nil {
 		return
 	}
 	log := tools.CallLog{
-		TenantID:    uctx.TenantID,
-		UserID:      uctx.UserID,
-		UserName:    uctx.Name,
-		ConvType:    uctx.ConversationType,
-		Question:    question,
-		ToolsCalled: toolsCalled,
-		Reply:       reply,
-		Rounds:      rounds,
-		DurationMs:  time.Since(startTime).Milliseconds(),
-		Status:      status,
-		ErrorMsg:    errMsg,
+		TenantID:            uctx.TenantID,
+		UserID:              uctx.UserID,
+		UserName:            uctx.Name,
+		ConvType:            uctx.ConversationType,
+		QueryType:           string(metrics.QueryType),
+		Question:            question,
+		ToolsCalled:         toolsCalled,
+		ToolCallCount:       len(toolsCalled),
+		Reply:               reply,
+		SourceRefs:          append([]string(nil), metrics.SourceRefs...),
+		RetrievalHitCount:   metrics.RetrievalHitCount,
+		RetrievalDurationMs: metrics.RetrievalDurationMs,
+		LLMDurationMs:       metrics.LLMDurationMs,
+		Rounds:              rounds,
+		DurationMs:          elapsedMs(startTime),
+		Status:              status,
+		ErrorMsg:            errMsg,
 	}
 	go a.deps.CallLog.Write(context.Background(), log)
 }
@@ -318,4 +359,13 @@ func (a *Agent) buildSystemPrompt(ctx context.Context, uctx *tools.UserContext) 
 		now.Format("2006-01-02"), weekdays[now.Weekday()],
 		weekInfo, periodsInfo, convInfo,
 	)
+}
+
+// elapsedMs 返回至少为 1 的毫秒耗时，避免极短请求被记录为 0。
+func elapsedMs(start time.Time) int64 {
+	durationMs := time.Since(start).Milliseconds()
+	if durationMs <= 0 {
+		return 1
+	}
+	return durationMs
 }

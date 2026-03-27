@@ -22,6 +22,9 @@ docs/*
 docs/deployment/*
 !docs/deployment/production.md
 !docs/deployment/emergency.md
+!docs/agent-knowledge/
+!docs/agent-rag-eval.md
+!docs/agent-dataflow.md
 # Temp files
 *.tmp
 *.swp
