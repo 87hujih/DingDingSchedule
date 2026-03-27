@@ -1,6 +1,127 @@
 # 任务清单
 
 ## 当前任务
+- [x] 让本次 RAG / Eval / Observability 功能所需文档进入 Git 跟踪范围，避免提交时漏掉语料和评测说明。
+- [x] fresh 运行当前分支的完整验证命令，确认工作树已到可提交状态。
+- [x] 统一 stage 本次 feature 相关文件，并整理提交建议与剩余注意事项。
+
+## 当前任务复盘
+- 已调整 `.gitignore`，把 `docs/agent-knowledge/`、`docs/agent-rag-eval.md` 和 `docs/agent-dataflow.md` 从通配忽略中放出；这样首批知识语料、评测说明和数据流说明都能进入 Git 跟踪范围，不需要每次靠 `git add -f` 临时处理。
+- 已在 `agent-rag-eval-observability` worktree 中 fresh 执行 `go test ./...`，结果通过；这是本轮“可提交状态”判定的最新验证证据。
+- 已将本次 feature 相关代码、测试、脚本和文档统一加入 index，当前工作树已经收敛成可直接创建 commit 的状态。剩余只是选择 commit 粒度和提交信息，不再需要补代码或补验证。
+
+## 当前任务
+- [x] 用单样本复跑确认 `prod with-agent` 唯一失败样本是否可稳定复现。
+- [x] 再次执行全量 `prod with-agent` 端到端评测，确认是否仍存在失败样本。
+- [x] 将最新评测证据补回文档，并清理临时单样本产物。
+
+## 当前任务复盘
+- 围绕首轮唯一失败样本 `请假同步失败会影响已经生成的考勤快照吗？` 临时构造了单样本文件 `tmp-agent-eval-one.json`，并执行：`CONFIG_PATH=G:\gofile\schedule_server\configs CONFIG_ENV=prod go run ./scripts/agent_eval -tenant-id 1 -cases ./tmp-agent-eval-one.json -with-agent -corp-id dinge292658c9243df4235c2f4657eb6378f -sender-id 01375837500038676039 -sender-name 马华恩`。
+- 单样本复跑结果为：`路由准确率 100.0% (1/1)`、`知识命中率 100.0% (1/1)`、`关键词命中率 100.0% (1/1)`；实际回复已经包含 `不会直接覆盖` 和 `重试`，说明首轮失败更像是模型措辞波动，而不是确定性代码缺陷。
+- 随后再次执行全量命令：`CONFIG_PATH=G:\gofile\schedule_server\configs CONFIG_ENV=prod go run ./scripts/agent_eval -tenant-id 1 -with-agent -corp-id dinge292658c9243df4235c2f4657eb6378f -sender-id 01375837500038676039 -sender-name 马华恩`。
+- 最新全量端到端指标已恢复到：`总样本 18`、`路由准确率 100.0% (18/18)`、`知识命中率 100.0% (10/10)`、`工具命中率 100.0% (10/10)`、`关键词命中率 100.0% (12/12)`、`平均耗时 11603 ms`、`失败样本: 无`。
+- 这轮没有再修改业务代码；新增证据来自两次真实 `prod with-agent` 评测命令本身。相关结果已同步回 `docs/agent-rag-eval.md`，临时单样本文件也已在同一轮收尾中删除。
+
+## 当前任务
+- [x] 使用 `configs/prod.yaml` 中的可用 LLM 配置，为 `tenant_id=1` 重新运行 `agent_eval -with-agent` 端到端评测。
+- [x] 记录真实 `tools + keywords` 指标与失败样本，区分外部模型表现和本地工具链行为。
+- [x] 如端到端仍有失败，继续判断是提示词/工具选择问题，还是业务数据/样本期望不一致。
+
+## 当前任务复盘
+- 按用户提供的线索切换到 `CONFIG_ENV=prod`，确认脚本实际加载的是 `G:\gofile\schedule_server\configs\prod.yaml`，再复用前面已核对过的真实身份：`corp_id=dinge292658c9243df4235c2f4657eb6378f`、`sender_id=01375837500038676039`（马华恩）。
+- 实际执行命令：`CONFIG_PATH=G:\gofile\schedule_server\configs CONFIG_ENV=prod go run ./scripts/agent_eval -tenant-id 1 -with-agent -corp-id dinge292658c9243df4235c2f4657eb6378f -sender-id 01375837500038676039 -sender-name 马华恩`。
+- 真实端到端指标如下：
+- `总样本: 18`
+- `路由准确率: 100.0% (18/18)`
+- `知识命中率: 100.0% (10/10)`
+- `工具命中率: 100.0% (10/10)`
+- `关键词命中率: 91.7% (11/12)`
+- `平均耗时: 12467 ms`
+- 当前只剩 1 个失败样本：`请假同步失败会影响已经生成的考勤快照吗？`。失败维度不是路由、知识检索或工具调用，而是回复未完整覆盖样本预期的全部关键词，属于提示词/答案措辞与评测口径之间的细节偏差。
+- 这轮没有再改业务代码；验证证据就是上述真实端到端命令本身，以及前一轮已经通过的 `go test ./...`。评测结果和限制已同步回 `docs/agent-rag-eval.md`。
+
+## 当前任务
+- [x] 为 `tenant_id=1` 选择一组真实可用的 `corp_id + sender_id`，运行 `agent_eval -with-agent` 端到端评测。
+- [x] 记录 `tools + keywords` 指标和失败样本，确认当前 Agent 主链路是否与离线路由/检索结果一致。
+- [x] 若端到端评测暴露真实工具调用或回复问题，继续定位是数据前提、工具选择还是提示词链路问题。
+
+## 当前任务复盘
+- 先通过 MySQL 只读查询确认了 `tenant_id=1` 对应的真实评测身份：`corp_id=dinge292658c9243df4235c2f4657eb6378f`，并从 `users` 表中挑选启用用户 `sender_id=01375837500038676039`（马华恩）作为端到端评测账号。
+- 用这组身份执行过一次真实端到端评测命令：`CONFIG_PATH=G:\gofile\schedule_server\configs go run ./scripts/agent_eval -tenant-id 1 -with-agent -corp-id dinge292658c9243df4235c2f4657eb6378f -sender-id 01375837500038676039 -sender-name 马华恩`。初次结果表面上是 `tools=0% / keywords=0%`，但日志显示根因并不是 Agent 选错工具，而是：
+- 当前 `dev.yaml` 中的 `llm.api_key` 为占位值，真实调用返回 `LLM API 返回 401: "Api key is invalid"`
+- 评测脚本原先把整批样本都发给同一个私聊 `Agent` 实例，导致同一 `sender_id` 在 10 条后还会命中 `rateLimiter`，进一步制造额外的假阴性结果
+- 为避免把环境问题误报成业务问题，这轮补了 `scripts/agent_eval/main_test.go` 中两个脚本级测试：`TestValidateWithAgentPrerequisitesRejectsPlaceholderKey` 和 `TestNewCaseScopedObserverBuildsFreshRunnerPerCall`；实现上让 `with-agent` 模式先做 LLM 凭据预检查，并让每条样本都创建独立的短生命周期 `Agent` runner，避免共享限流器和会话历史。
+- 修复后重新验证：
+- `go test ./scripts/agent_eval -run "Test(ValidateWithAgentPrerequisitesRejectsPlaceholderKey|NewCaseScopedObserverBuildsFreshRunnerPerCall)" -v`
+- `CONFIG_PATH=G:\gofile\schedule_server\configs go run ./scripts/agent_eval -tenant-id 1 -with-agent -corp-id dinge292658c9243df4235c2f4657eb6378f -sender-id 01375837500038676039 -sender-name 马华恩`
+- `go test ./...`
+- 最新行为是：`with-agent` 模式会在启动后直接给出清晰错误 `当前 LLM API Key 看起来是占位值，请先配置可用的 LLM API Key 再运行 with-agent 评测`，不再继续输出由无效凭据导致的整批假阴性 `tools / keywords` 指标；全仓测试仍然通过。
+
+## 当前任务
+- [x] 使用已同步的首批知识语料，对 `tenant_id=1` 运行 `agent_eval` 的 `route + retrieval` 离线评测。
+- [x] 记录首轮评测的关键指标与失败样本，确认知识文档、样本预期和当前检索行为是否一致。
+- [x] 若评测结果存在明显偏差，继续定位是 query router、知识语料还是评测样本口径问题。
+
+## 当前任务复盘
+- 先用真实命令 `CONFIG_PATH=G:\gofile\schedule_server\configs go run ./scripts/agent_eval -tenant-id 1` 对 `tenant_id=1` 跑了首轮 `route + retrieval` 评测，初次结果为：`路由准确率 77.8% (14/18)`、`知识命中率 0.0% (0/10)`，失败样本集中在规则问句误路由和中文整句检索退化。
+- 通过系统化排查确认了两个根因：一是 `internal/agent/query_router.go` 的规则信号词过窄，没有覆盖“区别 / 影响 / 优先级 / 生效 / 最终结算”这类规则问法；二是 `internal/service/agent_knowledge_service.go` 的 `splitSearchTerms` 对中文整句只保留整句词项，导致很多查询把全部候选切片打成 `0` 分，再退化为按文档顺序返回。
+- 先按 TDD 补了两个失败测试：`TestQueryRouterClassifiesRuleOutcomeQuestionsAsRAG` 和 `TestAgentKnowledgeServiceSearchRanksChineseRuleQuestions`；确认先红后，再以最小改动扩充规则关键词、为中文词项增加双字/三字拆分，并过滤掉 `0` 分命中。
+- 修复后重新验证：
+- `go test ./internal/agent -run "Test(QueryRouter|EvaluateCases)" -v`
+- `go test ./internal/service -run "TestAgentKnowledgeService(SearchReturnsTenantScopedRankedChunks|SearchRanksChineseRuleQuestions|BuildChunksPreservesSourceRefs|SyncMarkdownReplacesDocumentChunks)" -v`
+- `go test ./scripts/agent_eval -v`
+- `CONFIG_PATH=G:\gofile\schedule_server\configs go run ./scripts/agent_eval -tenant-id 1`
+- `go test ./...`
+- 最新真实评测结果已恢复到：`路由准确率 100.0% (18/18)`、`知识命中率 100.0% (10/10)`、`平均耗时 86 ms`、`失败样本: 无`。
+
+## 当前任务
+- [x] 在 worktree 中补齐 `docs/agent-knowledge/` 的 5 份首批知识文档，使脚本默认目录有完整语料。
+- [x] 为 `scripts/sync_agent_knowledge` 补失败测试，锁定“默认根目录为 `docs/agent-knowledge`，且 `include` 为空时自动扫描全部 Markdown 并按路径排序”。
+- [x] 以最小改动调整同步脚本默认参数与目录扫描逻辑，并更新相关说明文档。
+- [x] 运行定向测试与脚本级验证，确认首批知识语料可通过默认命令同步。
+
+## 当前任务复盘
+- 已把 worktree 下的 `docs/agent-knowledge/` 补齐到 5 份首批知识文档：`schedule-mode-guide.md`、`leave-sync-guide.md`、`attendance-rules.md`、`system-overview.md`、`admin-operations-guide.md`，使知识同步脚本有稳定的默认语料目录可用。
+- 在 `scripts/sync_agent_knowledge/main_test.go` 先补了失败测试，锁定两个新行为：默认根目录固定为 `./docs/agent-knowledge`，以及 `include` 为空时自动递归收集根目录下全部 Markdown 文档并按相对路径排序。
+- `scripts/sync_agent_knowledge/main.go` 现已改为“目录即语料”模式：`-root` 默认指向 `docs/agent-knowledge`，`-include` 变为可选；未显式传入白名单时，会自动同步该目录内全部 `.md` 文档。评测说明 `docs/agent-rag-eval.md` 也同步更新为更短的默认命令。
+- 实际验证命令：
+- `go test ./scripts/sync_agent_knowledge -run "Test(DefaultKnowledgeRootPointsToAgentKnowledgeDir|CollectMarkdownPaths)" -v`（先红后绿）
+- `gofmt -w scripts/sync_agent_knowledge/main.go scripts/sync_agent_knowledge/main_test.go`
+- `go test ./scripts/sync_agent_knowledge ./scripts/agent_eval -v`
+- `go test ./...`
+
+## 当前任务
+- [x] 盘点本次新增或改动文件中的函数，确认注释补齐范围。
+- [x] 为本次新增或改动的命名函数补齐简短中文注释，不改逻辑。
+- [x] 运行 `gofmt` 和 `go test ./...` 验证补注释后仓库仍然通过。
+
+## 当前任务复盘
+- 已按确认范围，只为本次新增或改动文件中的命名函数补齐中文注释，没有批量改动仓库原有未参与本次实现的函数。
+- 注释已补到 `internal/agent`、`internal/service`、`internal/repository`、`internal/model` 以及 `scripts/agent_eval`、`scripts/sync_agent_knowledge` 下本次新增或改动的函数，包括测试 helper 和测试函数。
+- 实际验证命令：
+- `gofmt -w internal/agent/agent.go internal/agent/query_router.go internal/agent/retrieval.go internal/agent/eval.go internal/agent/query_router_test.go internal/agent/eval_test.go internal/agent/agent_rag_test.go internal/service/agent_knowledge_service.go internal/service/agent_knowledge_service_test.go internal/repository/agent_knowledge_repository.go internal/model/agent_knowledge_document.go internal/model/agent_knowledge_chunk.go internal/model/agent_call_log.go scripts/sync_agent_knowledge/main.go scripts/agent_eval/main.go`
+- `go test ./...`
+
+## 当前任务
+- [x] 完成 Task 1：补知识库 service 失败测试，并实现知识文档/切片模型、repository、service 与自动迁移。
+- [x] 完成 Task 2：补知识同步脚本首版，实现基于仓库 Markdown 文档的导入入口。
+- [x] 完成 Task 3：为 Agent 补 query router 与 rag/mixed 路径的失败测试。
+- [x] 完成 Task 3：接入 knowledge port、query router 与 retrieval，上线 Agent 的 `tool / rag / mixed` 分流。
+- [x] 完成 Task 4：补 `agent_eval` 脚本、样本集和评测说明。
+- [x] 完成 Task 5：扩展调用日志与后台展示字段，补 AI 链路观测信息。
+
+## 当前任务复盘
+- 已新增知识库主链路：`internal/model/agent_knowledge_*`、`internal/repository/agent_knowledge_repository.go`、`internal/service/agent_knowledge_service.go` 与 `scripts/sync_agent_knowledge/main.go`，支持按租户同步 Markdown 文档、切片、检索和来源引用。
+- `internal/agent` 已增加 `query_router.go`、`retrieval.go`、`eval.go`，并在 `agent.go` 中接入 `tool / rag / mixed` 三条路径；纯规则问答会关闭工具，仅基于检索片段回答，混合问答会把知识片段作为额外 system context 注入后继续保留工具调用。
+- 已补离线评测资产：`scripts/agent_eval/main.go`、`internal/agent/testdata/eval_cases.json`、`docs/agent-rag-eval.md`，并新增 `docs/agent-knowledge/*.md` 作为首批知识文档；评测脚本支持仅跑 `route + retrieval`，也支持在提供真实 `corp-id/sender-id` 后执行端到端 Agent 评测。
+- 已扩展观测字段：`internal/agent/tools/types.go`、`internal/model/agent_call_log.go`、`internal/app/agent_wiring.go`、`internal/adminui/tables/agent_call_log.go` 现在会记录并展示 `query_type`、`tool_call_count`、`retrieval_hit_count`、`retrieval_duration_ms`、`llm_duration_ms` 和 `source_refs`。
+- 新增回归测试覆盖知识服务、query router、rag/mixed 路径和调用日志指标，验证命令：
+- `go test ./internal/agent -run "Test(AgentChatWritesKnowledgeMetricsToCallLog|AgentChatUsesKnowledgeOnlyPathForRuleQuestions|AgentChatInjectsKnowledgeContextBeforeToolCallsForMixedQuestions|EvaluateCasesAggregatesRouteRetrievalToolAndKeywordMatches|QueryRouter)" -v`
+- `go test ./internal/app ./internal/adminui/... ./scripts/agent_eval ./scripts/sync_agent_knowledge -v`
+- `go test ./internal/service -run "TestAgentKnowledgeService(SearchReturnsTenantScopedRankedChunks|BuildChunksPreservesSourceRefs|SyncMarkdownReplacesDocumentChunks)" -v`
+- `go test ./...`
+
+## 当前任务
 - [x] 明确“上一节正常打卡 + 上一节迟到都可顺延到本节”的精确业务边界。
 - [x] 将实施步骤写入 `docs/superpowers/plans/2026-03-23-attendance-carry-forward-late-plan.md`。
 - [x] 先补打卡顺延回归测试，锁定上一节迟到用户在现有顺延条件下会进入本节 `on_time`。

@@ -45,6 +45,25 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 			{Text: "单聊", Value: "1"},
 			{Text: "群聊", Value: "2"},
 		})
+	info.AddField("查询路径", "query_type", db.Varchar).
+		FieldDisplay(func(m types.FieldModel) interface{} {
+			switch m.Value {
+			case "tool":
+				return "工具查询"
+			case "rag":
+				return "规则检索"
+			case "mixed":
+				return "混合"
+			default:
+				return m.Value
+			}
+		}).
+		FieldFilterable(types.FilterType{FormType: form.SelectSingle}).
+		FieldFilterOptions(types.FieldOptions{
+			{Text: "工具查询", Value: "tool"},
+			{Text: "规则检索", Value: "rag"},
+			{Text: "混合", Value: "mixed"},
+		})
 	info.AddField("提问", "question", db.Text).
 		FieldDisplay(func(m types.FieldModel) interface{} {
 			runes := []rune(m.Value)
@@ -56,6 +75,18 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
 	info.AddField("调用工具", "tools_called", db.Varchar).
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("工具次数", "tool_call_count", db.Int).FieldSortable()
+	info.AddField("知识命中", "retrieval_hit_count", db.Int).FieldSortable()
+	info.AddField("检索耗时(ms)", "retrieval_duration_ms", db.Int).FieldSortable()
+	info.AddField("LLM耗时(ms)", "llm_duration_ms", db.Int).FieldSortable()
+	info.AddField("来源引用", "source_refs", db.Text).
+		FieldDisplay(func(m types.FieldModel) interface{} {
+			runes := []rune(m.Value)
+			if len(runes) > 50 {
+				return string(runes[:50]) + "..."
+			}
+			return m.Value
+		})
 	info.AddField("回复", "reply", db.Text).
 		FieldDisplay(func(m types.FieldModel) interface{} {
 			runes := []rune(m.Value)

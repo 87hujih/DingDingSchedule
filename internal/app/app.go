@@ -208,8 +208,9 @@ func initAgent() *agent.Agent {
 		global.Log,
 	)
 	leaveSyncSrv := service.NewLeaveSyncService(repo.LeaveRepo, repo.UserRepo, dingMgr, global.Log)
+	knowledgeSrv := service.NewAgentKnowledgeService(repo.AgentKnowledgeRepo, global.Log)
 
-	return buildAgent(repo, scheduleSrv, attendanceSrv, semesterSrv, schedulePeriodSrv, restDaySrv, leaveSyncSrv)
+	return BuildAgent(repo, scheduleSrv, attendanceSrv, semesterSrv, schedulePeriodSrv, restDaySrv, leaveSyncSrv, knowledgeSrv, nil)
 }
 
 // startAttendanceScheduler 启动考勤调度器

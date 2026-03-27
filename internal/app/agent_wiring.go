@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"schedule_server/global"
@@ -19,10 +20,11 @@ import (
 	"gorm.io/gorm"
 )
 
-// ────────────── buildAgent ──────────────
+// ────────────── BuildAgent ──────────────
 
-// buildAgent 创建并返回一个 Agent 实例，组装所有适配器
-func buildAgent(
+// BuildAgent 创建并返回一个 Agent 实例，组装所有适配器。
+// customCallLog 仅用于脚本或测试场景覆盖默认日志写入。
+func BuildAgent(
 	repo *repository.Repository,
 	scheduleSrv *service.ScheduleService,
 	attendanceSrv *service.AttendanceRecordService,
@@ -30,8 +32,14 @@ func buildAgent(
 	schedulePeriodSrv *service.SchedulePeriodService,
 	restDaySrv *service.RestDayService,
 	leaveSyncSrv *service.LeaveSyncService,
+	knowledgeSrv *service.AgentKnowledgeService,
+	customCallLog agent.CallLogPort,
 ) *agent.Agent {
 	cfg := global.AppConfig.LLM
+	callLog := customCallLog
+	if callLog == nil {
+		callLog = &callLogAdapter{db: global.DB}
+	}
 
 	return agent.NewAgent(agent.Deps{
 		LLMBaseURL: cfg.BaseURL,
@@ -47,7 +55,8 @@ func buildAgent(
 		RestDay:         &restDayAdapter{srv: restDaySrv},
 		GroupSub:        &groupSubAdapter{repo: repo.GroupSubRepo},
 		Dept:            &deptAdapter{repo: repo.DeptRepo},
-		CallLog:         &callLogAdapter{db: global.DB},
+		Knowledge:       &knowledgeAdapter{srv: knowledgeSrv},
+		CallLog:         callLog,
 		AttendanceStats: attendanceSrv,
 		UserCross:       attendanceSrv,
 		Tenant:          &tenantAdapter{repo: repo.TenantRepo},
@@ -489,6 +498,38 @@ func (a *deptAdapter) ListDepts(ctx context.Context) ([]agent.DeptItem, error) {
 	return items, nil
 }
 
+// ────────────── knowledgeAdapter ──────────────
+
+type knowledgeAdapter struct {
+	srv *service.AgentKnowledgeService
+}
+
+// Search 根据租户和问题检索规则知识切片。
+func (a *knowledgeAdapter) Search(ctx context.Context, tenantID uint, query string, topK int) ([]agenttool.KnowledgeHit, error) {
+	if a.srv == nil {
+		return nil, nil
+	}
+
+	hits, err := a.srv.Search(ctx, tenantID, query, topK)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]agenttool.KnowledgeHit, 0, len(hits))
+	for _, hit := range hits {
+		result = append(result, agenttool.KnowledgeHit{
+			Title:      hit.Title,
+			SourcePath: hit.SourcePath,
+			ChunkIndex: hit.ChunkIndex,
+			Heading:    hit.Heading,
+			Body:       hit.Body,
+			SourceRef:  hit.SourceRef,
+			Score:      hit.Score,
+		})
+	}
+	return result, nil
+}
+
 // ────────────── callLogAdapter ──────────────
 
 type callLogAdapter struct {
@@ -509,17 +550,23 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 	// 使用 WithSkipTenantScope 跳过租户插件，TenantID 已在结构体中显式设置
 	ctx := tenantctx.WithSkipTenantScope(context.Background())
 	a.db.WithContext(ctx).Create(&model.AgentCallLog{
-		TenantID:    log.TenantID,
-		UserID:      log.UserID,
-		UserName:    log.UserName,
-		ConvType:    log.ConvType,
-		Question:    log.Question,
-		ToolsCalled: toolsCalled,
-		Reply:       log.Reply,
-		Rounds:      log.Rounds,
-		DurationMs:  log.DurationMs,
-		Status:      log.Status,
-		ErrorMsg:    log.ErrorMsg,
+		TenantID:            log.TenantID,
+		UserID:              log.UserID,
+		UserName:            log.UserName,
+		ConvType:            log.ConvType,
+		QueryType:           log.QueryType,
+		Question:            log.Question,
+		ToolsCalled:         toolsCalled,
+		ToolCallCount:       log.ToolCallCount,
+		Reply:               log.Reply,
+		SourceRefs:          strings.Join(log.SourceRefs, ","),
+		RetrievalHitCount:   log.RetrievalHitCount,
+		RetrievalDurationMs: log.RetrievalDurationMs,
+		LLMDurationMs:       log.LLMDurationMs,
+		Rounds:              log.Rounds,
+		DurationMs:          log.DurationMs,
+		Status:              log.Status,
+		ErrorMsg:            log.ErrorMsg,
 	})
 }
 
