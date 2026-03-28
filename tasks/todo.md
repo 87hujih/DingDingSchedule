@@ -1,6 +1,16 @@
 # 任务清单
 
 ## 当前任务
+- [x] 梳理 `95b0cf9` 这批 `RAG / Eval / Observability` 改动的完整范围，明确哪些属于我实现、哪些不纳入总结。
+- [x] 生成一份独立 Markdown，总结本次功能、测试、评测、文档和合并结果。
+- [x] 回读生成的总结文件，确认路径、内容和范围表述正确。
+
+## 当前任务复盘
+- 已生成独立总结文档 `agent-rag-change-summary.md`，范围明确限定为提交 `95b0cf9` 及其最终合入 `master` 的 `6293406`，不混入你后续单独提交的补签修复 `c3cddb1`。
+- 文档按“目标与问题、核心能力改动、知识文档整理、实现过程中修复的问题、测试与验证、最终落点与结果”组织，覆盖了本次 RAG / Eval / Observability 子项目的完整脉络。
+- 已通过回读 `agent-rag-change-summary.md` 文件头与关键段落核对范围，并用 `git status --short -- agent-rag-change-summary.md tasks/todo.md` 确认总结文档已经落盘。
+
+## 当前任务
 - [x] 设计第 2 批 `docs/agent-knowledge/` 的最小范围，补齐系统总览与后台操作说明。
 - [x] 生成 `system-overview.md`，用业务与能力导向方式整理系统定位、入口、角色与典型链路。
 - [x] 生成 `admin-operations-guide.md`，整理 GoAdmin 后台的启用、初始化、入口、常见页面与排障方法。
