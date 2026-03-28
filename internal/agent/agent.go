@@ -112,7 +112,7 @@ func (a *Agent) Chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	if err != nil || msg == nil || msg.ConversationType != "2" {
 		return reply, err
 	}
-	// 群聊中在回复前 @发送者，让群成员清楚这条回复针对谁
+	// 群聊中在回复前 @发送者，群成员可以清楚这条回复针对谁
 	return fmt.Sprintf("@%s\n%s", msg.SenderNick, reply), nil
 }
 
