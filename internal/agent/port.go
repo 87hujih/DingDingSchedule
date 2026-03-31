@@ -31,6 +31,7 @@ type (
 	LeaveItem            = tools.LeaveItem
 	UserInfo             = tools.UserInfo
 	KnowledgeHit         = tools.KnowledgeHit
+	RetrievalResult      = tools.RetrievalResult
 	PeriodInfo           = tools.PeriodInfo
 	DeptItem             = tools.DeptItem
 	AttendanceStatsQuery = tools.AttendanceStatsQuery

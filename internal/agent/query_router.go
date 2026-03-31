@@ -10,8 +10,26 @@ const (
 	queryKindMixed queryKind = "mixed"
 )
 
+type answerMode string
+
+const (
+	answerModeKnowledgeOnly answerMode = "knowledge-only"
+	answerModeToolFirst     answerMode = "tool-first"
+	answerModeMixed         answerMode = "mixed"
+	answerModeReject        answerMode = "reject"
+)
+
+const retrievalStrongScoreThreshold = 8
+
 type queryRoute struct {
 	Kind queryKind
+}
+
+type routeInputs struct {
+	DomainResult      domainResult
+	HasLiveSignal     bool
+	RetrievalHitCount int
+	TopScore          int
 }
 
 type queryRouter struct{}
@@ -32,6 +50,40 @@ func (r *queryRouter) Route(question string) queryRoute {
 		return queryRoute{Kind: queryKindMixed}
 	}
 	return queryRoute{Kind: queryKindRAG}
+}
+
+// Decide 根据领域判定、实时信号和检索强度选择回答模式。
+func (r *queryRouter) Decide(inputs routeInputs) answerMode {
+	if inputs.DomainResult != domainIn {
+		return answerModeReject
+	}
+
+	knowledgeStrong := inputs.RetrievalHitCount > 0 && inputs.TopScore >= retrievalStrongScoreThreshold
+	if inputs.HasLiveSignal {
+		if knowledgeStrong {
+			return answerModeMixed
+		}
+		return answerModeToolFirst
+	}
+	if knowledgeStrong {
+		return answerModeKnowledgeOnly
+	}
+	return answerModeReject
+}
+
+// DecideForQuestion 在基础模式决策上补一层“是否真的在问规则”的保护，避免纯实时问题被误抬成 mixed。
+func (r *queryRouter) DecideForQuestion(question string, domainResult domainResult, retrievalResult RetrievalResult) answerMode {
+	normalized := normalizeQuery(question)
+	mode := r.Decide(routeInputs{
+		DomainResult:      domainResult,
+		HasLiveSignal:     hasLiveSignal(normalized),
+		RetrievalHitCount: len(retrievalResult.Hits),
+		TopScore:          topKnowledgeScore(retrievalResult),
+	})
+	if hasLiveSignal(normalized) && !hasRuleSignal(normalized) && mode == answerModeMixed {
+		return answerModeToolFirst
+	}
+	return mode
 }
 
 // normalizeQuery 统一移除常见空白和标点，便于后续关键词判断。
@@ -81,6 +133,10 @@ func hasRuleSignal(question string) bool {
 
 // hasLiveSignal 判断问题是否需要实时业务数据参与回答。
 func hasLiveSignal(question string) bool {
+	if containsAny(question, []string{"按谁优先", "谁优先", "什么优先"}) {
+		return false
+	}
+
 	timeKeywords := []string{
 		"今天",
 		"昨天",
@@ -105,7 +161,6 @@ func hasLiveSignal(question string) bool {
 		"星期日",
 	}
 	queryKeywords := []string{
-		"谁",
 		"哪些",
 		"多少",
 		"名单",
@@ -121,6 +176,28 @@ func hasLiveSignal(question string) bool {
 
 	if containsAny(question, timeKeywords) || containsAny(question, queryKeywords) {
 		return true
+	}
+	if strings.Contains(question, "谁") {
+		liveContextKeywords := []string{
+			"今天",
+			"昨天",
+			"本周",
+			"这周",
+			"下周",
+			"第",
+			"节",
+			"未到",
+			"有课",
+			"没课",
+			"无课",
+			"请假",
+			"缺勤",
+			"出勤",
+			"名单",
+		}
+		if containsAny(question, liveContextKeywords) {
+			return true
+		}
 	}
 
 	return strings.Contains(question, "第") && strings.Contains(question, "节")

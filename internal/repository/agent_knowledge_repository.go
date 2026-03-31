@@ -15,6 +15,9 @@ type AgentKnowledgeSearchRow struct {
 	DocumentID uint
 	Title      string
 	SourcePath string
+	DocType    string
+	Audience   string
+	Intent     string
 	ChunkIndex int
 	Heading    string
 	Body       string
@@ -50,6 +53,9 @@ func (r *agentKnowledgeRepository) UpsertDocument(ctx context.Context, doc *mode
 		if err == nil && existing.ID != 0 {
 			existing.Title = doc.Title
 			existing.SourceType = doc.SourceType
+			existing.DocType = doc.DocType
+			existing.Audience = doc.Audience
+			existing.Intent = doc.Intent
 			existing.ContentHash = doc.ContentHash
 			existing.Status = doc.Status
 			if updateErr := tx.Save(&existing).Error; updateErr != nil {
@@ -63,7 +69,7 @@ func (r *agentKnowledgeRepository) UpsertDocument(ctx context.Context, doc *mode
 		}
 		return tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "tenant_id"}, {Name: "source_path"}},
-			DoUpdates: clause.AssignmentColumns([]string{"title", "source_type", "content_hash", "status", "updated_at"}),
+			DoUpdates: clause.AssignmentColumns([]string{"title", "source_type", "doc_type", "audience", "intent", "content_hash", "status", "updated_at"}),
 		}).Create(doc).Error
 	})
 }
@@ -86,7 +92,7 @@ func (r *agentKnowledgeRepository) ListChunksByTenant(ctx context.Context, tenan
 	var rows []AgentKnowledgeSearchRow
 	err := r.db.WithContext(ctx).
 		Table("agent_knowledge_chunks AS c").
-		Select("c.tenant_id, c.document_id, d.title, d.source_path, c.chunk_index, c.heading, c.body, c.search_text, c.source_ref").
+		Select("c.tenant_id, c.document_id, d.title, d.source_path, COALESCE(NULLIF(c.doc_type, ''), d.doc_type) AS doc_type, COALESCE(NULLIF(c.audience, ''), d.audience) AS audience, COALESCE(NULLIF(c.intent, ''), d.intent) AS intent, c.chunk_index, c.heading, c.body, c.search_text, c.source_ref").
 		Joins("JOIN agent_knowledge_documents AS d ON d.id = c.document_id").
 		Where("c.tenant_id = ?", tenantID).
 		Order("c.document_id ASC, c.chunk_index ASC").

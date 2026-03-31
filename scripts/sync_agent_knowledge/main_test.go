@@ -57,6 +57,65 @@ func TestCollectMarkdownPathsPrefersExplicitIncludeList(t *testing.T) {
 	}
 }
 
+// TestLoadKnowledgeManifestReturnsMetadataBySourcePath 验证 manifest 能按 source path 返回文档元数据。
+func TestLoadKnowledgeManifestReturnsMetadataBySourcePath(t *testing.T) {
+	root := t.TempDir()
+
+	manifestPath := filepath.Join(root, defaultKnowledgeManifestName)
+	if err := os.WriteFile(manifestPath, []byte(`
+agent-knowledge/attendance-rules.md:
+  doc_type: rule
+  audience: shared
+  intent: attendance
+agent-knowledge/system-overview.md:
+  doc_type: overview
+  audience: shared
+  intent: system
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) error: %v", manifestPath, err)
+	}
+
+	manifest, err := loadKnowledgeManifest(root)
+	if err != nil {
+		t.Fatalf("loadKnowledgeManifest() error = %v", err)
+	}
+
+	attendance := manifest.MetadataFor("agent-knowledge/attendance-rules.md")
+	if attendance.DocType != "rule" || attendance.Audience != "shared" || attendance.Intent != "attendance" {
+		t.Fatalf("attendance metadata = %+v, want rule/shared/attendance", attendance)
+	}
+
+	overview := manifest.MetadataFor("agent-knowledge/system-overview.md")
+	if overview.DocType != "overview" || overview.Audience != "shared" || overview.Intent != "system" {
+		t.Fatalf("overview metadata = %+v, want overview/shared/system", overview)
+	}
+}
+
+// TestLoadKnowledgeManifestFallsBackToDefaultsWhenMissing 验证 manifest 缺失条目时会回退到默认元数据。
+func TestLoadKnowledgeManifestFallsBackToDefaultsWhenMissing(t *testing.T) {
+	root := t.TempDir()
+
+	manifestPath := filepath.Join(root, defaultKnowledgeManifestName)
+	if err := os.WriteFile(manifestPath, []byte(`
+agent-knowledge/attendance-rules.md:
+  doc_type: rule
+  audience: shared
+  intent: attendance
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) error: %v", manifestPath, err)
+	}
+
+	manifest, err := loadKnowledgeManifest(root)
+	if err != nil {
+		t.Fatalf("loadKnowledgeManifest() error = %v", err)
+	}
+
+	meta := manifest.MetadataFor("agent-knowledge/custom-faq.md")
+	if meta.DocType != "unknown" || meta.Audience != "shared" || meta.Intent != "unknown" {
+		t.Fatalf("fallback metadata = %+v, want unknown/shared/unknown", meta)
+	}
+}
+
 // mustWriteTestFile 在临时目录中创建测试文档。
 func mustWriteTestFile(t *testing.T, path string) {
 	t.Helper()

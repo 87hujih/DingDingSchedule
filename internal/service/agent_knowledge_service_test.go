@@ -149,6 +149,142 @@ func TestAgentKnowledgeServiceSearchRanksChineseRuleQuestions(t *testing.T) {
 	}
 }
 
+// TestAgentKnowledgeServiceSearchPrioritizesRuleDocsOverOverviewDocs 验证规则文档在部分同词命中时优先于 overview 文档。
+func TestAgentKnowledgeServiceSearchPrioritizesRuleDocsOverOverviewDocs(t *testing.T) {
+	db := newAgentKnowledgeTestDB(t)
+
+	repo := repository.NewAgentKnowledgeRepository(db)
+	svc := NewAgentKnowledgeService(repo, zap.NewNop().Sugar())
+
+	const tenantID = uint(1)
+
+	mustCreateKnowledgeDocument(t, db, &model.AgentKnowledgeDocument{
+		TenantID:   tenantID,
+		Title:      "系统总览",
+		SourcePath: "agent-knowledge/system-overview.md",
+		SourceType: "markdown",
+		DocType:    "overview",
+		Audience:   "shared",
+		Intent:     "system",
+		Status:     "active",
+	}, []model.AgentKnowledgeChunk{
+		{
+			TenantID:   tenantID,
+			ChunkIndex: 1,
+			Heading:    "能力概览",
+			Body:       "系统支持请假同步、考勤统计和管理员复核。",
+			SearchText: normalizeSearchText("能力概览 系统支持请假同步、考勤统计和管理员复核。"),
+			SourceRef:  "系统总览#1",
+			DocType:    "overview",
+			Audience:   "shared",
+			Intent:     "system",
+		},
+	})
+
+	mustCreateKnowledgeDocument(t, db, &model.AgentKnowledgeDocument{
+		TenantID:   tenantID,
+		Title:      "请假同步说明",
+		SourcePath: "agent-knowledge/leave-sync-guide.md",
+		SourceType: "markdown",
+		DocType:    "rule",
+		Audience:   "shared",
+		Intent:     "leave",
+		Status:     "active",
+	}, []model.AgentKnowledgeChunk{
+		{
+			TenantID:   tenantID,
+			ChunkIndex: 1,
+			Heading:    "同步失败处理",
+			Body:       "同步失败不会直接覆盖已经生成的考勤快照；排障后应重试同步，再由管理员复核结果。",
+			SearchText: normalizeSearchText("同步失败处理 同步失败不会直接覆盖已经生成的考勤快照；排障后应重试同步，再由管理员复核结果。"),
+			SourceRef:  "请假同步说明#3",
+			DocType:    "rule",
+			Audience:   "shared",
+			Intent:     "leave",
+		},
+	})
+
+	hits, err := svc.Search(context.Background(), tenantID, "请假同步失败会影响什么", 3)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(hits) < 2 {
+		t.Fatalf("len(hits) = %d, want at least 2", len(hits))
+	}
+	if hits[0].SourceRef != "请假同步说明#3" {
+		t.Fatalf("top hit source ref = %q, want %q", hits[0].SourceRef, "请假同步说明#3")
+	}
+	if hits[0].SourcePath == "agent-knowledge/system-overview.md" {
+		t.Fatalf("expected overview doc not to rank first: %+v", hits)
+	}
+}
+
+// TestAgentKnowledgeServiceSearchExpandsRealWorldLeaveSyncQuestion 验证真实口语问法会扩展到同步失败处理片段。
+func TestAgentKnowledgeServiceSearchExpandsRealWorldLeaveSyncQuestion(t *testing.T) {
+	db := newAgentKnowledgeTestDB(t)
+
+	repo := repository.NewAgentKnowledgeRepository(db)
+	svc := NewAgentKnowledgeService(repo, zap.NewNop().Sugar())
+
+	const tenantID = uint(1)
+
+	mustCreateKnowledgeDocument(t, db, &model.AgentKnowledgeDocument{
+		TenantID:   tenantID,
+		Title:      "请假同步说明",
+		SourcePath: "agent-knowledge/leave-sync-guide.md",
+		SourceType: "markdown",
+		DocType:    "rule",
+		Audience:   "shared",
+		Intent:     "leave",
+		Status:     "active",
+	}, []model.AgentKnowledgeChunk{
+		{
+			TenantID:   tenantID,
+			ChunkIndex: 1,
+			Heading:    "同步触发",
+			Body:       "钉钉审批通过后，系统会按租户上下文同步请假单据。",
+			SearchText: normalizeSearchText("同步触发 钉钉审批通过后，系统会按租户上下文同步请假单据。"),
+			SourceRef:  "请假同步说明#1",
+			DocType:    "rule",
+			Audience:   "shared",
+			Intent:     "leave",
+		},
+		{
+			TenantID:   tenantID,
+			ChunkIndex: 2,
+			Heading:    "对考勤影响",
+			Body:       "命中请假时间段的用户会在考勤结果中进入请假名单，不再计入未到。",
+			SearchText: normalizeSearchText("对考勤影响 命中请假时间段的用户会在考勤结果中进入请假名单，不再计入未到。"),
+			SourceRef:  "请假同步说明#2",
+			DocType:    "rule",
+			Audience:   "shared",
+			Intent:     "leave",
+		},
+		{
+			TenantID:   tenantID,
+			ChunkIndex: 3,
+			Heading:    "同步失败处理",
+			Body:       "同步失败不会直接覆盖已经生成的考勤快照；排障后应重试同步，再由管理员复核结果。",
+			SearchText: normalizeSearchText("同步失败处理 同步失败不会直接覆盖已经生成的考勤快照；排障后应重试同步，再由管理员复核结果。"),
+			SourceRef:  "请假同步说明#3",
+			DocType:    "rule",
+			Audience:   "shared",
+			Intent:     "leave",
+		},
+	})
+
+	hits, err := svc.Search(context.Background(), tenantID, "如果请假信息没能同步到位，会出现什么情况", 3)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatalf("Search() returned no hits")
+	}
+	if hits[0].SourceRef != "请假同步说明#3" {
+		t.Fatalf("top hit source ref = %q, want %q", hits[0].SourceRef, "请假同步说明#3")
+	}
+}
+
 // TestAgentKnowledgeServiceBuildChunksPreservesSourceRefs 验证切片时会稳定生成来源引用。
 func TestAgentKnowledgeServiceBuildChunksPreservesSourceRefs(t *testing.T) {
 	svc := NewAgentKnowledgeService(nil, zap.NewNop().Sugar())

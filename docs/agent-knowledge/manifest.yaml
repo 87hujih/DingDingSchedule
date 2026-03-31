@@ -1,0 +1,20 @@
+agent-knowledge/attendance-rules.md:
+  doc_type: rule
+  audience: shared
+  intent: attendance
+agent-knowledge/leave-sync-guide.md:
+  doc_type: rule
+  audience: shared
+  intent: leave
+agent-knowledge/schedule-mode-guide.md:
+  doc_type: rule
+  audience: shared
+  intent: schedule
+agent-knowledge/system-overview.md:
+  doc_type: overview
+  audience: shared
+  intent: system
+agent-knowledge/admin-operations-guide.md:
+  doc_type: admin
+  audience: admin
+  intent: adminui

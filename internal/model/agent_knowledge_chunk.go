@@ -12,6 +12,9 @@ type AgentKnowledgeChunk struct {
 	Body       string `gorm:"type:text"`
 	SearchText string `gorm:"type:text"`
 	SourceRef  string `gorm:"size:255"`
+	DocType    string `gorm:"size:32;index"`
+	Audience   string `gorm:"size:32;index"`
+	Intent     string `gorm:"size:32;index"`
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }

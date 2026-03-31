@@ -17,6 +17,30 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	defaultKnowledgeDocType     = "unknown"
+	defaultKnowledgeAudience    = "shared"
+	defaultKnowledgeIntent      = "unknown"
+	knowledgeRerankWindowFactor = 4
+)
+
+var retrievalAliases = map[string][]string{
+	"没同步到位":   {"同步失败", "失败处理"},
+	"没能同步到位":  {"同步失败", "失败处理"},
+	"会出现什么情况": {"影响", "处理"},
+	"考勤逻辑":    {"考勤规则"},
+}
+
+var knowledgeIntentHints = map[string][]string{
+	"attendance": {"考勤", "打卡", "迟到", "未到"},
+	"leave":      {"请假", "审批", "同步", "快照"},
+	"schedule":   {"课表", "节次", "作息", "排课"},
+	"system":     {"系统", "功能", "能力", "介绍"},
+	"adminui":    {"后台", "管理", "goadmin", "启用", "登录"},
+}
+
+var knowledgeAdminHints = []string{"后台", "管理", "goadmin", "启用", "登录", "初始化"}
+
 // KnowledgeChunkDraft 表示尚未持久化的知识切片。
 type KnowledgeChunkDraft struct {
 	ChunkIndex int
@@ -26,12 +50,22 @@ type KnowledgeChunkDraft struct {
 	SourceRef  string
 }
 
+// KnowledgeDocumentMetadata 表示知识文档的轻量分类元数据。
+type KnowledgeDocumentMetadata struct {
+	DocType  string
+	Audience string
+	Intent   string
+}
+
 // KnowledgeHit 表示一次知识检索命中的切片。
 type KnowledgeHit struct {
 	TenantID   uint
 	DocumentID uint
 	Title      string
 	SourcePath string
+	DocType    string
+	Audience   string
+	Intent     string
 	ChunkIndex int
 	Heading    string
 	Body       string
@@ -44,6 +78,7 @@ type MarkdownKnowledgeDocument struct {
 	Title      string
 	SourcePath string
 	Content    string
+	Metadata   KnowledgeDocumentMetadata
 }
 
 // KnowledgeSyncResult 返回一次知识同步的摘要。
@@ -59,6 +94,17 @@ type AgentKnowledgeService struct {
 	logger *zap.SugaredLogger
 }
 
+type knowledgeQueryPlan struct {
+	CompactQueries []string
+	QueryTerms     []string
+}
+
+type knowledgeCandidate struct {
+	row          repository.AgentKnowledgeSearchRow
+	lexicalScore int
+	finalScore   int
+}
+
 // NewAgentKnowledgeService 创建规则知识服务。
 func NewAgentKnowledgeService(repo repository.AgentKnowledgeRepository, logger *zap.SugaredLogger) *AgentKnowledgeService {
 	if logger == nil {
@@ -68,6 +114,25 @@ func NewAgentKnowledgeService(repo repository.AgentKnowledgeRepository, logger *
 		repo:   repo,
 		logger: logger,
 	}
+}
+
+// NormalizeKnowledgeMetadata 统一补齐知识文档元数据缺省值。
+func NormalizeKnowledgeMetadata(meta KnowledgeDocumentMetadata) KnowledgeDocumentMetadata {
+	normalized := KnowledgeDocumentMetadata{
+		DocType:  strings.ToLower(strings.TrimSpace(meta.DocType)),
+		Audience: strings.ToLower(strings.TrimSpace(meta.Audience)),
+		Intent:   strings.ToLower(strings.TrimSpace(meta.Intent)),
+	}
+	if normalized.DocType == "" {
+		normalized.DocType = defaultKnowledgeDocType
+	}
+	if normalized.Audience == "" {
+		normalized.Audience = defaultKnowledgeAudience
+	}
+	if normalized.Intent == "" {
+		normalized.Intent = defaultKnowledgeIntent
+	}
+	return normalized
 }
 
 // Search 按租户检索与问题最相关的知识切片。
@@ -83,41 +148,84 @@ func (s *AgentKnowledgeService) Search(ctx context.Context, tenantID uint, query
 		return nil, err
 	}
 
-	normalizedQuery := normalizeSearchText(query)
-	compactQuery := compactSearchText(normalizedQuery)
-	if compactQuery == "" {
+	queryPlan := buildKnowledgeQueryPlan(query)
+	if len(queryPlan.CompactQueries) == 0 {
 		return []KnowledgeHit{}, nil
 	}
-	queryTerms := splitSearchTerms(normalizedQuery)
 
-	hits := make([]KnowledgeHit, 0, len(rows))
+	candidates := make([]knowledgeCandidate, 0, len(rows))
 	for _, row := range rows {
-		score := scoreKnowledgeRow(row, compactQuery, queryTerms)
+		score := scoreKnowledgeLexical(row, queryPlan.CompactQueries, queryPlan.QueryTerms)
 		if score <= 0 {
 			continue
 		}
-		hits = append(hits, KnowledgeHit{
-			TenantID:   row.TenantID,
-			DocumentID: row.DocumentID,
-			Title:      row.Title,
-			SourcePath: row.SourcePath,
-			ChunkIndex: row.ChunkIndex,
-			Heading:    row.Heading,
-			Body:       row.Body,
-			SourceRef:  row.SourceRef,
-			Score:      score,
+		candidates = append(candidates, knowledgeCandidate{
+			row:          row,
+			lexicalScore: score,
 		})
 	}
 
-	sort.SliceStable(hits, func(i, j int) bool {
-		if hits[i].Score == hits[j].Score {
-			if hits[i].DocumentID == hits[j].DocumentID {
-				return hits[i].ChunkIndex < hits[j].ChunkIndex
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].lexicalScore == candidates[j].lexicalScore {
+			if candidates[i].row.DocumentID == candidates[j].row.DocumentID {
+				return candidates[i].row.ChunkIndex < candidates[j].row.ChunkIndex
 			}
-			return hits[i].DocumentID < hits[j].DocumentID
+			return candidates[i].row.DocumentID < candidates[j].row.DocumentID
 		}
-		return hits[i].Score > hits[j].Score
+		return candidates[i].lexicalScore > candidates[j].lexicalScore
 	})
+
+	rerankLimit := len(candidates)
+	if topK > 0 {
+		window := topK * knowledgeRerankWindowFactor
+		if window < topK {
+			window = topK
+		}
+		if rerankLimit > window {
+			rerankLimit = window
+		}
+	}
+	candidates = candidates[:rerankLimit]
+
+	for i := range candidates {
+		candidates[i].finalScore = candidates[i].lexicalScore + scoreKnowledgeMetadata(candidates[i].row, queryPlan.QueryTerms)
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].finalScore == candidates[j].finalScore {
+			if candidates[i].lexicalScore == candidates[j].lexicalScore {
+				if candidates[i].row.DocumentID == candidates[j].row.DocumentID {
+					return candidates[i].row.ChunkIndex < candidates[j].row.ChunkIndex
+				}
+				return candidates[i].row.DocumentID < candidates[j].row.DocumentID
+			}
+			return candidates[i].lexicalScore > candidates[j].lexicalScore
+		}
+		return candidates[i].finalScore > candidates[j].finalScore
+	})
+
+	hits := make([]KnowledgeHit, 0, len(candidates))
+	for _, candidate := range candidates {
+		meta := NormalizeKnowledgeMetadata(KnowledgeDocumentMetadata{
+			DocType:  candidate.row.DocType,
+			Audience: candidate.row.Audience,
+			Intent:   candidate.row.Intent,
+		})
+		hits = append(hits, KnowledgeHit{
+			TenantID:   candidate.row.TenantID,
+			DocumentID: candidate.row.DocumentID,
+			Title:      candidate.row.Title,
+			SourcePath: candidate.row.SourcePath,
+			DocType:    meta.DocType,
+			Audience:   meta.Audience,
+			Intent:     meta.Intent,
+			ChunkIndex: candidate.row.ChunkIndex,
+			Heading:    candidate.row.Heading,
+			Body:       candidate.row.Body,
+			SourceRef:  candidate.row.SourceRef,
+			Score:      candidate.finalScore,
+		})
+	}
 
 	if topK > 0 && len(hits) > topK {
 		hits = hits[:topK]
@@ -200,6 +308,7 @@ func (s *AgentKnowledgeService) SyncMarkdownDocuments(ctx context.Context, tenan
 		title := strings.TrimSpace(doc.Title)
 		sourcePath := strings.TrimSpace(doc.SourcePath)
 		content := strings.TrimSpace(doc.Content)
+		meta := NormalizeKnowledgeMetadata(doc.Metadata)
 		if title == "" || sourcePath == "" || content == "" {
 			result.Skipped++
 			continue
@@ -210,6 +319,9 @@ func (s *AgentKnowledgeService) SyncMarkdownDocuments(ctx context.Context, tenan
 			Title:       title,
 			SourcePath:  sourcePath,
 			SourceType:  "markdown",
+			DocType:     meta.DocType,
+			Audience:    meta.Audience,
+			Intent:      meta.Intent,
 			ContentHash: hashKnowledgeContent(content),
 			Status:      "active",
 		}
@@ -228,6 +340,9 @@ func (s *AgentKnowledgeService) SyncMarkdownDocuments(ctx context.Context, tenan
 				Body:       draft.Body,
 				SearchText: draft.SearchText,
 				SourceRef:  draft.SourceRef,
+				DocType:    meta.DocType,
+				Audience:   meta.Audience,
+				Intent:     meta.Intent,
 			})
 		}
 		if err := s.repo.ReplaceChunks(ctx, tenantID, record.ID, chunks); err != nil {
@@ -295,6 +410,66 @@ func splitSearchTerms(text string) []string {
 	return uniqueSearchTerms(terms)
 }
 
+// buildKnowledgeQueryPlan 为一次检索构造原始问句与 alias 扩展后的词项集合。
+func buildKnowledgeQueryPlan(query string) knowledgeQueryPlan {
+	variants := expandKnowledgeQueryVariants(query)
+	if len(variants) == 0 {
+		return knowledgeQueryPlan{}
+	}
+
+	compactQueries := make([]string, 0, len(variants))
+	queryTerms := make([]string, 0, len(variants)*4)
+	for _, variant := range variants {
+		compact := compactSearchText(variant)
+		if compact == "" {
+			continue
+		}
+		compactQueries = append(compactQueries, compact)
+		queryTerms = append(queryTerms, splitSearchTerms(variant)...)
+	}
+
+	return knowledgeQueryPlan{
+		CompactQueries: uniqueSearchTerms(compactQueries),
+		QueryTerms:     uniqueSearchTerms(queryTerms),
+	}
+}
+
+// expandKnowledgeQueryVariants 为真实口语化问法补同义表达，提升规则文档召回。
+func expandKnowledgeQueryVariants(query string) []string {
+	normalized := normalizeSearchText(query)
+	if normalized == "" {
+		return nil
+	}
+
+	variants := []string{normalized}
+	compact := compactSearchText(normalized)
+	for key, aliases := range retrievalAliases {
+		if !strings.Contains(compact, compactSearchText(key)) {
+			continue
+		}
+		variants = append(variants, aliases...)
+	}
+	return uniqueNormalizedTexts(variants)
+}
+
+// uniqueNormalizedTexts 对查询变体做归一化和去重。
+func uniqueNormalizedTexts(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizeSearchText(value)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
 // expandSearchTerms 为中文整句查询补充双字、三字词项，避免整句匹配导致全部得分为零。
 func expandSearchTerms(text string) []string {
 	compact := compactSearchText(text)
@@ -353,22 +528,27 @@ func containsHanRune(text string) bool {
 	return false
 }
 
-// scoreKnowledgeRow 根据标题、正文和搜索文本计算首版相关性得分。
-func scoreKnowledgeRow(row repository.AgentKnowledgeSearchRow, compactQuery string, queryTerms []string) int {
+// scoreKnowledgeLexical 根据标题、正文和搜索文本计算词法相关性得分。
+func scoreKnowledgeLexical(row repository.AgentKnowledgeSearchRow, compactQueries []string, queryTerms []string) int {
 	headingCompact := compactSearchText(row.Heading)
 	bodyCompact := compactSearchText(row.Body)
 	titleCompact := compactSearchText(row.Title)
 	searchCompact := compactSearchText(row.SearchText)
 
 	score := 0
-	if strings.Contains(headingCompact, compactQuery) {
-		score += 12
-	}
-	if strings.Contains(titleCompact, compactQuery) {
-		score += 10
-	}
-	if strings.Contains(searchCompact, compactQuery) || strings.Contains(bodyCompact, compactQuery) {
-		score += 8
+	for _, compactQuery := range compactQueries {
+		if compactQuery == "" {
+			continue
+		}
+		if strings.Contains(headingCompact, compactQuery) {
+			score += 12
+		}
+		if strings.Contains(titleCompact, compactQuery) {
+			score += 10
+		}
+		if strings.Contains(searchCompact, compactQuery) || strings.Contains(bodyCompact, compactQuery) {
+			score += 8
+		}
 	}
 
 	for _, term := range queryTerms {
@@ -388,6 +568,60 @@ func scoreKnowledgeRow(row repository.AgentKnowledgeSearchRow, compactQuery stri
 	}
 
 	return score
+}
+
+// scoreKnowledgeMetadata 用文档类型和意图为词法候选做轻量重排。
+func scoreKnowledgeMetadata(row repository.AgentKnowledgeSearchRow, queryTerms []string) int {
+	meta := NormalizeKnowledgeMetadata(KnowledgeDocumentMetadata{
+		DocType:  row.DocType,
+		Audience: row.Audience,
+		Intent:   row.Intent,
+	})
+
+	score := 0
+	switch meta.DocType {
+	case "rule":
+		score += 8
+	case "faq":
+		score += 6
+	case "overview":
+		score -= 2
+	case "admin":
+		score -= 5
+	}
+
+	switch meta.Audience {
+	case "shared":
+		score += 1
+	case "admin":
+		if !queryMatchesAnyHint(queryTerms, knowledgeAdminHints) {
+			score -= 4
+		}
+	}
+
+	if hints, ok := knowledgeIntentHints[meta.Intent]; ok {
+		if queryMatchesAnyHint(queryTerms, hints) {
+			score += 3
+		} else if meta.Intent == "system" {
+			score -= 1
+		}
+	}
+
+	return score
+}
+
+// queryMatchesAnyHint 判断查询词项是否命中某组业务提示词。
+func queryMatchesAnyHint(queryTerms []string, hints []string) bool {
+	for _, hint := range hints {
+		for _, expanded := range expandSearchTerms(hint) {
+			for _, term := range queryTerms {
+				if term == expanded || strings.Contains(term, expanded) || strings.Contains(expanded, term) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // hashKnowledgeContent 计算知识文档内容的稳定哈希值。

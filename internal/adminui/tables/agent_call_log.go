@@ -64,6 +64,44 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 			{Text: "规则检索", Value: "rag"},
 			{Text: "混合", Value: "mixed"},
 		})
+	info.AddField("领域判定", "domain_result", db.Varchar).
+		FieldDisplay(func(m types.FieldModel) interface{} {
+			switch m.Value {
+			case "in_domain":
+				return "站内"
+			case "out_of_domain":
+				return "站外"
+			default:
+				return m.Value
+			}
+		}).
+		FieldFilterable(types.FilterType{FormType: form.SelectSingle}).
+		FieldFilterOptions(types.FieldOptions{
+			{Text: "站内", Value: "in_domain"},
+			{Text: "站外", Value: "out_of_domain"},
+		})
+	info.AddField("回答模式", "answer_mode", db.Varchar).
+		FieldDisplay(func(m types.FieldModel) interface{} {
+			switch m.Value {
+			case "knowledge-only":
+				return "纯知识"
+			case "tool-first":
+				return "工具优先"
+			case "mixed":
+				return "混合"
+			case "reject":
+				return "拒答"
+			default:
+				return m.Value
+			}
+		}).
+		FieldFilterable(types.FilterType{FormType: form.SelectSingle}).
+		FieldFilterOptions(types.FieldOptions{
+			{Text: "纯知识", Value: "knowledge-only"},
+			{Text: "工具优先", Value: "tool-first"},
+			{Text: "混合", Value: "mixed"},
+			{Text: "拒答", Value: "reject"},
+		})
 	info.AddField("提问", "question", db.Text).
 		FieldDisplay(func(m types.FieldModel) interface{} {
 			runes := []rune(m.Value)
@@ -77,6 +115,7 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
 	info.AddField("工具次数", "tool_call_count", db.Int).FieldSortable()
 	info.AddField("知识命中", "retrieval_hit_count", db.Int).FieldSortable()
+	info.AddField("候选数", "retrieval_candidate_count", db.Int).FieldSortable()
 	info.AddField("检索耗时(ms)", "retrieval_duration_ms", db.Int).FieldSortable()
 	info.AddField("LLM耗时(ms)", "llm_duration_ms", db.Int).FieldSortable()
 	info.AddField("来源引用", "source_refs", db.Text).
@@ -87,6 +126,17 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 			}
 			return m.Value
 		})
+	info.AddField("Top来源", "retrieval_top_refs", db.Text).
+		FieldDisplay(func(m types.FieldModel) interface{} {
+			runes := []rune(m.Value)
+			if len(runes) > 50 {
+				return string(runes[:50]) + "..."
+			}
+			return m.Value
+		})
+	info.AddField("检索分数", "retrieval_scores", db.Text)
+	info.AddField("过滤原因", "retrieval_filtered_reason", db.Varchar)
+	info.AddField("文档类型", "knowledge_doc_types", db.Text)
 	info.AddField("回复", "reply", db.Text).
 		FieldDisplay(func(m types.FieldModel) interface{} {
 			runes := []rune(m.Value)

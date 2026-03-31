@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -530,6 +531,9 @@ func (a *knowledgeAdapter) Search(ctx context.Context, tenantID uint, query stri
 		result = append(result, agenttool.KnowledgeHit{
 			Title:      hit.Title,
 			SourcePath: hit.SourcePath,
+			DocType:    hit.DocType,
+			Audience:   hit.Audience,
+			Intent:     hit.Intent,
 			ChunkIndex: hit.ChunkIndex,
 			Heading:    hit.Heading,
 			Body:       hit.Body,
@@ -560,24 +564,43 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 	// 使用 WithSkipTenantScope 跳过租户插件，TenantID 已在结构体中显式设置
 	ctx := tenantctx.WithSkipTenantScope(context.Background())
 	a.db.WithContext(ctx).Create(&model.AgentCallLog{
-		TenantID:            log.TenantID,
-		UserID:              log.UserID,
-		UserName:            log.UserName,
-		ConvType:            log.ConvType,
-		QueryType:           log.QueryType,
-		Question:            log.Question,
-		ToolsCalled:         toolsCalled,
-		ToolCallCount:       log.ToolCallCount,
-		Reply:               log.Reply,
-		SourceRefs:          strings.Join(log.SourceRefs, ","),
-		RetrievalHitCount:   log.RetrievalHitCount,
-		RetrievalDurationMs: log.RetrievalDurationMs,
-		LLMDurationMs:       log.LLMDurationMs,
-		Rounds:              log.Rounds,
-		DurationMs:          log.DurationMs,
-		Status:              log.Status,
-		ErrorMsg:            log.ErrorMsg,
+		TenantID:                log.TenantID,
+		UserID:                  log.UserID,
+		UserName:                log.UserName,
+		ConvType:                log.ConvType,
+		QueryType:               log.QueryType,
+		DomainResult:            log.DomainResult,
+		AnswerMode:              log.AnswerMode,
+		Question:                log.Question,
+		ToolsCalled:             toolsCalled,
+		ToolCallCount:           log.ToolCallCount,
+		Reply:                   log.Reply,
+		SourceRefs:              strings.Join(log.SourceRefs, ","),
+		RetrievalHitCount:       log.RetrievalHitCount,
+		RetrievalCandidateCount: log.RetrievalCandidateCount,
+		RetrievalTopRefs:        strings.Join(log.RetrievalTopRefs, ","),
+		RetrievalScores:         joinIntList(log.RetrievalScores),
+		RetrievalFilteredReason: log.RetrievalFilteredReason,
+		KnowledgeDocTypes:       strings.Join(log.KnowledgeDocTypes, ","),
+		RetrievalDurationMs:     log.RetrievalDurationMs,
+		LLMDurationMs:           log.LLMDurationMs,
+		Rounds:                  log.Rounds,
+		DurationMs:              log.DurationMs,
+		Status:                  log.Status,
+		ErrorMsg:                log.ErrorMsg,
 	})
+}
+
+func joinIntList(values []int) string {
+	if len(values) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, strconv.Itoa(value))
+	}
+	return strings.Join(parts, ",")
 }
 
 // ────────────── tenantAdapter ──────────────

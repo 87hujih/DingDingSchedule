@@ -121,7 +121,7 @@ func TestAgentChatAllowsFollowUpToolCalls(t *testing.T) {
 		CorpID:           "corp-1",
 		SenderID:         "ding-user",
 		SenderNick:       "Alice",
-		Content:          "帮我连续查两次",
+		Content:          "帮我连续查两次今天第一节谁未到",
 		ConversationID:   "conv-1",
 		ConversationType: "1",
 	})

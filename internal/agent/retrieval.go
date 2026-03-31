@@ -2,44 +2,49 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"strings"
 )
 
 const defaultKnowledgeTopK = 4
 
-// retrieveKnowledge 按租户和问题执行首版规则知识检索。
-func (a *Agent) retrieveKnowledge(ctx context.Context, tenantID uint, question string) ([]KnowledgeHit, error) {
+const (
+	retrievalFilteredReasonKnowledgeUnavailable = "knowledge_unavailable"
+	retrievalFilteredReasonNoHits               = "no_hits"
+)
+
+// retrieveKnowledge 按租户和问题执行知识检索，并整理为结构化结果。
+func (a *Agent) retrieveKnowledge(ctx context.Context, tenantID uint, question string) (RetrievalResult, error) {
 	if a.deps.Knowledge == nil || tenantID == 0 {
-		return nil, nil
+		return RetrievalResult{FilteredReason: retrievalFilteredReasonKnowledgeUnavailable}, nil
 	}
-	return a.deps.Knowledge.Search(ctx, tenantID, question, defaultKnowledgeTopK)
+
+	hits, err := a.deps.Knowledge.Search(ctx, tenantID, question, defaultKnowledgeTopK)
+	if err != nil {
+		return RetrievalResult{}, err
+	}
+
+	result := RetrievalResult{
+		Hits:              hits,
+		CandidateCount:    len(hits),
+		TopRefs:           collectKnowledgeSourceRefs(hits),
+		TopScores:         collectKnowledgeScores(hits),
+		KnowledgeDocTypes: collectKnowledgeDocTypes(hits),
+	}
+	if len(hits) == 0 {
+		result.FilteredReason = retrievalFilteredReasonNoHits
+	}
+	return result, nil
 }
 
-// buildKnowledgePrompt 将检索命中的知识片段拼成可注入给模型的上下文。
-func buildKnowledgePrompt(hits []KnowledgeHit) string {
-	if len(hits) == 0 {
-		return ""
+// topKnowledgeScore 返回本次检索命中的最高分。
+func topKnowledgeScore(result RetrievalResult) int {
+	if len(result.TopScores) > 0 {
+		return result.TopScores[0]
 	}
-
-	var b strings.Builder
-	b.WriteString("以下是与当前问题相关的规则知识，只能基于这些片段回答规则说明；如果知识不足，请明确说明。\n")
-	for i, hit := range hits {
-		sourceRef := strings.TrimSpace(hit.SourceRef)
-		if sourceRef == "" {
-			sourceRef = strings.TrimSpace(hit.Title)
-		}
-		fmt.Fprintf(&b, "%d. 来源：%s\n", i+1, sourceRef)
-		if strings.TrimSpace(hit.Title) != "" {
-			fmt.Fprintf(&b, "标题：%s\n", hit.Title)
-		}
-		if strings.TrimSpace(hit.Heading) != "" {
-			fmt.Fprintf(&b, "小节：%s\n", hit.Heading)
-		}
-		fmt.Fprintf(&b, "内容：%s\n", strings.TrimSpace(hit.Body))
+	if len(result.Hits) > 0 {
+		return result.Hits[0].Score
 	}
-	b.WriteString("回答规则类内容时，优先引用上面的来源字段。")
-	return b.String()
+	return 0
 }
 
 // collectKnowledgeSourceRefs 提取去重后的来源引用，用于日志和评测。
@@ -61,4 +66,31 @@ func collectKnowledgeSourceRefs(hits []KnowledgeHit) []string {
 		sources = append(sources, source)
 	}
 	return sources
+}
+
+// collectKnowledgeScores 提取检索命中的分数序列。
+func collectKnowledgeScores(hits []KnowledgeHit) []int {
+	scores := make([]int, 0, len(hits))
+	for _, hit := range hits {
+		scores = append(scores, hit.Score)
+	}
+	return scores
+}
+
+// collectKnowledgeDocTypes 提取去重后的知识文档类型。
+func collectKnowledgeDocTypes(hits []KnowledgeHit) []string {
+	docTypes := make([]string, 0, len(hits))
+	seen := make(map[string]struct{}, len(hits))
+	for _, hit := range hits {
+		docType := strings.TrimSpace(hit.DocType)
+		if docType == "" {
+			continue
+		}
+		if _, ok := seen[docType]; ok {
+			continue
+		}
+		seen[docType] = struct{}{}
+		docTypes = append(docTypes, docType)
+	}
+	return docTypes
 }

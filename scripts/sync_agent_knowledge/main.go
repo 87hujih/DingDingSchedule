@@ -15,9 +15,20 @@ import (
 	"schedule_server/inits"
 	"schedule_server/internal/repository"
 	"schedule_server/internal/service"
+
+	"gopkg.in/yaml.v3"
 )
 
 const defaultKnowledgeRoot = "./docs/agent-knowledge"
+const defaultKnowledgeManifestName = "manifest.yaml"
+
+type knowledgeManifest map[string]service.KnowledgeDocumentMetadata
+
+type knowledgeManifestEntry struct {
+	DocType  string `yaml:"doc_type"`
+	Audience string `yaml:"audience"`
+	Intent   string `yaml:"intent"`
+}
 
 // 使用方法:
 // go run ./scripts/sync_agent_knowledge -tenant-id 1
@@ -37,6 +48,11 @@ func main() {
 
 	repo := repository.NewRepository(global.DB)
 	svc := service.NewAgentKnowledgeService(repo.AgentKnowledgeRepo, global.Log)
+	manifest, err := loadKnowledgeManifest(*root)
+	if err != nil {
+		fmt.Printf("读取知识 manifest 失败: %v\n", err)
+		os.Exit(1)
+	}
 
 	paths, err := collectMarkdownPaths(*root, splitIncludeList(*include))
 	if err != nil {
@@ -52,10 +68,12 @@ func main() {
 			fmt.Printf("读取文件失败 %s: %v\n", fullPath, err)
 			os.Exit(1)
 		}
+		sourcePath := filepath.ToSlash(filepath.Join(filepath.Base(*root), rel))
 		docs = append(docs, service.MarkdownKnowledgeDocument{
 			Title:      deriveTitle(rel, string(data)),
-			SourcePath: filepath.ToSlash(filepath.Join(filepath.Base(*root), rel)),
+			SourcePath: sourcePath,
 			Content:    string(data),
+			Metadata:   manifest.MetadataFor(sourcePath),
 		})
 	}
 
@@ -66,6 +84,71 @@ func main() {
 	}
 
 	fmt.Printf("知识同步完成：文档 %d，切片 %d，跳过 %d\n", result.DocumentsSynced, result.ChunksCreated, result.Skipped)
+}
+
+// loadKnowledgeManifest 读取知识文档 manifest；缺失时返回空 manifest。
+func loadKnowledgeManifest(root string) (knowledgeManifest, error) {
+	manifestPath := filepath.Join(root, defaultKnowledgeManifestName)
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return knowledgeManifest{}, nil
+		}
+		return nil, err
+	}
+
+	raw := make(map[string]knowledgeManifestEntry)
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+
+	manifest := make(knowledgeManifest, len(raw))
+	for sourcePath, entry := range raw {
+		manifest[filepath.ToSlash(strings.TrimSpace(sourcePath))] = service.NormalizeKnowledgeMetadata(service.KnowledgeDocumentMetadata{
+			DocType:  entry.DocType,
+			Audience: entry.Audience,
+			Intent:   entry.Intent,
+		})
+	}
+	return manifest, nil
+}
+
+// MetadataFor 返回某个 source path 对应的知识元数据，缺失时回退到默认值。
+func (m knowledgeManifest) MetadataFor(sourcePath string) service.KnowledgeDocumentMetadata {
+	for _, key := range manifestLookupKeys(sourcePath) {
+		if meta, ok := m[key]; ok {
+			return service.NormalizeKnowledgeMetadata(meta)
+		}
+	}
+	return service.NormalizeKnowledgeMetadata(service.KnowledgeDocumentMetadata{})
+}
+
+// manifestLookupKeys 为兼容不同 key 写法生成查找顺序。
+func manifestLookupKeys(sourcePath string) []string {
+	normalized := filepath.ToSlash(strings.TrimSpace(sourcePath))
+	if normalized == "" {
+		return nil
+	}
+
+	keys := []string{normalized}
+	if slash := strings.Index(normalized, "/"); slash >= 0 && slash < len(normalized)-1 {
+		keys = append(keys, normalized[slash+1:])
+	}
+	base := filepath.Base(normalized)
+	if base != "" {
+		keys = append(keys, base)
+	}
+
+	seen := make(map[string]struct{}, len(keys))
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	return out
 }
 
 // splitIncludeList 解析逗号分隔的相对路径白名单。

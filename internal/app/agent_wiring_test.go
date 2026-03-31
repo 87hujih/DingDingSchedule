@@ -10,6 +10,9 @@ import (
 	agenttool "schedule_server/internal/agent/tools"
 	"schedule_server/internal/dto"
 	"schedule_server/internal/model"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestAttendanceAdapterUsesRealtimeViewForCurrentSlot(t *testing.T) {
@@ -142,6 +145,63 @@ func TestAttendanceAdapterSignForUsersBySlotUsesDateAndSection(t *testing.T) {
 	}
 }
 
+func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
+	db := newCallLogTestDB(t)
+	adapter := &callLogAdapter{db: db}
+
+	adapter.Write(context.Background(), agenttool.CallLog{
+		TenantID:                1,
+		UserID:                  7,
+		UserName:                "Alice",
+		ConvType:                "1",
+		QueryType:               "rag",
+		DomainResult:            "in_domain",
+		AnswerMode:              "knowledge-only",
+		Question:                "如果请假信息没能同步到位，会出现什么情况",
+		ToolsCalled:             []string{"get_current_time"},
+		ToolCallCount:           1,
+		Reply:                   "同步失败不会直接覆盖已生成快照。",
+		SourceRefs:              []string{"请假同步说明#3"},
+		RetrievalHitCount:       1,
+		RetrievalCandidateCount: 3,
+		RetrievalTopRefs:        []string{"请假同步说明#3", "系统总览#1"},
+		RetrievalScores:         []int{18, 9},
+		RetrievalFilteredReason: "no_hits",
+		KnowledgeDocTypes:       []string{"rule", "overview"},
+		RetrievalDurationMs:     12,
+		LLMDurationMs:           34,
+		Rounds:                  1,
+		DurationMs:              56,
+		Status:                  "success",
+	})
+
+	var row model.AgentCallLog
+	if err := db.First(&row).Error; err != nil {
+		t.Fatalf("query call log: %v", err)
+	}
+	if row.DomainResult != "in_domain" {
+		t.Fatalf("DomainResult = %q, want in_domain", row.DomainResult)
+	}
+	if row.AnswerMode != "knowledge-only" {
+		t.Fatalf("AnswerMode = %q, want knowledge-only", row.AnswerMode)
+	}
+	if row.RetrievalCandidateCount != 3 {
+		t.Fatalf("RetrievalCandidateCount = %d, want 3", row.RetrievalCandidateCount)
+	}
+	if row.RetrievalTopRefs != "请假同步说明#3,系统总览#1" {
+		t.Fatalf("RetrievalTopRefs = %q, want %q", row.RetrievalTopRefs, "请假同步说明#3,系统总览#1")
+	}
+	if row.RetrievalScores != "18,9" {
+		t.Fatalf("RetrievalScores = %q, want 18,9", row.RetrievalScores)
+	}
+	if row.RetrievalFilteredReason != "no_hits" {
+		t.Fatalf("RetrievalFilteredReason = %q, want no_hits", row.RetrievalFilteredReason)
+	}
+	if row.KnowledgeDocTypes != "rule,overview" {
+		t.Fatalf("KnowledgeDocTypes = %q, want rule,overview", row.KnowledgeDocTypes)
+	}
+}
+
 type fakeAttendanceDetailService struct {
 	detailResp  *dto.AttendanceDetailResponse
 	detailErr   error
@@ -226,4 +286,18 @@ func (f *fakeAttendanceRecordRepo) FindLatest(context.Context) (*model.Attendanc
 }
 func (f *fakeAttendanceRecordRepo) FindByID(context.Context, uint) (*model.AttendanceRecord, error) {
 	return nil, errors.New("unexpected call")
+}
+
+func newCallLogTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	dsn := "file:agent-call-log-" + t.Name() + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	if err := db.AutoMigrate(&model.AgentCallLog{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	return db
 }
