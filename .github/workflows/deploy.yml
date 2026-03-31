@@ -19,14 +19,17 @@ jobs:
       SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
       SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
       SERVER_SSH_PASSPHRASE: ${{ secrets.SERVER_SSH_PASSPHRASE }}
+      SERVER_PORT: ${{ secrets.SERVER_PORT }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Normalize image repository
+      - name: Normalize deployment settings
         shell: bash
-        run: echo "IMAGE_REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/schedule-server" >> "$GITHUB_ENV"
+        run: |
+          echo "IMAGE_REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/schedule-server" >> "$GITHUB_ENV"
+          echo "SERVER_PORT=${SERVER_PORT:-22}" >> "$GITHUB_ENV"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -58,6 +61,13 @@ jobs:
             exit 1
           fi
 
+          if ! [[ "${SERVER_PORT}" =~ ^[0-9]+$ ]]; then
+            echo "SERVER_PORT must be numeric when configured"
+            exit 1
+          fi
+
+          echo "Using SSH port ${SERVER_PORT}"
+
           if [ -n "${SERVER_SSH_KEY}" ]; then
             echo "Using SSH key authentication"
           else
@@ -69,7 +79,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Target: ${SERVER_USER}@${SERVER_HOST}"
+          echo "Target: ${SERVER_USER}@${SERVER_HOST}:${SERVER_PORT}"
 
           tmp="$(mktemp)"
           trap 'rm -f "${tmp}" "${tmp}.pub"' EXIT
@@ -80,6 +90,19 @@ jobs:
           ssh-keygen -y -f "${tmp}" > "${tmp}.pub"
           echo "Secret-backed public key fingerprint:"
           ssh-keygen -lf "${tmp}.pub"
+
+      - name: Verify SSH connectivity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Checking TCP connectivity to ${SERVER_HOST}:${SERVER_PORT}"
+
+          if timeout 5 bash -lc "true >/dev/tcp/${SERVER_HOST}/${SERVER_PORT}" 2>/dev/null; then
+            echo "SSH port is reachable from the GitHub runner"
+          else
+            echo "Cannot reach ${SERVER_HOST}:${SERVER_PORT} from the GitHub runner"
+            exit 1
+          fi
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -94,10 +117,12 @@ jobs:
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
+          port: ${{ env.SERVER_PORT }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           password: ${{ secrets.SERVER_PASSWORD }}
           passphrase: ${{ secrets.SERVER_SSH_PASSPHRASE }}
+          timeout: 60s
           source: "deploy.sh,docker-compose.prod.yml,.env.prod.example"
           target: "/opt/schedule_server"
 
@@ -105,10 +130,12 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SERVER_HOST }}
+          port: ${{ env.SERVER_PORT }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           password: ${{ secrets.SERVER_PASSWORD }}
           passphrase: ${{ secrets.SERVER_SSH_PASSPHRASE }}
+          timeout: 60s
           command_timeout: 45m
           script: |
             set -e
@@ -135,10 +162,12 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SERVER_HOST }}
+          port: ${{ env.SERVER_PORT }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           password: ${{ secrets.SERVER_PASSWORD }}
           passphrase: ${{ secrets.SERVER_SSH_PASSPHRASE }}
+          timeout: 60s
           command_timeout: 5m
           script: |
             set -e

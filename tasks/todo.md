@@ -25,6 +25,15 @@
 - `CONFIG_PATH=G:\gofile\schedule_server\configs go run ./scripts/sync_agent_knowledge -tenant-id 1`
 - `CONFIG_PATH=G:\gofile\schedule_server\configs go run ./scripts/agent_eval -tenant-id 1`
 - 最新离线评测结果：`总样本 18`、`领域准确率 100.0% (18/18)`、`模式准确率 100.0% (18/18)`、`路由准确率 100.0% (18/18)`、`知识命中率 100.0% (10/10)`、`失败样本: 无`。
+- [x] 记录本次 SSH 连接超时排查与 workflow 改动计划。
+- [x] 在 `deploy.yml` 中补充显式 SSH 端口归一化、连通性预检和 action 连接超时配置。
+- [x] 回读 workflow 并做静态校验，确认新部署链路能把“22 端口不可达”和“远端命令超时”区分开。
+
+## 当前任务复盘
+- 已确认这次失败发生在 `appleboy/scp-action@v0.1.7` 建立 SSH 连接之前，根因范围收敛为目标地址、SSH 端口或网络放行问题，而不是 `deploy.sh`、镜像构建或远端命令超时。
+- 已在 `.github/workflows/deploy.yml` 为部署 job 增加 `SERVER_PORT` secret 输入，并在 `Normalize deployment settings` 步骤里默认回退到 `22`；`Validate deployment secrets` 会额外校验端口是否为数字并打印本次实际使用值。
+- 已新增 `Verify SSH connectivity` 预检步骤，让 workflow 在构建和推镜像前就先探测 `${SERVER_HOST}:${SERVER_PORT}` 是否可达；同时为 `scp-action` 和两个 `ssh-action` 显式传入 `port` 与 `timeout`，把“连接不通”和“远端执行太慢”两类失败分离开。
+- 验证方式为：回读 `.github/workflows/deploy.yml` diff 与行号，并执行 `git diff --check -- .github/workflows/deploy.yml tasks/todo.md`。当前环境缺少 PowerShell `ConvertFrom-Yaml`、Python `PyYAML` 和 Ruby，未能完成自动 YAML 解析，因此这轮仍属于人工静态校验，未执行真实远端部署。
 
 ## 当前任务
 - [x] 明确通用 reviewer 采用“用户级 skill + 仓库规则覆盖”的落点，并将设计写入 spec。
