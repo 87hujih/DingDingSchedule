@@ -34,6 +34,7 @@ type groupChatReplyOrchestrator struct {
 	fallbackTimeout   time.Duration
 }
 
+// handle 负责接收群聊请求并在并发允许时启动异步处理流程。
 func (o *groupChatReplyOrchestrator) handle(req groupChatReplyRequest, msg *ChatMessage) ([]byte, error) {
 	if !o.tryAcquire() {
 		o.sendBusyReply(req)
@@ -44,6 +45,7 @@ func (o *groupChatReplyOrchestrator) handle(req groupChatReplyRequest, msg *Chat
 	return []byte(""), nil
 }
 
+// tryAcquire 尝试获取并发处理信号量，超过上限时立即返回失败。
 func (o *groupChatReplyOrchestrator) tryAcquire() bool {
 	select {
 	case o.sema <- struct{}{}:
@@ -53,6 +55,7 @@ func (o *groupChatReplyOrchestrator) tryAcquire() bool {
 	}
 }
 
+// processAsync 在后台完成群聊消息处理，并在需要时切换到主动推送回复。
 func (o *groupChatReplyOrchestrator) processAsync(req groupChatReplyRequest, msg *ChatMessage) {
 	// defer 逆序执行：recover 先于 sema 释放，确保 panic 时信号量也能释放
 	defer func() { <-o.sema }()
@@ -96,6 +99,7 @@ func (o *groupChatReplyOrchestrator) processAsync(req groupChatReplyRequest, msg
 	o.asyncReplyHandler(fallbackCtx, msg, reply)
 }
 
+// sendBusyReply 在系统繁忙无法接单时通过会话 webhook 返回提示消息。
 func (o *groupChatReplyOrchestrator) sendBusyReply(req groupChatReplyRequest) {
 	ackCtx, ackCancel := context.WithTimeout(context.Background(), o.webhookTimeout)
 	defer ackCancel()
@@ -106,6 +110,7 @@ func (o *groupChatReplyOrchestrator) sendBusyReply(req groupChatReplyRequest) {
 	}
 }
 
+// sendSlowAck 在处理超过阈值时发送“处理中”提示，若已完成则不再发送。
 func (o *groupChatReplyOrchestrator) sendSlowAck(req groupChatReplyRequest, done <-chan struct{}) {
 	select {
 	case <-time.After(o.ackDelay):
@@ -116,6 +121,7 @@ func (o *groupChatReplyOrchestrator) sendSlowAck(req groupChatReplyRequest, done
 	}
 }
 
+// sendWebhookReply 优先使用会话 webhook 回传最终回复内容。
 func (o *groupChatReplyOrchestrator) sendWebhookReply(req groupChatReplyRequest, reply string) error {
 	webhookCtx, webhookCancel := context.WithTimeout(context.Background(), o.webhookTimeout)
 	defer webhookCancel()

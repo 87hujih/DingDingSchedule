@@ -29,7 +29,6 @@ func newRateLimiter() *rateLimiter {
 func (r *rateLimiter) Allow(key string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
 	now := time.Now()
 	c, ok := r.counters[key]
 	if !ok || now.Sub(c.windowAt) > rateLimitWindow {

@@ -27,6 +27,50 @@
 - 最新离线评测结果：`总样本 18`、`领域准确率 100.0% (18/18)`、`模式准确率 100.0% (18/18)`、`路由准确率 100.0% (18/18)`、`知识命中率 100.0% (10/10)`、`失败样本: 无`。
 
 ## 当前任务
+- [x] 明确通用 reviewer 采用“用户级 skill + 仓库规则覆盖”的落点，并将设计写入 spec。
+- [x] 写出 `universal-reviewer` 的最小实现计划，明确 staging、校验和安装步骤。
+- [x] 生成可跨项目复用的 `universal-reviewer` skill 骨架与说明内容。
+- [x] 校验 skill 元数据与内容格式，并整理安装结果与使用方式。
+
+## 当前任务复盘
+- 已新增设计文档 `docs/superpowers/specs/2026-03-31-universal-reviewer-design.md`，确认当前最可执行方案不是扩平台级 `reviewer` agent type，而是采用“用户级 skill + 仓库规则覆盖”。
+- 已新增实施计划 `docs/superpowers/plans/2026-03-31-universal-reviewer-plan.md`，并在仓库内生成 staging skill：`.codex-skills/universal-reviewer`。
+- 已完成用户级安装：`C:\Users\mhn\.codex\skills\universal-reviewer` 现已存在，后续所有项目都可显式使用这份 reviewer skill。
+- 验证方式为：回读 staging 与用户级 `SKILL.md` / `agents/openai.yaml`，以及检查用户级安装目录结构。原始 `quick_validate.py` 因当前 Python 环境缺少 `PyYAML` 未能运行，因此本轮采用人工结构校验替代，并保留该限制说明。
+
+## 当前任务
+- [x] 选择 Agent 集成与执行链路文档的落点，避免和现有 `docs/agent-dataflow.md` 重复。
+- [x] 将“Agent 如何集成到项目、如何启动、一次消息如何执行”的说明整理成独立 Markdown。
+- [x] 回读文档内容，确认流程图、代码入口和链路描述一致。
+
+## 当前任务复盘
+- 已新增 `docs/agent-integration-flow.md`，内容覆盖三层链路：服务启动与 Agent 装配、钉钉 Stream 消息接入、`Agent.Chat` 内部一次问答执行流程。
+- 文档明确了当前 Agent 的实际接入方式：它不是独立进程，也不通过 Gin 暴露聊天路由，而是在 `dingtalk.stream_mode=true` 时由主服务启动并挂到钉钉 Stream 回调上。
+- 本次为文档整理，未修改业务代码，也未运行额外 Go 测试；核验方式为回读新增 Markdown，并对照 `cmd/main.go`、`internal/app/app.go`、`internal/app/agent_wiring.go`、`internal/service/stream_client_manager.go`、`pkg/dingtalk/stream.go`、`pkg/dingtalk/group_chat_reply_orchestrator.go` 的实际实现。
+## 当前任务
+- [x] 基于真实 `agent_call_logs`、知识表和现有 RAG 实现，给出一版适合当前项目规模的重构方案。
+- [x] 对比 2-3 种可行路线，明确推荐方案、阶段拆分和取舍理由。
+- [x] 将已确认方向写成 spec 文档并完成用户 review。
+- [x] 基于已确认 spec 写出 implementation plan 并完成一次人工自审。
+- [ ] 等待进入按 plan 执行阶段。
+
+## 当前任务复盘
+- 已基于真实运行库完成问题收敛：`tenant_id=1` 的知识文档和切片已存在，但 `agent_call_logs` 中最近带新字段的请求全部落在 `query_type=tool`，`retrieval_hit_count > 0` 的日志为 `0`，说明首要问题不是知识没导入，而是 RAG 几乎没有被真实流量触发。
+- 已完成 `retrieval-first` 重构方案设计，明确拒绝继续强化当前 `router-first`，同时也不在第一阶段直接引入外部向量库；推荐路线是“领域门禁 -> 领域内默认先检索 -> 再按实时信号和检索置信度决定 `knowledge-only / tool-first / mixed`”。
+- 设计文档已写入 `docs/superpowers/specs/2026-03-29-agent-rag-rework-design.md`，implementation plan 已写入 `docs/superpowers/plans/2026-03-30-agent-rag-rework-plan.md`。
+- 当前 harness 没有 reviewer 子代理工具，因此按降级流程由主线程完成了一次人工自审；重点复核了任务顺序、文件边界、验证命令和“不引入向量库/通用知识平台”的范围约束。
+- 本轮仍未进入业务代码实现阶段；下一步是按 plan 执行 Task 1 到 Task 5。
+
+## 当前任务
+- [x] 审读 internal/agent 核心文件，梳理 Agent 的入口、主循环、会话和限流逻辑。
+- [x] 审读 internal/agent/tools 与 internal/app/agent_wiring.go，梳理工具注册、端口抽象与业务接入方式。
+- [x] 整理一份面向讨论的实现说明，明确当前设计的优点、约束和后续可讨论点。
+
+## 当前任务复盘
+- 已按入口装配、主循环、RAG 分流、会话限流、工具注册和 app 适配层六个维度回读 internal/agent 与 internal/app/agent_wiring.go，确认当前实现是单 Agent 的 ReAct 架构，不是多 Agent 编排。
+- 当前执行链路已明确：BuildAgent 装配服务适配器，Agent.Chat 先做租户与用户解析，再做 query router 分流、可选知识检索、按角色过滤工具定义，最后进入最多 8 轮的 LLM + tool 调用循环。
+- 本次未修改业务代码；验证方式为静态审读 internal/agent/*.go、internal/agent/tools/*.go、internal/app/agent_wiring.go，并执行 go test ./internal/agent/... -v，结果通过。
+## 当前任务
 - [x] 梳理 `95b0cf9` 这批 `RAG / Eval / Observability` 改动的完整范围，明确哪些属于我实现、哪些不纳入总结。
 - [x] 生成一份独立 Markdown，总结本次功能、测试、评测、文档和合并结果。
 - [x] 回读生成的总结文件，确认路径、内容和范围表述正确。
@@ -686,3 +730,15 @@ g -n "schedule_server_deploy|docker build|docker run|GitHub Actions|GHCR|./deplo
 - `internal/agent/tools/admin.go` 不再先查 `record_id`；现在会直接调用 attendance port 的 `SignForUsersBySlot(date, section, userIDs)`，把实时阶段是否可补签交给 `AttendanceRecordService` 现有的 `date + section` 逻辑判断。
 - `internal/app/agent_wiring.go` 新增 `attendanceAdapter.SignForUsersBySlot`，内部组装 `dto.SignForUserRequest{Date, Section, TargetUserIDs}` 下发到 service；旧的 `SignForUsers(recordID, userIDs)` 兼容路径保留，未影响历史快照代签。
 - 实际验证命令：`go test ./internal/agent/tools -run TestSignForUserDoesNotRequirePreexistingRecord -v`（先红后绿）；`go test ./internal/app -run TestAttendanceAdapterSignForUsersBySlotUsesDateAndSection -v`；`go test ./internal/agent/tools -v`；`go test ./internal/app -v`；`go test ./internal/service -run "Test(SignForUsersSupportsRealtimeDateSectionAndDetailShowsOverride|SignForUsersWithRecordIDKeepsSnapshotAndDetailConsistent)" -v`。
+
+## 当前任务
+- [x] 复核最近自动部署失败日志，确认故障阶段和报错时间点。
+- [x] 对照 `.github/workflows/deploy.yml`、`deploy.sh`、`Dockerfile` 追踪部署链路，定位根因。
+- [x] 调整工作流中的远端命令超时配置，并完成静态校验与复盘记录。
+
+## 当前任务复盘
+- 连续 3 次部署都在远端 `docker compose pull` 阶段被 `appleboy/ssh-action` 截断，用户提供的样例日志显示从 `2026-03-23 19:53:46 +08:00` 开始拉镜像，到 `2026-03-23 20:03:46 +08:00` 报 `Run Command Timeout`，与 action 默认 `command_timeout=10m` 完全对齐。
+- `.github/workflows/deploy.yml` 原先没有给远端执行步骤显式配置 `command_timeout`，而 `deploy.sh` 的 `deploy` 路径会先执行 `docker compose pull`；因此当服务器到 `ghcr.io` 的下载链路变慢时，workflow 会在应用尚未启动前就被 GitHub Actions 终止。
+- `Dockerfile` 当前生产镜像体积不大，失败日志里也只下载到十几 MB 镜像层中的一小部分就耗尽 10 分钟，说明主因更接近服务器到 GHCR 的网络抖动或带宽受限，而不是镜像过大。
+- 本次已在 `.github/workflows/deploy.yml` 为部署步骤显式设置 `command_timeout: 45m`，并为健康检查步骤设置 `command_timeout: 5m`，避免两类远端命令共用默认 10 分钟上限导致诊断混淆。
+- 实际验证为：检查 workflow diff、复核修改后的 YAML 缩进与字段位置；本地尝试用 Python 解析 YAML 时因环境缺少 `PyYAML` 未完成自动语法校验，未执行真实 GitHub Actions 远端部署。
