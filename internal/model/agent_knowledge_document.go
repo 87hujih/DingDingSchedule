@@ -9,6 +9,9 @@ type AgentKnowledgeDocument struct {
 	Title       string `gorm:"not null;size:200"`
 	SourcePath  string `gorm:"not null;size:255;uniqueIndex:uniq_tenant_source_path"`
 	SourceType  string `gorm:"not null;size:50"`
+	DocType     string `gorm:"size:32;index"`
+	Audience    string `gorm:"size:32;index"`
+	Intent      string `gorm:"size:32;index"`
 	ContentHash string `gorm:"size:64"`
 	Status      string `gorm:"not null;size:32;index"`
 	CreatedAt   time.Time

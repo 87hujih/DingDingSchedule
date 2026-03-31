@@ -224,6 +224,9 @@ func (a *knowledgePortAdapter) Search(ctx context.Context, tenantID uint, query 
 		result = append(result, agent.KnowledgeHit{
 			Title:      hit.Title,
 			SourcePath: hit.SourcePath,
+			DocType:    hit.DocType,
+			Audience:   hit.Audience,
+			Intent:     hit.Intent,
 			ChunkIndex: hit.ChunkIndex,
 			Heading:    hit.Heading,
 			Body:       hit.Body,
@@ -366,6 +369,8 @@ func deriveTitle(relPath, content string) string {
 // printSummary 输出本次评测的核心指标摘要。
 func printSummary(summary agent.EvalSummary, withAgent bool) {
 	fmt.Printf("总样本: %d\n", summary.TotalCases)
+	fmt.Printf("领域准确率: %.1f%% (%d/%d)\n", summary.DomainAccuracy, summary.DomainPassed, summary.TotalCases)
+	fmt.Printf("模式准确率: %.1f%% (%d/%d)\n", summary.ModeAccuracy, summary.ModePassed, summary.TotalCases)
 	fmt.Printf("路由准确率: %.1f%% (%d/%d)\n", summary.RouteAccuracy, summary.RoutePassed, summary.TotalCases)
 	if summary.RetrievalCases > 0 {
 		fmt.Printf("知识命中率: %.1f%% (%d/%d)\n", summary.RetrievalAccuracy, summary.RetrievalPassed, summary.RetrievalCases)
@@ -394,7 +399,16 @@ func printFailures(results []agent.EvalCaseResult) {
 
 	fmt.Println("失败样本:")
 	for _, result := range failed {
-		fmt.Printf("- [%s] %s | route=%s matched=%t", result.Category, result.Question, result.Route, result.RouteMatched)
+		fmt.Printf("- [%s] %s | domain=%s matched=%t | mode=%s matched=%t | route=%s matched=%t",
+			result.Category,
+			result.Question,
+			result.DomainResult,
+			result.DomainMatched,
+			result.AnswerMode,
+			result.ModeMatched,
+			result.Route,
+			result.RouteMatched,
+		)
 		if result.RetrievalChecked {
 			fmt.Printf(" | retrieval=%t actual=%v", result.RetrievalMatched, result.RetrievedSources)
 		}
@@ -423,7 +437,7 @@ func hasFailures(results []agent.EvalCaseResult) bool {
 
 // caseFailed 判断单条样本是否存在任一维度未通过。
 func caseFailed(result agent.EvalCaseResult) bool {
-	if !result.RouteMatched || result.Error != "" {
+	if !result.DomainMatched || !result.ModeMatched || !result.RouteMatched || result.Error != "" {
 		return true
 	}
 	if result.RetrievalChecked && !result.RetrievalMatched {

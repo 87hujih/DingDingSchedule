@@ -198,6 +198,9 @@ type UserInfo struct {
 type KnowledgeHit struct {
 	Title      string `json:"title"`
 	SourcePath string `json:"source_path"`
+	DocType    string `json:"doc_type"`
+	Audience   string `json:"audience"`
+	Intent     string `json:"intent"`
 	ChunkIndex int    `json:"chunk_index"`
 	Heading    string `json:"heading"`
 	Body       string `json:"body"`
@@ -205,25 +208,42 @@ type KnowledgeHit struct {
 	Score      int    `json:"score"`
 }
 
+// RetrievalResult 表示一次知识检索的结构化结果。
+type RetrievalResult struct {
+	Hits              []KnowledgeHit `json:"hits"`
+	CandidateCount    int            `json:"candidate_count"`
+	TopRefs           []string       `json:"top_refs"`
+	TopScores         []int          `json:"top_scores"`
+	KnowledgeDocTypes []string       `json:"knowledge_doc_types"`
+	FilteredReason    string         `json:"filtered_reason"`
+}
+
 // CallLog 一次对话的调用记录
 type CallLog struct {
-	TenantID            uint
-	UserID              uint
-	UserName            string
-	ConvType            string // "1"=单聊, "2"=群聊
-	QueryType           string // tool / rag / mixed
-	Question            string
-	ToolsCalled         []string // 调用的工具名列表
-	ToolCallCount       int
-	Reply               string
-	SourceRefs          []string
-	RetrievalHitCount   int
-	RetrievalDurationMs int64
-	LLMDurationMs       int64
-	Rounds              int
-	DurationMs          int64
-	Status              string // success / failed / timeout
-	ErrorMsg            string
+	TenantID                uint
+	UserID                  uint
+	UserName                string
+	ConvType                string // "1"=单聊, "2"=群聊
+	QueryType               string // tool / rag / mixed
+	DomainResult            string
+	AnswerMode              string
+	Question                string
+	ToolsCalled             []string // 调用的工具名列表
+	ToolCallCount           int
+	Reply                   string
+	SourceRefs              []string
+	RetrievalHitCount       int
+	RetrievalCandidateCount int
+	RetrievalTopRefs        []string
+	RetrievalScores         []int
+	RetrievalFilteredReason string
+	KnowledgeDocTypes       []string
+	RetrievalDurationMs     int64
+	LLMDurationMs           int64
+	Rounds                  int
+	DurationMs              int64
+	Status                  string // success / failed / timeout
+	ErrorMsg                string
 }
 
 // CallLogPort 调用日志写入能力

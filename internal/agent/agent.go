@@ -17,6 +17,11 @@ import (
 // 最大循环次数
 const maxReactRounds = 8
 
+const (
+	outOfDomainReply = "抱歉，我只能回答课程人员、考勤及请假相关的问题，无法回答其他内容。"
+	noKnowledgeReply = "抱歉，我没有检索到相关规则说明，请联系管理员补充知识库"
+)
+
 // Deps Agent 依赖注入
 type Deps struct {
 	LLMBaseURL string
@@ -46,6 +51,7 @@ type Agent struct {
 	deps        Deps
 	llmClient   *LLMClient
 	registry    *tools.Registry
+	domainGate  *domainGate
 	router      *queryRouter
 	sessions    *sessionManager
 	limiter     *rateLimiter
@@ -54,11 +60,18 @@ type Agent struct {
 }
 
 type callMetrics struct {
-	QueryType           queryKind
-	LLMDurationMs       int64
-	RetrievalDurationMs int64
-	RetrievalHitCount   int
-	SourceRefs          []string
+	QueryType               queryKind
+	DomainResult            domainResult
+	AnswerMode              answerMode
+	LLMDurationMs           int64
+	RetrievalDurationMs     int64
+	RetrievalHitCount       int
+	RetrievalCandidateCount int
+	SourceRefs              []string
+	RetrievalTopRefs        []string
+	RetrievalScores         []int
+	RetrievalFilteredReason string
+	KnowledgeDocTypes       []string
 }
 
 // NewAgent 创建 Agent
@@ -67,6 +80,7 @@ func NewAgent(deps Deps) *Agent {
 		deps:        deps,
 		llmClient:   NewLLMClient(deps.LLMBaseURL, deps.LLMAPIKey, deps.LLMModel),
 		sessions:    newSessionManager(),
+		domainGate:  newDomainGate(),
 		router:      newQueryRouter(),
 		limiter:     newRateLimiter(),
 		stopCleanup: make(chan struct{}),
@@ -184,40 +198,89 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	// 6. 加载历史消息
 	history := a.sessions.getMessages(sessionKey)
 	userMsg := tools.Message{Role: "user", Content: msg.Content}
-	route := a.router.Route(msg.Content)
-	metrics := callMetrics{QueryType: route.Kind}
+	metrics := callMetrics{}
+	normalizedQuestion := normalizeQuery(msg.Content)
 
-	// 7. 构建完整消息列表（system + history + 当前用户消息）
-	systemMsg := tools.Message{Role: "system", Content: a.buildSystemPrompt(ctx, uctx)}
-	messages := make([]tools.Message, 0, 2+len(history)+1)
-	messages = append(messages, systemMsg)
-	if route.Kind != queryKindTool {
+	// 7. 先做领域门禁，站外问题直接拒答，不进入检索与 LLM。
+	domainResult := domainOut
+	if a.domainGate != nil {
+		domainResult = a.domainGate.Check(msg.Content)
+	}
+	metrics.DomainResult = domainResult
+	if domainResult != domainIn {
+		a.deps.Logger.Infow("站外问题，直接拒答", "user", uctx.Name, "question", msg.Content)
+		metrics.QueryType = modeToQueryKind(answerModeReject)
+		metrics.AnswerMode = answerModeReject
+		reply := outOfDomainReply
+		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
+		return reply, nil
+	}
+
+	hasLiveDataSignal := hasLiveSignal(normalizedQuestion)
+	wantsRuleExplanation := hasRuleSignal(normalizedQuestion)
+	retrievalResult := RetrievalResult{}
+	if a.deps.Knowledge != nil {
 		retrievalStart := time.Now()
-		hits, err := a.retrieveKnowledge(ctx, uctx.TenantID, msg.Content)
+		retrievalResult, err = a.retrieveKnowledge(ctx, uctx.TenantID, msg.Content)
 		metrics.RetrievalDurationMs = elapsedMs(retrievalStart)
 		if err != nil {
-			a.deps.Logger.Errorw("知识检索失败", "user", uctx.Name, "route", route.Kind, "err", err)
-			if route.Kind == queryKindRAG {
+			a.deps.Logger.Errorw("知识检索失败", "user", uctx.Name, "question", msg.Content, "err", err)
+			if !hasLiveDataSignal {
 				return "规则知识检索暂时不可用，请稍后重试", nil
 			}
-		} else if prompt := buildKnowledgePrompt(hits); prompt != "" {
-			metrics.RetrievalHitCount = len(hits)
-			metrics.SourceRefs = collectKnowledgeSourceRefs(hits)
+			retrievalResult = RetrievalResult{}
+		}
+	}
+
+	metrics.RetrievalHitCount = len(retrievalResult.Hits)
+	metrics.RetrievalCandidateCount = retrievalResult.CandidateCount
+	metrics.SourceRefs = append([]string(nil), retrievalResult.TopRefs...)
+	metrics.RetrievalTopRefs = append([]string(nil), retrievalResult.TopRefs...)
+	metrics.RetrievalScores = append([]int(nil), retrievalResult.TopScores...)
+	metrics.RetrievalFilteredReason = retrievalResult.FilteredReason
+	metrics.KnowledgeDocTypes = append([]string(nil), retrievalResult.KnowledgeDocTypes...)
+	answerMode := a.router.Decide(routeInputs{
+		DomainResult:      domainResult,
+		HasLiveSignal:     hasLiveDataSignal,
+		RetrievalHitCount: len(retrievalResult.Hits),
+		TopScore:          topKnowledgeScore(retrievalResult),
+	})
+	if hasLiveDataSignal && !wantsRuleExplanation {
+		answerMode = a.router.DecideForQuestion(msg.Content, domainResult, retrievalResult)
+	}
+	metrics.QueryType = modeToQueryKind(answerMode)
+	metrics.AnswerMode = answerMode
+
+	if answerMode == answerModeReject {
+		a.deps.Logger.Infow("领域内问题无有效知识命中，直接拒答", "user", uctx.Name, "question", msg.Content)
+		a.writeCallLog(ctx, uctx, msg.Content, noKnowledgeReply, nil, 0, startTime, "success", "", metrics)
+		return noKnowledgeReply, nil
+	}
+
+	// 8. 构建完整消息列表（system + retrieval prompt + history + 当前用户消息）
+	systemMsg := tools.Message{Role: "system", Content: a.buildSystemPrompt(ctx, uctx)}
+	messages := make([]tools.Message, 0, 3+len(history)+1)
+	messages = append(messages, systemMsg)
+	switch answerMode {
+	case answerModeKnowledgeOnly:
+		if prompt := buildKnowledgeOnlyPrompt(retrievalResult); prompt != "" {
 			messages = append(messages, tools.Message{Role: "system", Content: prompt})
-		} else if route.Kind == queryKindRAG {
-			return "抱歉，我没有检索到相关规则说明，请联系管理员补充知识库", nil
+		}
+	case answerModeMixed:
+		if prompt := buildMixedAnswerPrompt(retrievalResult); prompt != "" {
+			messages = append(messages, tools.Message{Role: "system", Content: prompt})
 		}
 	}
 	messages = append(messages, history...)
 	messages = append(messages, userMsg)
 
-	// 8. 获取该用户可用的工具列表
+	// 9. 获取该用户可用的工具列表
 	toolDefs := a.registry.ToToolDefs(uctx.UserRole)
-	if route.Kind == queryKindRAG {
+	if answerMode == answerModeKnowledgeOnly {
 		toolDefs = nil
 	}
 
-	// 9. ReAct Loop
+	// 10. ReAct Loop
 	for round := 0; round < maxReactRounds; round++ {
 		// 总结阶段（末尾为 tool 消息）LLM 需处理完整工具结果，输入 token 较多，给予更长超时时间
 		// 工具调用阶段使用 50s，总结阶段使用 90s
@@ -283,23 +346,30 @@ func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, quest
 		return
 	}
 	log := tools.CallLog{
-		TenantID:            uctx.TenantID,
-		UserID:              uctx.UserID,
-		UserName:            uctx.Name,
-		ConvType:            uctx.ConversationType,
-		QueryType:           string(metrics.QueryType),
-		Question:            question,
-		ToolsCalled:         toolsCalled,
-		ToolCallCount:       len(toolsCalled),
-		Reply:               reply,
-		SourceRefs:          append([]string(nil), metrics.SourceRefs...),
-		RetrievalHitCount:   metrics.RetrievalHitCount,
-		RetrievalDurationMs: metrics.RetrievalDurationMs,
-		LLMDurationMs:       metrics.LLMDurationMs,
-		Rounds:              rounds,
-		DurationMs:          elapsedMs(startTime),
-		Status:              status,
-		ErrorMsg:            errMsg,
+		TenantID:                uctx.TenantID,
+		UserID:                  uctx.UserID,
+		UserName:                uctx.Name,
+		ConvType:                uctx.ConversationType,
+		QueryType:               string(metrics.QueryType),
+		DomainResult:            string(metrics.DomainResult),
+		AnswerMode:              string(metrics.AnswerMode),
+		Question:                question,
+		ToolsCalled:             toolsCalled,
+		ToolCallCount:           len(toolsCalled),
+		Reply:                   reply,
+		SourceRefs:              append([]string(nil), metrics.SourceRefs...),
+		RetrievalHitCount:       metrics.RetrievalHitCount,
+		RetrievalCandidateCount: metrics.RetrievalCandidateCount,
+		RetrievalTopRefs:        append([]string(nil), metrics.RetrievalTopRefs...),
+		RetrievalScores:         append([]int(nil), metrics.RetrievalScores...),
+		RetrievalFilteredReason: metrics.RetrievalFilteredReason,
+		KnowledgeDocTypes:       append([]string(nil), metrics.KnowledgeDocTypes...),
+		RetrievalDurationMs:     metrics.RetrievalDurationMs,
+		LLMDurationMs:           metrics.LLMDurationMs,
+		Rounds:                  rounds,
+		DurationMs:              elapsedMs(startTime),
+		Status:                  status,
+		ErrorMsg:                errMsg,
 	}
 	go a.deps.CallLog.Write(context.Background(), log)
 }
@@ -347,8 +417,8 @@ func (a *Agent) buildSystemPrompt(ctx context.Context, uctx *tools.UserContext) 
 - 管理员：考勤统计、签到操作、群订阅管理
 
 约束：
-- 只能使用提供的工具获取数据，严禁编造、推测或补充任何工具未返回的信息
-- 如果当前工具无法完成用户请求，直接回复"抱歉，我没有相应的功能来完成这个操作"，不要尝试用其他方式绕过或模拟
+- 实时业务数据只能使用提供的工具获取；规则说明只能基于已检索知识片段，严禁编造、推测或补充不存在的信息
+- 如果当前工具或知识都无法完成用户请求，直接回复"抱歉，我没有相应的功能来完成这个操作"，不要尝试用其他方式绕过或模拟
 - 如果工具返回空结果或无数据，如实告知"未查询到相关数据"，不要猜测或编造内容
 - 如果工具返回错误，如实告知用户，不要尝试用假设数据代替
 - 回复用中文，简洁明了，避免冗余解释
@@ -368,4 +438,16 @@ func elapsedMs(start time.Time) int64 {
 		return 1
 	}
 	return durationMs
+}
+
+// modeToQueryKind 在 answer mode 过渡期内维持旧 query_type 口径。
+func modeToQueryKind(mode answerMode) queryKind {
+	switch mode {
+	case answerModeKnowledgeOnly:
+		return queryKindRAG
+	case answerModeMixed:
+		return queryKindMixed
+	default:
+		return queryKindTool
+	}
 }

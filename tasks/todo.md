@@ -1,6 +1,32 @@
 # 任务清单
 
 ## 当前任务
+- [x] 完成 Task 1：拆分领域门禁和回答模式决策，并通过定向测试。
+- [x] 完成 Task 2：为知识文档补元数据、manifest 和轻量检索升级。
+- [x] 完成 Task 3：把 Agent 主流程重构为 retrieval-first，并补 mixed 编排。
+- [x] 完成 Task 4：扩调用日志，记录领域结果、回答模式和检索细节。
+- [x] 完成 Task 5：刷新 eval 集和文档，用真实问法验证重构结果。
+
+## 当前任务复盘
+- 已在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-rag-rework` 中开始执行 `2026-03-30-agent-rag-rework-plan.md`，避免在脏的 `master` 工作区直接落地实现。
+- 基线验证已完成：`go mod download` 与 `go test ./...` 在新 worktree 中均通过，说明本轮可以在干净起点上推进。
+- Task 1 已完成：新增 `internal/agent/domain_gate.go`，把“是否属于系统职责范围”从老的 `tool/rag/mixed` 路由里拆开，并为 `没课 / 实时视图 / 最终结算` 等真实问法补上门禁覆盖。
+- Task 2 已完成：新增 `docs/agent-knowledge/manifest.yaml`，为知识文档和切片补上 `doc_type / audience / intent` 元数据；同步脚本会读取 manifest，缺失时安全回退到 `unknown/shared/unknown`。
+- Task 3 已完成：`Agent.Chat` 已改成 retrieval-first；领域内问题默认先检索，再按知识命中和实时信号决定 `knowledge-only / tool-first / mixed / reject`，并通过 `answer_builder` 重写 `knowledge-only` 与 `mixed` 提示词。
+- Task 4 已完成：调用日志已扩展到 `domain_result / answer_mode / retrieval_candidate_count / retrieval_top_refs / retrieval_scores / retrieval_filtered_reason / knowledge_doc_types`，同时 GoAdmin 列表页已支持查看这些字段。
+- Task 5 已完成：`eval_cases.json` 已补 `expected_domain / expected_mode`，真实口语化问法已覆盖到离线样本；`scripts/agent_eval` 会输出领域准确率、模式准确率和兼容旧口径的路由准确率。
+- 真实问法偏差已在实现中收敛：检索层升级为“词法召回 + alias 扩展 + 文档类型轻量重排”，`hasLiveSignal` 也不再把“按谁优先”这类规则问法误判成实时查询。
+- 本轮关键验证证据：
+- `go test ./scripts/sync_agent_knowledge -run "TestLoadKnowledgeManifest" -v`
+- `go test ./internal/service -run "TestAgentKnowledgeServiceSearch(PrioritizesRuleDocsOverOverviewDocs|ExpandsRealWorldLeaveSyncQuestion)" -v`
+- `go test ./internal/agent -run "TestDomainGate|TestModeSelector|TestHasLiveSignal|TestAgentChatUsesKnowledgeOnlyForLeaveSyncFailureQuestion|TestAgentChatUsesMixedAnswerModeForRealtimePlusRuleQuestion|TestAgentChatRejectsOutOfDomainBeforeRetrieval|TestAgentChatKeepsToolFirstForLiveQueryWithoutRuleSignal|TestEvaluateCasesAggregatesRouteRetrievalToolAndKeywordMatches" -v`
+- `go test ./internal/app -run TestCallLogAdapterPersistsDomainModeAndRetrievalDetails -v`
+- `go test ./internal/agent ./internal/app ./internal/adminui/... ./internal/service ./scripts/agent_eval ./scripts/sync_agent_knowledge -v`
+- `CONFIG_PATH=G:\gofile\schedule_server\configs go run ./scripts/sync_agent_knowledge -tenant-id 1`
+- `CONFIG_PATH=G:\gofile\schedule_server\configs go run ./scripts/agent_eval -tenant-id 1`
+- 最新离线评测结果：`总样本 18`、`领域准确率 100.0% (18/18)`、`模式准确率 100.0% (18/18)`、`路由准确率 100.0% (18/18)`、`知识命中率 100.0% (10/10)`、`失败样本: 无`。
+
+## 当前任务
 - [x] 梳理 `95b0cf9` 这批 `RAG / Eval / Observability` 改动的完整范围，明确哪些属于我实现、哪些不纳入总结。
 - [x] 生成一份独立 Markdown，总结本次功能、测试、评测、文档和合并结果。
 - [x] 回读生成的总结文件，确认路径、内容和范围表述正确。

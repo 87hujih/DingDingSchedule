@@ -14,6 +14,8 @@ type EvalCase struct {
 	Name             string   `json:"name"`
 	Category         string   `json:"category"`
 	Question         string   `json:"question"`
+	ExpectedDomain   string   `json:"expected_domain,omitempty"`
+	ExpectedMode     string   `json:"expected_mode,omitempty"`
 	ExpectedRoute    string   `json:"expected_route,omitempty"`
 	ExpectedTools    []string `json:"expected_tools,omitempty"`
 	ExpectedSources  []string `json:"expected_sources,omitempty"`
@@ -34,6 +36,10 @@ type EvalCaseResult struct {
 	Name             string
 	Category         string
 	Question         string
+	DomainResult     string
+	DomainMatched    bool
+	AnswerMode       string
+	ModeMatched      bool
 	Route            string
 	RouteMatched     bool
 	RetrievalChecked bool
@@ -52,6 +58,10 @@ type EvalCaseResult struct {
 // EvalSummary 表示整批样本的评测摘要。
 type EvalSummary struct {
 	TotalCases        int
+	DomainPassed      int
+	DomainAccuracy    float64
+	ModePassed        int
+	ModeAccuracy      float64
 	RoutePassed       int
 	RouteAccuracy     float64
 	RetrievalCases    int
@@ -82,6 +92,7 @@ func LoadEvalCases(path string) ([]EvalCase, error) {
 
 // EvaluateCases 评估 query router、知识检索以及可选的端到端问答结果。
 func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, cases []EvalCase, observer EvalObserver) (EvalSummary, []EvalCaseResult, error) {
+	domainGate := newDomainGate()
 	router := newQueryRouter()
 	results := make([]EvalCaseResult, 0, len(cases))
 	summary := EvalSummary{TotalCases: len(cases)}
@@ -96,11 +107,47 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 			Question: tc.Question,
 		}
 
-		route := router.Route(tc.Question)
-		result.Route = string(route.Kind)
+		domainResult := domainGate.Check(tc.Question)
+		result.DomainResult = string(domainResult)
+		expectedDomain := strings.TrimSpace(tc.ExpectedDomain)
+		if expectedDomain == "" {
+			expectedDomain = result.DomainResult
+		}
+		result.DomainMatched = strings.EqualFold(result.DomainResult, expectedDomain)
+		if result.DomainMatched {
+			summary.DomainPassed++
+		}
+
+		var hits []KnowledgeHit
+		var retrievalErr error
+		if domainResult == domainIn {
+			hits, retrievalErr = searchEvalKnowledge(ctx, knowledge, tenantID, domainResult, tc.Question)
+			if retrievalErr != nil {
+				result.Error = retrievalErr.Error()
+			}
+		}
+
+		answerMode := router.DecideForQuestion(tc.Question, domainResult, RetrievalResult{
+			Hits:      hits,
+			TopScores: collectKnowledgeScores(hits),
+		})
+		result.AnswerMode = string(answerMode)
+		expectedMode := strings.TrimSpace(tc.ExpectedMode)
+		if expectedMode == "" {
+			expectedMode = defaultExpectedMode(tc)
+		}
+		result.ModeMatched = expectedMode == "" || strings.EqualFold(result.AnswerMode, expectedMode)
+		if result.ModeMatched {
+			summary.ModePassed++
+		}
+
+		result.Route = string(modeToQueryKind(answerMode))
 		expectedRoute := strings.TrimSpace(tc.ExpectedRoute)
 		if expectedRoute == "" {
-			expectedRoute = strings.TrimSpace(tc.Category)
+			expectedRoute = string(modeToQueryKind(answerModeForExpectedMode(expectedMode)))
+			if expectedRoute == "" {
+				expectedRoute = strings.TrimSpace(tc.Category)
+			}
 		}
 		result.RouteMatched = expectedRoute == "" || strings.EqualFold(result.Route, expectedRoute)
 		if result.RouteMatched {
@@ -110,10 +157,7 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 		if len(tc.ExpectedSources) > 0 {
 			result.RetrievalChecked = true
 			summary.RetrievalCases++
-			hits, err := searchEvalKnowledge(ctx, knowledge, tenantID, route.Kind, tc.Question)
-			if err != nil {
-				result.Error = err.Error()
-			} else {
+			if result.Error == "" {
 				result.RetrievedSources = collectSourceRefs(hits)
 				result.RetrievalMatched = matchAnyNormalized(result.RetrievedSources, tc.ExpectedSources)
 				if result.RetrievalMatched {
@@ -157,6 +201,8 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 		results = append(results, result)
 	}
 
+	summary.DomainAccuracy = percent(summary.DomainPassed, summary.TotalCases)
+	summary.ModeAccuracy = percent(summary.ModePassed, summary.TotalCases)
 	summary.RouteAccuracy = percent(summary.RoutePassed, summary.TotalCases)
 	summary.RetrievalAccuracy = percent(summary.RetrievalPassed, summary.RetrievalCases)
 	summary.ToolAccuracy = percent(summary.ToolPassed, summary.ToolCases)
@@ -168,15 +214,62 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 	return summary, results, nil
 }
 
-// searchEvalKnowledge 仅在 rag 或 mixed 路径下执行知识检索。
-func searchEvalKnowledge(ctx context.Context, knowledge KnowledgePort, tenantID uint, kind queryKind, question string) ([]KnowledgeHit, error) {
+// searchEvalKnowledge 仅在站内问题上执行知识检索。
+func searchEvalKnowledge(ctx context.Context, knowledge KnowledgePort, tenantID uint, domainResult domainResult, question string) ([]KnowledgeHit, error) {
 	if knowledge == nil || tenantID == 0 {
 		return nil, nil
 	}
-	if kind != queryKindRAG && kind != queryKindMixed {
+	if domainResult != domainIn {
 		return nil, nil
 	}
 	return knowledge.Search(ctx, tenantID, question, defaultKnowledgeTopK)
+}
+
+func defaultExpectedMode(tc EvalCase) string {
+	if mode := strings.TrimSpace(tc.ExpectedMode); mode != "" {
+		return mode
+	}
+
+	switch strings.TrimSpace(tc.ExpectedRoute) {
+	case string(queryKindRAG):
+		return string(answerModeKnowledgeOnly)
+	case string(queryKindMixed):
+		return string(answerModeMixed)
+	case string(queryKindTool):
+		if strings.EqualFold(strings.TrimSpace(tc.ExpectedDomain), string(domainOut)) {
+			return string(answerModeReject)
+		}
+		return string(answerModeToolFirst)
+	}
+
+	switch strings.TrimSpace(tc.Category) {
+	case "rag":
+		return string(answerModeKnowledgeOnly)
+	case "mixed":
+		return string(answerModeMixed)
+	case "tool":
+		if strings.EqualFold(strings.TrimSpace(tc.ExpectedDomain), string(domainOut)) {
+			return string(answerModeReject)
+		}
+		return string(answerModeToolFirst)
+	default:
+		return ""
+	}
+}
+
+func answerModeForExpectedMode(mode string) answerMode {
+	switch strings.TrimSpace(mode) {
+	case string(answerModeKnowledgeOnly):
+		return answerModeKnowledgeOnly
+	case string(answerModeMixed):
+		return answerModeMixed
+	case string(answerModeReject):
+		return answerModeReject
+	case string(answerModeToolFirst):
+		return answerModeToolFirst
+	default:
+		return ""
+	}
 }
 
 // collectSourceRefs 提取评测结果中的来源引用列表。

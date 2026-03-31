@@ -75,6 +75,313 @@ type capturedChatRequest struct {
 	Tools []json.RawMessage `json:"tools"`
 }
 
+// TestAgentChatUsesKnowledgeOnlyForLeaveSyncFailureQuestion 验证真实口语化规则问法会走 knowledge-only。
+func TestAgentChatUsesKnowledgeOnlyForLeaveSyncFailureQuestion(t *testing.T) {
+	t.Parallel()
+
+	knowledge := &testKnowledgePort{
+		hits: []agenttools.KnowledgeHit{
+			{
+				Title:      "请假同步说明",
+				SourcePath: "agent-knowledge/leave-sync-guide.md",
+				DocType:    "rule",
+				Audience:   "shared",
+				Intent:     "leave",
+				Heading:    "同步失败处理",
+				Body:       "同步失败不会直接覆盖已经生成的考勤快照；排障后应重试同步，再由管理员复核结果。",
+				SourceRef:  "请假同步说明#3",
+				Score:      18,
+			},
+		},
+	}
+
+	var requests []capturedChatRequest
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req capturedChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		requests = append(requests, req)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"同步失败不会直接覆盖已生成的考勤快照，排障后应重试同步并复核。"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     server.URL,
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		Knowledge:      knowledge,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "如果请假信息没能同步到位，会出现什么情况",
+		ConversationID:   "conv-knowledge",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if reply == "" {
+		t.Fatalf("Chat() reply should not be empty")
+	}
+
+	knowledge.mu.Lock()
+	if knowledge.calls != 1 {
+		t.Fatalf("knowledge search calls = %d, want 1", knowledge.calls)
+	}
+	knowledge.mu.Unlock()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	if len(requests[0].Tools) != 0 {
+		t.Fatalf("knowledge-only request tools len = %d, want 0", len(requests[0].Tools))
+	}
+	if !requestContains(requests[0], "请假同步说明#3") {
+		t.Fatalf("knowledge-only request missing source ref, messages = %+v", requests[0].Messages)
+	}
+	if !requestContains(requests[0], "同步失败不会直接覆盖已经生成的考勤快照") {
+		t.Fatalf("knowledge-only request missing knowledge body, messages = %+v", requests[0].Messages)
+	}
+}
+
+// TestAgentChatUsesMixedAnswerModeForRealtimePlusRuleQuestion 验证实时查询加规则说明会走 mixed。
+func TestAgentChatUsesMixedAnswerModeForRealtimePlusRuleQuestion(t *testing.T) {
+	t.Parallel()
+
+	knowledge := &testKnowledgePort{
+		hits: []agenttools.KnowledgeHit{
+			{
+				Title:      "考勤规则",
+				SourcePath: "agent-knowledge/attendance-rules.md",
+				DocType:    "rule",
+				Audience:   "shared",
+				Intent:     "attendance",
+				Heading:    "迟到判定",
+				Body:       "上课开始后超过 10 分钟打卡视为迟到。",
+				SourceRef:  "考勤规则#1",
+				Score:      18,
+			},
+		},
+	}
+
+	var requests []capturedChatRequest
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req capturedChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		requests = append(requests, req)
+		current := len(requests)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch current {
+		case 1:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_current_time","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
+		case 2:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"今天第一节未到人员已查询；迟到规则以上课后 10 分钟为界。"},"finish_reason":"stop"}]}`))
+		default:
+			http.Error(w, `{"error":{"message":"unexpected extra request"}}`, http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     server.URL,
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		Knowledge:      knowledge,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "今天第一节谁未到，并说明迟到规则",
+		ConversationID:   "conv-mixed",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if reply == "" {
+		t.Fatalf("Chat() reply should not be empty")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if len(requests[0].Tools) == 0 {
+		t.Fatalf("mixed request should keep tools")
+	}
+	if !requestContains(requests[0], "先回答实时查询结果") {
+		t.Fatalf("mixed request missing answer-order instruction, messages = %+v", requests[0].Messages)
+	}
+	if !requestContains(requests[0], "考勤规则#1") {
+		t.Fatalf("mixed request missing source ref, messages = %+v", requests[0].Messages)
+	}
+}
+
+// TestAgentChatRejectsOutOfDomainBeforeRetrieval 验证站外问题会在领域门禁处被拒绝。
+func TestAgentChatRejectsOutOfDomainBeforeRetrieval(t *testing.T) {
+	t.Parallel()
+
+	knowledge := &testKnowledgePort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		Knowledge:      knowledge,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "今天上海天气怎么样",
+		ConversationID:   "conv-reject",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if reply != outOfDomainReply {
+		t.Fatalf("Chat() reply = %q, want %q", reply, outOfDomainReply)
+	}
+
+	knowledge.mu.Lock()
+	defer knowledge.mu.Unlock()
+	if knowledge.calls != 0 {
+		t.Fatalf("knowledge search calls = %d, want 0", knowledge.calls)
+	}
+}
+
+// TestAgentChatKeepsToolFirstForLiveQueryWithoutRuleSignal 验证纯实时查询即使命中知识也不应被抬成 mixed。
+func TestAgentChatKeepsToolFirstForLiveQueryWithoutRuleSignal(t *testing.T) {
+	t.Parallel()
+
+	knowledge := &testKnowledgePort{
+		hits: []agenttools.KnowledgeHit{
+			{
+				Title:      "系统总览",
+				SourcePath: "agent-knowledge/system-overview.md",
+				DocType:    "overview",
+				Audience:   "shared",
+				Intent:     "system",
+				Heading:    "课表与考勤链路",
+				Body:       "系统支持课表查询和考勤结果查看。",
+				SourceRef:  "系统总览#17",
+				Score:      18,
+			},
+		},
+	}
+
+	var requests []capturedChatRequest
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req capturedChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		requests = append(requests, req)
+		current := len(requests)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch current {
+		case 1:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_current_time","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
+		case 2:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"今天第一节未到人员已查询。"},"finish_reason":"stop"}]}`))
+		default:
+			http.Error(w, `{"error":{"message":"unexpected extra request"}}`, http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     server.URL,
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		Knowledge:      knowledge,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "今天第一节谁未到？",
+		ConversationID:   "conv-tool-first",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if reply == "" {
+		t.Fatalf("Chat() reply should not be empty")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if len(requests[0].Tools) == 0 {
+		t.Fatalf("tool-first request should keep tools")
+	}
+	if requestContains(requests[0], "系统总览#17") {
+		t.Fatalf("tool-first request should not inject knowledge summary, messages = %+v", requests[0].Messages)
+	}
+}
+
 // TestAgentChatUsesKnowledgeOnlyPathForRuleQuestions 验证纯规则问题会关闭工具并注入知识上下文。
 func TestAgentChatUsesKnowledgeOnlyPathForRuleQuestions(t *testing.T) {
 	t.Parallel()
@@ -86,6 +393,7 @@ func TestAgentChatUsesKnowledgeOnlyPathForRuleQuestions(t *testing.T) {
 				Heading:   "迟到判定",
 				Body:      "上课开始后超过 10 分钟打卡视为迟到。",
 				SourceRef: "考勤规则#1",
+				Score:     18,
 			},
 		},
 	}
@@ -175,6 +483,7 @@ func TestAgentChatWritesKnowledgeMetricsToCallLog(t *testing.T) {
 				Heading:   "迟到判定",
 				Body:      "上课开始后超过 10 分钟打卡视为迟到。",
 				SourceRef: "考勤规则#1",
+				Score:     18,
 			},
 		},
 	}
@@ -247,6 +556,7 @@ func TestAgentChatInjectsKnowledgeContextBeforeToolCallsForMixedQuestions(t *tes
 				Heading:   "迟到判定",
 				Body:      "上课开始后超过 10 分钟打卡视为迟到。",
 				SourceRef: "考勤规则#1",
+				Score:     18,
 			},
 		},
 	}

@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 
+	"schedule_server/internal/agent"
 	agenttool "schedule_server/internal/agent/tools"
 	"schedule_server/pkg/dingtalk"
 )
@@ -97,4 +100,59 @@ func TestNewCaseScopedObserverBuildsFreshRunnerPerCall(t *testing.T) {
 	if len(second.Tools) != 1 || second.Tools[0] != "tool-2" {
 		t.Fatalf("second tools = %v, want [tool-2]", second.Tools)
 	}
+}
+
+// TestPrintSummaryIncludesDomainAndModeAccuracy 验证评测脚本会输出领域与模式准确率。
+func TestPrintSummaryIncludesDomainAndModeAccuracy(t *testing.T) {
+	t.Parallel()
+
+	output := captureStdout(t, func() {
+		printSummary(agent.EvalSummary{
+			TotalCases:        2,
+			DomainPassed:      2,
+			DomainAccuracy:    100,
+			ModePassed:        2,
+			ModeAccuracy:      100,
+			RoutePassed:       2,
+			RouteAccuracy:     100,
+			RetrievalCases:    1,
+			RetrievalPassed:   1,
+			RetrievalAccuracy: 100,
+			AverageLatencyMs:  86,
+		}, false)
+	})
+
+	if !strings.Contains(output, "领域准确率") {
+		t.Fatalf("summary output missing domain accuracy: %q", output)
+	}
+	if !strings.Contains(output, "模式准确率") {
+		t.Fatalf("summary output missing mode accuracy: %q", output)
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error = %v", err)
+	}
+	os.Stdout = writer
+
+	defer func() {
+		os.Stdout = oldStdout
+	}()
+
+	fn()
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer.Close() error = %v", err)
+	}
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("io.ReadAll() error = %v", err)
+	}
+	return string(data)
 }

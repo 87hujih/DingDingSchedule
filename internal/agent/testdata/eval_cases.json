@@ -3,6 +3,8 @@
     "name": "tool-attendance-current",
     "category": "tool",
     "question": "今天第一节谁未到？",
+    "expected_domain": "in_domain",
+    "expected_mode": "tool-first",
     "expected_route": "tool",
     "expected_tools": ["query_attendance_status"]
   },
@@ -10,6 +12,8 @@
     "name": "tool-my-schedule",
     "category": "tool",
     "question": "帮我查一下本周课表",
+    "expected_domain": "in_domain",
+    "expected_mode": "tool-first",
     "expected_route": "tool",
     "expected_tools": ["query_my_schedule"]
   },
@@ -17,6 +21,8 @@
     "name": "tool-free-users",
     "category": "tool",
     "question": "帮我查周三第1到2节哪些人没课",
+    "expected_domain": "in_domain",
+    "expected_mode": "tool-first",
     "expected_route": "tool",
     "expected_tools": ["query_free_users_by_slot"]
   },
@@ -24,6 +30,8 @@
     "name": "tool-weekly-absence-ranking",
     "category": "tool",
     "question": "查一下本周缺勤排行",
+    "expected_domain": "in_domain",
+    "expected_mode": "tool-first",
     "expected_route": "tool",
     "expected_tools": ["query_weekly_absence_ranking"]
   },
@@ -31,6 +39,8 @@
     "name": "tool-weekly-rate-ranking",
     "category": "tool",
     "question": "本周出勤率排行是什么",
+    "expected_domain": "in_domain",
+    "expected_mode": "tool-first",
     "expected_route": "tool",
     "expected_tools": ["query_weekly_attendance_ranking"]
   },
@@ -38,13 +48,17 @@
     "name": "tool-my-leave",
     "category": "tool",
     "question": "我最近30天请假记录有哪些",
+    "expected_domain": "in_domain",
+    "expected_mode": "tool-first",
     "expected_route": "tool",
     "expected_tools": ["query_my_leave"]
   },
   {
     "name": "rag-late-rule",
     "category": "rag",
-    "question": "考勤迟到怎么判定？",
+    "question": "当前的考勤规则里，迟到怎么算",
+    "expected_domain": "in_domain",
+    "expected_mode": "knowledge-only",
     "expected_route": "rag",
     "expected_sources": ["考勤规则说明#1"],
     "expected_keywords": ["10分钟", "迟到"]
@@ -52,7 +66,9 @@
   {
     "name": "rag-carry-forward",
     "category": "rag",
-    "question": "连续节次的打卡顺延规则是什么？",
+    "question": "连续节次上一节已经打过卡，这一节会自动顺延吗？",
+    "expected_domain": "in_domain",
+    "expected_mode": "knowledge-only",
     "expected_route": "rag",
     "expected_sources": ["考勤规则说明#2"],
     "expected_keywords": ["连续节次", "顺延"]
@@ -60,7 +76,9 @@
   {
     "name": "rag-view-mode",
     "category": "rag",
-    "question": "实时视图和最终结算有什么区别？",
+    "question": "实时视图什么时候才会变成最终结算？",
+    "expected_domain": "in_domain",
+    "expected_mode": "knowledge-only",
     "expected_route": "rag",
     "expected_sources": ["考勤规则说明#3"],
     "expected_keywords": ["30分钟", "最终结算"]
@@ -68,7 +86,9 @@
   {
     "name": "rag-leave-effect",
     "category": "rag",
-    "question": "请假审批同步后会怎么影响考勤？",
+    "question": "请假审批同步后，考勤会怎么变",
+    "expected_domain": "in_domain",
+    "expected_mode": "knowledge-only",
     "expected_route": "rag",
     "expected_sources": ["请假同步说明#2"],
     "expected_keywords": ["请假", "考勤"]
@@ -76,7 +96,9 @@
   {
     "name": "rag-leave-failure",
     "category": "rag",
-    "question": "请假同步失败会影响已经生成的考勤快照吗？",
+    "question": "如果请假信息没能同步到位，会出现什么情况",
+    "expected_domain": "in_domain",
+    "expected_mode": "knowledge-only",
     "expected_route": "rag",
     "expected_sources": ["请假同步说明#3"],
     "expected_keywords": ["不会直接覆盖", "重试"]
@@ -84,7 +106,9 @@
   {
     "name": "rag-rest-day-priority",
     "category": "rag",
-    "question": "休息日和有课冲突时按什么优先级处理？",
+    "question": "如果休息日和有课撞上了，系统按谁优先",
+    "expected_domain": "in_domain",
+    "expected_mode": "knowledge-only",
     "expected_route": "rag",
     "expected_sources": ["作息模式使用说明#3"],
     "expected_keywords": ["休息日", "优先级"]
@@ -92,7 +116,9 @@
   {
     "name": "mixed-attendance-with-rule",
     "category": "mixed",
-    "question": "今天第一节谁未到，并说明迟到判定规则",
+    "question": "今天第一节谁未到，并说明迟到规则",
+    "expected_domain": "in_domain",
+    "expected_mode": "mixed",
     "expected_route": "mixed",
     "expected_tools": ["query_attendance_status"],
     "expected_sources": ["考勤规则说明#1"],
@@ -101,7 +127,9 @@
   {
     "name": "mixed-schedule-with-mode",
     "category": "mixed",
-    "question": "帮我看本周课表，并说明当前作息模式怎么生效",
+    "question": "帮我看本周课表，顺便说下现在作息模式怎么生效",
+    "expected_domain": "in_domain",
+    "expected_mode": "mixed",
     "expected_route": "mixed",
     "expected_tools": ["query_my_schedule"],
     "expected_sources": ["作息模式使用说明#1"],
@@ -111,6 +139,8 @@
     "name": "mixed-attendance-with-leave",
     "category": "mixed",
     "question": "帮我查今天第一节考勤，并说明请假同步后怎么计入考勤",
+    "expected_domain": "in_domain",
+    "expected_mode": "mixed",
     "expected_route": "mixed",
     "expected_tools": ["query_attendance_status"],
     "expected_sources": ["请假同步说明#2"],
@@ -120,6 +150,8 @@
     "name": "mixed-attendance-text-with-view-mode",
     "category": "mixed",
     "question": "生成今天第一节考勤通报，并说明实时视图什么时候转最终结算",
+    "expected_domain": "in_domain",
+    "expected_mode": "mixed",
     "expected_route": "mixed",
     "expected_tools": ["generate_attendance_text"],
     "expected_sources": ["考勤规则说明#3"],
@@ -127,15 +159,19 @@
   },
   {
     "name": "reject-weather",
-    "category": "tool",
+    "category": "reject",
     "question": "今天上海天气怎么样？",
+    "expected_domain": "out_of_domain",
+    "expected_mode": "reject",
     "expected_route": "tool",
     "expected_keywords": ["抱歉", "考勤"]
   },
   {
     "name": "reject-binary-search",
-    "category": "tool",
+    "category": "reject",
     "question": "帮我写一个二分查找",
+    "expected_domain": "out_of_domain",
+    "expected_mode": "reject",
     "expected_route": "tool",
     "expected_keywords": ["抱歉", "无法回答其他内容"]
   }

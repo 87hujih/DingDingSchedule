@@ -1,10 +1,12 @@
 # Agent RAG Eval
 
-这份说明用于运行首版 `RAG + Eval` 验证，评估 query router、知识检索以及可选的端到端 Agent 回复效果。
+这份说明用于运行 retrieval-first 版本的 `RAG + Eval` 验证，评估领域门禁、回答模式、知识检索以及可选的端到端 Agent 回复效果。
 
 ## 评测范围
 
-- `route`：问题是否被正确分到 `tool / rag / mixed`
+- `domain`：问题是否被正确判为 `in_domain / out_of_domain`
+- `mode`：问题是否被正确判为 `knowledge-only / tool-first / mixed / reject`
+- `route`：兼容旧口径，按 `mode` 映射出的 `tool / rag / mixed`
 - `retrieval`：规则类问题是否命中预期知识片段
 - `tools`：端到端模式下是否调用了预期工具
 - `keywords`：端到端模式下回复是否包含预期关键词
@@ -15,6 +17,15 @@
 - 纯规则问答
 - 混合问答
 - 非职责范围拒答
+
+每条样本当前显式包含：
+
+- `expected_domain`
+- `expected_mode`
+- `expected_route`
+- `expected_sources`
+- `expected_tools`
+- `expected_keywords`
 
 ## 准备知识库
 
@@ -32,7 +43,7 @@ go run ./scripts/agent_eval -tenant-id 1 -sync-knowledge-root ./docs/agent-knowl
 
 ## 只跑路由与检索
 
-不依赖真实 Agent 用户身份，只验证 `route + retrieval`：
+不依赖真实 Agent 用户身份，只验证 `domain + mode + route + retrieval`：
 
 ```bash
 go run ./scripts/agent_eval -tenant-id 1 -sync-knowledge-root ./docs/agent-knowledge
@@ -40,6 +51,8 @@ go run ./scripts/agent_eval -tenant-id 1 -sync-knowledge-root ./docs/agent-knowl
 
 输出示例关注：
 
+- `领域准确率`
+- `模式准确率`
 - `路由准确率`
 - `知识命中率`
 - `平均耗时`
@@ -69,12 +82,36 @@ go run ./scripts/agent_eval \
 ## 指标解释
 
 - `路由准确率`：`expected_route` 命中率
+- `领域准确率`：`expected_domain` 命中率
+- `模式准确率`：`expected_mode` 命中率
 - `知识命中率`：规则类问题是否至少命中一个预期 `source_ref`
 - `工具命中率`：实际工具调用是否覆盖 `expected_tools`
 - `关键词命中率`：回复是否包含全部 `expected_keywords`
 - `平均耗时`：单样本总耗时平均值
 
 ## 最近一次验证
+
+`2026-03-30` 在 `agent-rag-rework` worktree 中，使用主仓库配置目录执行了一次 retrieval-first 离线评测：
+
+```bash
+CONFIG_PATH=G:\gofile\schedule_server\configs go run ./scripts/agent_eval -tenant-id 1
+```
+
+结果：
+
+- `总样本: 18`
+- `领域准确率: 100.0% (18/18)`
+- `模式准确率: 100.0% (18/18)`
+- `路由准确率: 100.0% (18/18)`
+- `知识命中率: 100.0% (10/10)`
+- `平均耗时: 141 ms`
+- `失败样本: 无`
+
+这轮验证对应的关键改动是：
+
+- `domainGate` 扩充了 `没课 / 实时视图 / 最终结算` 等真实问法
+- `hasLiveSignal` 不再把“按谁优先”这类规则问法误判成实时查询
+- 纯实时问题即使命中泛知识，也会保留 `tool-first`，不再被误抬成 `mixed`
 
 `2026-03-27` 在 `agent-rag-eval-observability` worktree 中，使用主仓库配置目录执行了一次仅含 `route + retrieval` 的真实验证：
 
