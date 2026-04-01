@@ -260,9 +260,6 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 	// 8. 计算未到人员（应到 - 正常打卡 - 请假）
 	notArrived := s.calculateNotArrived(shouldAttend, onTime, leave)
 
-	// 9. 需要通知的人员：应到但未正常打卡且未请假（含迟到和缺勤）
-	notifyUsers := buildNotifyList(shouldAttend, onTime, leave)
-
 	// 10. 构建响应（包含休息日用户）
 	restDayBasic := toRestDayBasicList(restDayUsers)
 	resp := dto.NewAttendanceDetailResponse(
@@ -274,6 +271,13 @@ func (s *AttendanceRecordService) getAttendanceDetailWithLateUsers(
 	if err := s.enrichAttendanceDetailUsers(ctx, activeUsers, resp); err != nil {
 		return nil, nil, err
 	}
+	resp, err = s.applyManualOverridesToDetail(ctx, date, req.Section, resp)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// 自动统计链路需要和详情/最终结算保持同一套人工代签口径。
+	notifyUsers := buildNotifyList(shouldAttend, resp.Users.OnTime, resp.Users.Leave)
 	return resp, notifyUsers, nil
 }
 

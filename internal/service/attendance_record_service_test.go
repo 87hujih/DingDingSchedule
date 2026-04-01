@@ -533,6 +533,59 @@ func TestSignForUsersRejectsRealtimeOverridesForNonAttendTargets(t *testing.T) {
 	}
 }
 
+func TestGetAttendanceDetailWithLateUsersAppliesManualOverrideToResultAndNotifyList(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 10, 0, 0, time.Local),
+		records: []dingtalk.CheckRecord{
+			{
+				DingUserID: fixtureDingUserIDOnTime,
+				CheckTime:  time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+			{
+				DingUserID: fixtureDingUserIDLate,
+				CheckTime:  time.Date(2026, 3, 19, 8, 5, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+		},
+	})
+
+	override := &model.AttendanceManualOverride{
+		TenantID:     fixtureTenantID,
+		Date:         time.Date(2026, 3, 19, 0, 0, 0, 0, time.Local),
+		Week:         fixture.request.Week,
+		Section:      fixture.request.Section,
+		UserID:       fixture.users.late.ID,
+		OverrideType: "force_on_time",
+		OperatorID:   fixture.users.onTime.ID,
+		AppliedAt:    time.Date(2026, 3, 19, 8, 12, 0, 0, time.Local),
+	}
+	if err := fixture.manualOverrideRepo.UpsertForceOnTime(context.Background(), override); err != nil {
+		t.Fatalf("create manual override: %v", err)
+	}
+
+	resp, notifyUsers, err := fixture.service.GetAttendanceDetailWithLateUsers(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("get attendance detail with late users: %v", err)
+	}
+
+	if got := attendanceCheckNames(resp.Users.OnTime); !slices.Equal(got, []string{"LateUser", "OnTimeUser"}) {
+		t.Fatalf("unexpected on_time users after override: got %v", got)
+	}
+	if got := attendanceBasicNames(resp.Users.NotArrived); !slices.Equal(got, []string{"MissingUser"}) {
+		t.Fatalf("unexpected not_arrived users after override: got %v", got)
+	}
+
+	gotNotify := make([]string, 0, len(notifyUsers))
+	for _, user := range notifyUsers {
+		gotNotify = append(gotNotify, user.Name)
+	}
+	slices.Sort(gotNotify)
+	if !slices.Equal(gotNotify, []string{"MissingUser"}) {
+		t.Fatalf("unexpected notify users after override: got %v", gotNotify)
+	}
+}
+
 func TestFinalizeAttendanceRecordKeepsManualOverrideOverLatePunch(t *testing.T) {
 	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
 		now: time.Date(2026, 3, 19, 8, 40, 0, 0, time.Local),

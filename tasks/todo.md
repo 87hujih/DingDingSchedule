@@ -751,3 +751,18 @@ g -n "schedule_server_deploy|docker build|docker run|GitHub Actions|GHCR|./deplo
 - `Dockerfile` 当前生产镜像体积不大，失败日志里也只下载到十几 MB 镜像层中的一小部分就耗尽 10 分钟，说明主因更接近服务器到 GHCR 的网络抖动或带宽受限，而不是镜像过大。
 - 本次已在 `.github/workflows/deploy.yml` 为部署步骤显式设置 `command_timeout: 45m`，并为健康检查步骤设置 `command_timeout: 5m`，避免两类远端命令共用默认 10 分钟上限导致诊断混淆。
 - 实际验证为：检查 workflow diff、复核修改后的 YAML 缩进与字段位置；本地尝试用 Python 解析 YAML 时因环境缺少 `PyYAML` 未完成自动语法校验，未执行真实 GitHub Actions 远端部署。
+
+## 当前任务
+- [x] 复核自动统计链路与人工代签覆盖的合并点，确认自动推送和迟到提醒共用的计算入口。
+- [x] 为“自动统计前已代签”补失败回归测试，锁定推送结果与通知名单都必须排除已代签用户。
+- [x] 以最小改动修复 `GetAttendanceDetailWithLateUsers` 链路，使其合并人工代签并返回一致的通知名单。
+- [x] 运行定向测试并补充本次复盘，记录本轮行为变化与验证结果。
+
+## 当前任务复盘
+- 已确认根因集中在 `AttendanceRecordService.GetAttendanceDetailWithLateUsers`：该链路会被调度器用于自动保存快照、群推送和迟到提醒，但此前没有像 `GetAttendanceDetail` / `GetAttendanceRecordFromDB` / `FinalizeAttendanceRecord` 一样合并 `attendance_manual_overrides`。
+- 已在 `internal/service/attendance_record_service_test.go` 新增 `TestGetAttendanceDetailWithLateUsersAppliesManualOverrideToResultAndNotifyList`，先复现“自动统计前已代签时，结果仍把用户留在未正常打卡名单且继续通知”的旧行为，再锁定修复后的口径。
+- `internal/service/attendance_record_service.go` 现已在 `GetAttendanceDetailWithLateUsers` 生成详情并补全用户资料后，调用 `applyManualOverridesToDetail` 合并人工代签；随后用合并后的 `resp.Users.OnTime` / `resp.Users.Leave` 重算通知名单，保证自动推送、自动快照和提醒使用同一口径。
+- 实际验证命令：
+- `go test ./internal/service -run TestGetAttendanceDetailWithLateUsersAppliesManualOverrideToResultAndNotifyList -v`
+- `go test ./internal/service -run "Test(SignForUsersSupportsRealtimeDateSectionAndDetailShowsOverride|FinalizeAttendanceRecordKeepsManualOverrideOverLatePunch|SignForUsersWithRecordIDKeepsSnapshotAndDetailConsistent|GetAttendanceDetailReturnsCurrentViewBeforeFinalize|GetAttendanceDetailReturnsFinalSnapshotAfterFinalize)" -v`
+- `go test ./internal/service -v`
