@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -199,7 +200,6 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	history := a.sessions.getMessages(sessionKey)
 	userMsg := tools.Message{Role: "user", Content: msg.Content}
 	metrics := callMetrics{}
-	normalizedQuestion := normalizeQuery(msg.Content)
 
 	// 7. 先做领域门禁，站外问题直接拒答，不进入检索与 LLM。
 	domainResult := domainOut
@@ -216,16 +216,42 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		return reply, nil
 	}
 
-	hasLiveDataSignal := hasLiveSignal(normalizedQuestion)
-	wantsRuleExplanation := hasRuleSignal(normalizedQuestion)
+	initialDecision := a.router.DecideIntent(msg.Content, domainResult, RetrievalResult{})
+	switch initialDecision.Intent {
+	case intentHelp:
+		reply := buildHelpReply(uctx)
+		metrics.QueryType = modeToQueryKind(initialDecision.AnswerMode)
+		metrics.AnswerMode = initialDecision.AnswerMode
+		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return reply, nil
+	case intentClarify:
+		reply, clarifyTools, err := a.handleClarifyIntent(ctx, uctx, msg.Content)
+		if err != nil {
+			a.deps.Logger.Errorw("clarify 执行失败", "user", uctx.Name, "question", msg.Content, "err", err)
+			a.writeCallLog(ctx, uctx, msg.Content, "", clarifyTools, 0, startTime, "failed", err.Error(), metrics)
+			return "系统错误，请稍后重试", nil
+		}
+		if reply == "" {
+			reply = "请再具体说明你要查询或操作的内容。"
+		}
+		toolsCalled = append(toolsCalled, clarifyTools...)
+		metrics.QueryType = modeToQueryKind(initialDecision.AnswerMode)
+		metrics.AnswerMode = initialDecision.AnswerMode
+		a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, 0, startTime, "success", "", metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return reply, nil
+	}
+
 	retrievalResult := RetrievalResult{}
-	if a.deps.Knowledge != nil {
+	shouldRetrieveKnowledge := initialDecision.Intent == intentRule || initialDecision.Intent == intentMixed
+	if shouldRetrieveKnowledge && a.deps.Knowledge != nil {
 		retrievalStart := time.Now()
 		retrievalResult, err = a.retrieveKnowledge(ctx, uctx.TenantID, msg.Content)
 		metrics.RetrievalDurationMs = elapsedMs(retrievalStart)
 		if err != nil {
 			a.deps.Logger.Errorw("知识检索失败", "user", uctx.Name, "question", msg.Content, "err", err)
-			if !hasLiveDataSignal {
+			if initialDecision.Intent != intentMixed {
 				return "规则知识检索暂时不可用，请稍后重试", nil
 			}
 			retrievalResult = RetrievalResult{}
@@ -239,15 +265,11 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	metrics.RetrievalScores = append([]int(nil), retrievalResult.TopScores...)
 	metrics.RetrievalFilteredReason = retrievalResult.FilteredReason
 	metrics.KnowledgeDocTypes = append([]string(nil), retrievalResult.KnowledgeDocTypes...)
-	answerMode := a.router.Decide(routeInputs{
-		DomainResult:      domainResult,
-		HasLiveSignal:     hasLiveDataSignal,
-		RetrievalHitCount: len(retrievalResult.Hits),
-		TopScore:          topKnowledgeScore(retrievalResult),
-	})
-	if hasLiveDataSignal && !wantsRuleExplanation {
-		answerMode = a.router.DecideForQuestion(msg.Content, domainResult, retrievalResult)
+	decision := initialDecision
+	if shouldRetrieveKnowledge {
+		decision = a.router.DecideIntent(msg.Content, domainResult, retrievalResult)
 	}
+	answerMode := decision.AnswerMode
 	metrics.QueryType = modeToQueryKind(answerMode)
 	metrics.AnswerMode = answerMode
 
@@ -450,4 +472,86 @@ func modeToQueryKind(mode answerMode) queryKind {
 	default:
 		return queryKindTool
 	}
+}
+
+func (a *Agent) handleClarifyIntent(ctx context.Context, uctx *tools.UserContext, question string) (string, []string, error) {
+	plan := buildClarifyPlan(question, uctx)
+	if !plan.NeedsToolLookup {
+		return plan.FollowUpPrompt, nil, nil
+	}
+
+	toolArgs := plan.ToolArguments
+	if strings.TrimSpace(toolArgs) == "" {
+		toolArgs = "{}"
+	}
+
+	result, err := a.registry.Dispatch(ctx, uctx, plan.ToolName, json.RawMessage(toolArgs))
+	if err != nil {
+		return "", []string{plan.ToolName}, err
+	}
+
+	reply, err := buildClarifyReply(plan, result)
+	return reply, []string{plan.ToolName}, err
+}
+
+func buildClarifyReply(plan clarifyPlan, toolResult string) (string, error) {
+	if toolErr := extractToolError(toolResult); toolErr != "" {
+		return toolErr, nil
+	}
+
+	switch plan.ToolName {
+	case "list_departments":
+		var payload struct {
+			Depts []struct {
+				Name string `json:"name"`
+			} `json:"depts"`
+		}
+		if err := json.Unmarshal([]byte(toolResult), &payload); err != nil {
+			return "", err
+		}
+
+		names := make([]string, 0, len(payload.Depts))
+		for _, dept := range payload.Depts {
+			name := strings.TrimSpace(dept.Name)
+			if name == "" {
+				continue
+			}
+			names = append(names, name)
+		}
+		if len(names) == 0 {
+			return "当前暂无可选部门。", nil
+		}
+
+		reply := fmt.Sprintf("当前可选部门有：%s。", strings.Join(names, "、"))
+		if plan.FollowUpPrompt != "" {
+			reply += plan.FollowUpPrompt
+		}
+		return reply, nil
+	case "query_subscription_status":
+		var info *tools.GroupSubInfo
+		if err := json.Unmarshal([]byte(toolResult), &info); err != nil {
+			return "", err
+		}
+		if info == nil || !info.Subscribed {
+			return "当前群还没有订阅考勤推送。", nil
+		}
+
+		reply := "当前群已订阅考勤推送。"
+		if len(info.DeptIDs) > 0 {
+			reply += "目前是按指定部门范围推送。"
+		}
+		return reply, nil
+	default:
+		return plan.FollowUpPrompt, nil
+	}
+}
+
+func extractToolError(toolResult string) string {
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(toolResult), &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Error)
 }

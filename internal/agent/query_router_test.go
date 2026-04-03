@@ -124,6 +124,17 @@ func TestIntentClassifierReturnsRuleForRuleQuestion(t *testing.T) {
 	}
 }
 
+func TestIntentClassifierDefaultsToRuleForImplicitBusinessQuestion(t *testing.T) {
+	t.Parallel()
+
+	decision := classifyIntent("如果请假信息没能同步到位，会出现什么情况", domainIn, RetrievalResult{
+		Hits: []KnowledgeHit{{Score: 18}},
+	})
+	if decision.Intent != intentRule {
+		t.Fatalf("Intent = %q, want %q", decision.Intent, intentRule)
+	}
+}
+
 func TestIntentClassifierReturnsMixedForRealtimePlusRuleQuestion(t *testing.T) {
 	t.Parallel()
 

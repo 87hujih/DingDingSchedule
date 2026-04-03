@@ -137,7 +137,7 @@ func classifyIntent(question string, domainResult domainResult, retrievalResult 
 		return intentDecision{Intent: intentLiveQuery, AnswerMode: mode}
 	}
 
-	return intentDecision{Intent: intentHelp, AnswerMode: answerModeToolFirst}
+	return intentDecision{Intent: intentRule, AnswerMode: mode}
 }
 
 // normalizeQuery 统一移除常见空白和标点，便于后续关键词判断。
@@ -277,6 +277,10 @@ func hasActionIntent(question string) bool {
 }
 
 func hasClarifyIntent(question string) bool {
+	if containsAny(question, []string{"订阅状态", "有没有订阅", "是否订阅", "有开", "开了没", "开没开"}) &&
+		containsAny(question, []string{"考勤", "推送"}) {
+		return true
+	}
 	if hasSubscriptionScopeIntent(question) && !containsQuotedOrEnumeratedDeptHints(question) {
 		return true
 	}
