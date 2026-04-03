@@ -1,6 +1,21 @@
 # 任务清单
 
 ## 当前任务
+- [x] 建立一级 intent 分类，并为 `help / action / live-query / rule / mixed / clarify` 补定向回归测试。
+- [ ] 建立 `help` 能力目录与角色/会话过滤逻辑。
+- [ ] 建立 `clarify` 缺参处理器，支持“先查辅助信息再追问”。
+- [ ] 将 `Agent.Chat` 重构为 `domain gate -> intent classifier -> executor` 主流程。
+- [ ] 扩展 eval 口径，增加 `expected_intent / expected_executor`。
+
+## 当前任务复盘
+- 已在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-intent-first-routing` 上开始执行 `intent-first` 实施计划，避免在脏的 `master` 工作区直接推进大改。
+- 基线验证已完成：`go mod download` 与 `go test ./...` 在新 worktree 中通过，可以从干净起点推进。
+- Task 1 已完成：`internal/agent/query_router.go` 已新增一级 intent 结构和最小分类逻辑；`internal/agent/query_router_test.go` 已新增 6 类 intent 回归测试并通过。
+- 本轮关键验证证据：
+- `go test ./internal/agent -run "TestIntentClassifier" -v`
+- `go test ./internal/agent -run "Test(ModeSelector|HasLiveSignal)" -v`
+
+## 当前任务
 - [x] 完成 Task 1：拆分领域门禁和回答模式决策，并通过定向测试。
 - [x] 完成 Task 2：为知识文档补元数据、manifest 和轻量检索升级。
 - [x] 完成 Task 3：把 Agent 主流程重构为 retrieval-first，并补 mixed 编排。
