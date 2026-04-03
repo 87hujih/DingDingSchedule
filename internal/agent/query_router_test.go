@@ -85,3 +85,45 @@ func TestHasLiveSignalIgnoresRulePriorityQuestionWithWho(t *testing.T) {
 		t.Fatalf("hasLiveSignal() = true, want false")
 	}
 }
+
+func TestModeSelectorChoosesToolFirstForOperationalActionQuestion(t *testing.T) {
+	t.Parallel()
+
+	router := newQueryRouter()
+	mode := router.DecideForQuestion("添加考勤订阅", domainIn, RetrievalResult{
+		Hits: []KnowledgeHit{
+			{
+				Title:     "系统总览",
+				Heading:   "群考勤自动推送",
+				Body:      "管理员可在群聊中订阅考勤自动推送。",
+				SourceRef: "系统总览#群考勤自动推送",
+				Score:     18,
+			},
+		},
+		TopScores: []int{18},
+	})
+	if mode != answerModeToolFirst {
+		t.Fatalf("DecideForQuestion() = %q, want %q", mode, answerModeToolFirst)
+	}
+}
+
+func TestModeSelectorChoosesToolFirstForDepartmentScopedSubscriptionQuestion(t *testing.T) {
+	t.Parallel()
+
+	router := newQueryRouter()
+	mode := router.DecideForQuestion("订阅指定部门考勤", domainIn, RetrievalResult{
+		Hits: []KnowledgeHit{
+			{
+				Title:     "系统总览",
+				Heading:   "群考勤自动推送",
+				Body:      "管理员可在群聊中订阅考勤自动推送。",
+				SourceRef: "系统总览#群考勤自动推送",
+				Score:     18,
+			},
+		},
+		TopScores: []int{18},
+	})
+	if mode != answerModeToolFirst {
+		t.Fatalf("DecideForQuestion() = %q, want %q", mode, answerModeToolFirst)
+	}
+}

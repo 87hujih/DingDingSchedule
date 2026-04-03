@@ -74,13 +74,17 @@ func (r *queryRouter) Decide(inputs routeInputs) answerMode {
 // DecideForQuestion 在基础模式决策上补一层“是否真的在问规则”的保护，避免纯实时问题被误抬成 mixed。
 func (r *queryRouter) DecideForQuestion(question string, domainResult domainResult, retrievalResult RetrievalResult) answerMode {
 	normalized := normalizeQuery(question)
+	hasRule := hasRuleSignal(normalized)
+	if hasActionSignal(normalized) && !hasRule {
+		return answerModeToolFirst
+	}
 	mode := r.Decide(routeInputs{
 		DomainResult:      domainResult,
 		HasLiveSignal:     hasLiveSignal(normalized),
 		RetrievalHitCount: len(retrievalResult.Hits),
 		TopScore:          topKnowledgeScore(retrievalResult),
 	})
-	if hasLiveSignal(normalized) && !hasRuleSignal(normalized) && mode == answerModeMixed {
+	if hasLiveSignal(normalized) && !hasRule && mode == answerModeMixed {
 		return answerModeToolFirst
 	}
 	return mode
@@ -201,6 +205,75 @@ func hasLiveSignal(question string) bool {
 	}
 
 	return strings.Contains(question, "第") && strings.Contains(question, "节")
+}
+
+// hasActionSignal 判断问题是否是直接执行型操作，而不是规则说明或背景介绍。
+func hasActionSignal(question string) bool {
+	if question == "" || hasExplanatoryIntent(question) {
+		return false
+	}
+	return hasSubscriptionActionSignal(question) || hasManualSignActionSignal(question)
+}
+
+func hasExplanatoryIntent(question string) bool {
+	return containsAny(question, []string{
+		"为什么",
+		"原因",
+		"失败",
+		"报错",
+		"异常",
+		"说明",
+		"流程",
+		"如何",
+		"怎么",
+		"是什么",
+		"含义",
+		"作用",
+		"介绍",
+	})
+}
+
+func hasSubscriptionActionSignal(question string) bool {
+	if containsAny(question, []string{"订阅状态", "有没有订阅", "是否订阅"}) &&
+		containsAny(question, []string{"考勤", "推送"}) {
+		return true
+	}
+
+	if containsAny(question, []string{"有开", "开了没", "开没开"}) &&
+		containsAny(question, []string{"考勤推送", "考勤订阅"}) {
+		return true
+	}
+
+	if containsAny(question, []string{"订阅", "开启", "开通", "打开", "取消", "关闭"}) &&
+		containsAny(question, []string{"考勤", "推送"}) {
+		return true
+	}
+
+	if containsAny(question, []string{"指定部门", "部分部门", "某些部门", "几个部门"}) &&
+		containsAny(question, []string{"订阅", "推送", "考勤"}) {
+		return true
+	}
+
+	if containsAny(question, []string{"帮我", "给我", "请", "麻烦"}) &&
+		containsAny(question, []string{"考勤订阅", "考勤推送", "订阅状态", "指定部门考勤"}) {
+		return true
+	}
+
+	return false
+}
+
+func hasManualSignActionSignal(question string) bool {
+	if containsAny(question, []string{"帮我", "给我", "请", "麻烦"}) &&
+		containsAny(question, []string{"补签", "代签"}) {
+		return true
+	}
+
+	if (strings.HasPrefix(question, "补签") || strings.HasPrefix(question, "代签") ||
+		strings.HasPrefix(question, "给")) && containsAny(question, []string{"补签", "代签"}) {
+		return true
+	}
+
+	return false
 }
 
 // containsAny 判断问题中是否命中任一关键词。

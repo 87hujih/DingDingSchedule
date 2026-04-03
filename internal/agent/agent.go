@@ -217,7 +217,6 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	}
 
 	hasLiveDataSignal := hasLiveSignal(normalizedQuestion)
-	wantsRuleExplanation := hasRuleSignal(normalizedQuestion)
 	retrievalResult := RetrievalResult{}
 	if a.deps.Knowledge != nil {
 		retrievalStart := time.Now()
@@ -239,15 +238,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	metrics.RetrievalScores = append([]int(nil), retrievalResult.TopScores...)
 	metrics.RetrievalFilteredReason = retrievalResult.FilteredReason
 	metrics.KnowledgeDocTypes = append([]string(nil), retrievalResult.KnowledgeDocTypes...)
-	answerMode := a.router.Decide(routeInputs{
-		DomainResult:      domainResult,
-		HasLiveSignal:     hasLiveDataSignal,
-		RetrievalHitCount: len(retrievalResult.Hits),
-		TopScore:          topKnowledgeScore(retrievalResult),
-	})
-	if hasLiveDataSignal && !wantsRuleExplanation {
-		answerMode = a.router.DecideForQuestion(msg.Content, domainResult, retrievalResult)
-	}
+	answerMode := a.router.DecideForQuestion(msg.Content, domainResult, retrievalResult)
 	metrics.QueryType = modeToQueryKind(answerMode)
 	metrics.AnswerMode = answerMode
 
@@ -261,6 +252,11 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	systemMsg := tools.Message{Role: "system", Content: a.buildSystemPrompt(ctx, uctx)}
 	messages := make([]tools.Message, 0, 3+len(history)+1)
 	messages = append(messages, systemMsg)
+	if uctx.UserRole >= 1 {
+		if prompt := buildActionPrompt(msg.Content); prompt != "" {
+			messages = append(messages, tools.Message{Role: "system", Content: prompt})
+		}
+	}
 	switch answerMode {
 	case answerModeKnowledgeOnly:
 		if prompt := buildKnowledgeOnlyPrompt(retrievalResult); prompt != "" {

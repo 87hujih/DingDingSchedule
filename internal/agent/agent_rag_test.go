@@ -67,6 +67,49 @@ func (p *testCallLogPort) Wait(timeout time.Duration) (agenttools.CallLog, bool)
 	}
 }
 
+type testGroupSubPort struct {
+	mu                sync.Mutex
+	subscribeCalls    int
+	lastConversation  string
+	lastGroupName     string
+	lastTenantID      uint
+	lastEnabledByUID  uint
+	lastSubscribedIDs []int64
+}
+
+func (p *testGroupSubPort) Subscribe(_ context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.subscribeCalls++
+	p.lastTenantID = tenantID
+	p.lastConversation = conversationID
+	p.lastGroupName = groupName
+	p.lastEnabledByUID = enabledByUID
+	p.lastSubscribedIDs = append([]int64(nil), deptIDs...)
+	return nil
+}
+
+func (p *testGroupSubPort) Unsubscribe(context.Context, uint, string) error {
+	return nil
+}
+
+func (p *testGroupSubPort) GetSubscription(context.Context, uint, string) (*agenttools.GroupSubInfo, error) {
+	return &agenttools.GroupSubInfo{}, nil
+}
+
+type testDeptListPort struct {
+	mu    sync.Mutex
+	calls int
+	depts []agenttools.DeptItem
+}
+
+func (p *testDeptListPort) ListDepts(context.Context) ([]agenttools.DeptItem, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	return append([]agenttools.DeptItem(nil), p.depts...), nil
+}
+
 type capturedChatRequest struct {
 	Messages []struct {
 		Role    string `json:"role"`
@@ -629,6 +672,210 @@ func TestAgentChatInjectsKnowledgeContextBeforeToolCallsForMixedQuestions(t *tes
 	}
 	if !requestContains(requests[0], "上课开始后超过 10 分钟打卡视为迟到") {
 		t.Fatalf("mixed request missing knowledge body, messages = %+v", requests[0].Messages)
+	}
+}
+
+func TestAgentChatKeepsToolFirstForSubscriptionActionQuestion(t *testing.T) {
+	t.Parallel()
+
+	knowledge := &testKnowledgePort{
+		hits: []agenttools.KnowledgeHit{
+			{
+				Title:      "系统总览",
+				SourcePath: "agent-knowledge/system-overview.md",
+				DocType:    "overview",
+				Audience:   "admin",
+				Intent:     "subscription",
+				Heading:    "群考勤自动推送",
+				Body:       "管理员可在群聊中订阅考勤自动推送。",
+				SourceRef:  "系统总览#群考勤自动推送",
+				Score:      18,
+			},
+		},
+	}
+	groupSub := &testGroupSubPort{}
+
+	var requests []capturedChatRequest
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req capturedChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		requests = append(requests, req)
+		current := len(requests)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch current {
+		case 1:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"subscribe_attendance_push","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
+		case 2:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"已为此群开启考勤推送。"},"finish_reason":"stop"}]}`))
+		default:
+			http.Error(w, `{"error":{"message":"unexpected extra request"}}`, http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     server.URL,
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		Knowledge:      knowledge,
+		GroupSub:       groupSub,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "添加考勤订阅",
+		ConversationID:    "conv-subscribe",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if reply == "" {
+		t.Fatalf("Chat() reply should not be empty")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if len(requests[0].Tools) == 0 {
+		t.Fatalf("subscription action request should keep tools")
+	}
+	if requestContains(requests[0], "系统总览#群考勤自动推送") {
+		t.Fatalf("subscription action request should not be knowledge-only, messages = %+v", requests[0].Messages)
+	}
+
+	groupSub.mu.Lock()
+	defer groupSub.mu.Unlock()
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	}
+	if groupSub.lastConversation != "conv-subscribe" {
+		t.Fatalf("conversation id = %q, want conv-subscribe", groupSub.lastConversation)
+	}
+}
+
+func TestAgentChatGuidesDepartmentScopedSubscriptionQuestionsToListDepartmentsFirst(t *testing.T) {
+	t.Parallel()
+
+	knowledge := &testKnowledgePort{
+		hits: []agenttools.KnowledgeHit{
+			{
+				Title:      "系统总览",
+				SourcePath: "agent-knowledge/system-overview.md",
+				DocType:    "overview",
+				Audience:   "admin",
+				Intent:     "subscription",
+				Heading:    "群考勤自动推送",
+				Body:       "管理员可在群聊中订阅考勤自动推送。",
+				SourceRef:  "系统总览#群考勤自动推送",
+				Score:      18,
+			},
+		},
+	}
+	deptPort := &testDeptListPort{
+		depts: []agenttools.DeptItem{
+			{DeptID: 1, Name: "教务处"},
+			{DeptID: 2, Name: "学工处"},
+		},
+	}
+
+	var requests []capturedChatRequest
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req capturedChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		requests = append(requests, req)
+		current := len(requests)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch current {
+		case 1:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list_departments","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
+		case 2:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"当前可选部门有：教务处、学工处。请告诉我需要订阅哪些部门。"},"finish_reason":"stop"}]}`))
+		default:
+			http.Error(w, `{"error":{"message":"unexpected extra request"}}`, http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     server.URL,
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		Knowledge:      knowledge,
+		GroupSub:       &testGroupSubPort{},
+		Dept:           deptPort,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "订阅指定部门考勤",
+		ConversationID:    "conv-subscribe-dept",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "教务处") {
+		t.Fatalf("Chat() reply = %q, want department options", reply)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if len(requests[0].Tools) == 0 {
+		t.Fatalf("department subscription request should keep tools")
+	}
+	if !requestContains(requests[0], "订阅或取消当前群考勤推送时，优先使用管理员工具") {
+		t.Fatalf("department subscription request missing operation guidance, messages = %+v", requests[0].Messages)
+	}
+	if !requestContains(requests[0], "先调用 list_departments 获取可选部门") {
+		t.Fatalf("department subscription request missing department follow-up guidance, messages = %+v", requests[0].Messages)
+	}
+
+	deptPort.mu.Lock()
+	defer deptPort.mu.Unlock()
+	if deptPort.calls != 1 {
+		t.Fatalf("ListDepts() call count = %d, want 1", deptPort.calls)
 	}
 }
 
