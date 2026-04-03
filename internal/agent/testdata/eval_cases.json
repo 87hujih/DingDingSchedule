@@ -54,6 +54,39 @@
     "expected_tools": ["query_my_leave"]
   },
   {
+    "name": "help-capabilities",
+    "category": "tool",
+    "question": "你有什么功能",
+    "expected_domain": "in_domain",
+    "expected_intent": "help",
+    "expected_executor": "help",
+    "expected_mode": "tool-first",
+    "expected_route": "tool",
+    "expected_keywords": ["系统能力", "当前可直接使用"]
+  },
+  {
+    "name": "clarify-dept-subscription",
+    "category": "tool",
+    "question": "订阅指定部门考勤",
+    "expected_domain": "in_domain",
+    "expected_intent": "clarify",
+    "expected_executor": "clarify",
+    "expected_mode": "tool-first",
+    "expected_route": "tool",
+    "expected_keywords": ["可选部门", "需要订阅哪些部门"]
+  },
+  {
+    "name": "clarify-group-subscription-status",
+    "category": "tool",
+    "question": "查这个群有没有订阅考勤推送",
+    "expected_domain": "in_domain",
+    "expected_intent": "clarify",
+    "expected_executor": "clarify",
+    "expected_mode": "tool-first",
+    "expected_route": "tool",
+    "expected_tools": ["query_subscription_status"]
+  },
+  {
     "name": "rag-late-rule",
     "category": "rag",
     "question": "当前的考勤规则里，迟到怎么算",
