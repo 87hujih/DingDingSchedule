@@ -1,9 +1,23 @@
 # 任务清单
 
 ## 当前任务
-- [x] 固化本次部署失败的根因，确认问题发生在多次独立 SSH 建连而不是 `deploy.sh`。
-- [x] 重写 `.github/workflows/deploy.yml` 的部署尾段，移除 `scp-action` 和额外 `ssh-action`，改为单次 SSH 会话内完成文件落盘、部署执行和健康检查。
-- [x] 运行针对 workflow 的红绿校验与静态检查，并补充本次复盘。
+- [x] 固化新的部署根因，确认失败点已经切换到服务器访问 `ghcr.io` 超时。
+- [x] 给 `deploy.sh` 增加“已预载镜像时跳过远端拉取”的分支。
+- [x] 重写 `.github/workflows/deploy.yml` 的部署阶段，改为 runner 拉镜像并通过单条 SSH 主连接流式 `docker load` 到服务器。
+- [x] 运行针对“远端不再依赖 GHCR 拉取”的红绿校验与静态检查，并补充本次复盘。
+
+## 历史复盘（已被当前方案替代）
+- 最新失败日志已把根因进一步收窄到服务器出网链路：SSH 已成功进入远端，`deploy.sh` 也开始执行，真正失败的是服务器上的 Docker daemon 访问 `https://ghcr.io/v2/...` 时连续 `dial tcp 20.205.243.164:443: i/o timeout`。
+- 这说明问题已经不在 GitHub Actions 到服务器的 SSH 链路，而在“服务器必须自行访问 GHCR 才能部署”这个前提本身。只要服务器到 `ghcr.io` 网络抖动，部署就会失败。
+- `deploy.sh` 现已新增 `should_skip_image_pull` / `ensure_local_image_available` 分支；当 `SKIP_IMAGE_PULL=1` 时，会先验证 `IMAGE_REPO:IMAGE_TAG` 已存在于本地 Docker 镜像缓存中，然后跳过 `compose pull`，直接 `compose up -d`。
+- `.github/workflows/deploy.yml` 已改成新的部署链路：runner 先 `docker pull` 刚推送的镜像，再通过同一条 SSH 主连接完成远端目录初始化、`scp` 部署文件、`docker save | ssh docker load` 镜像传输，以及最终 `SKIP_IMAGE_PULL=1 ./deploy.sh deploy` 和健康检查。
+- 这次修复解决的是根因，不是表面重试：服务器不再依赖直连 `ghcr.io` 才能完成部署。
+- 本轮验证证据：
+- 红灯检查：`$workflow = Get-Content .github/workflows/deploy.yml -Raw; $deploy = Get-Content deploy.sh -Raw; if ($workflow -notmatch 'docker save' -or $workflow -notmatch 'docker load' -or $deploy -notmatch 'SKIP_IMAGE_PULL') { throw ... }`
+- 绿灯检查：同一类检查现在输出 `deployment path now streams the image over SSH and skips remote registry pulls`
+- 静态检查：`rg -n "appleboy/|docker save|docker load|SKIP_IMAGE_PULL|should_skip_image_pull" .github/workflows/deploy.yml deploy.sh`
+- 差异检查：`git diff --check -- .github/workflows/deploy.yml deploy.sh tasks/todo.md`
+- 额外说明：本地尝试 `bash -n deploy.sh` 时受当前 Windows 环境的 Bash Service 权限错误影响，未完成自动 shell 语法校验；当前结论基于脚本回读和结构校验。
 
 ## 当前任务复盘
 - 已用 GitHub Actions 失败日志闭环确认根因：`Verify SSH connectivity` 与 `Sync deployment assets` 都成功，失败只发生在后续 `Execute deployment script` 新建 SSH 连接阶段，因此问题不在 `deploy.sh`，而在一次部署流程中反复创建独立 SSH/TCP 会话。

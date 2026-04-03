@@ -117,6 +117,41 @@ compose() {
     docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" "$@"
 }
 
+resolve_image_ref() {
+    if [ -z "${IMAGE_REPO:-}" ] || [ -z "${IMAGE_TAG:-}" ]; then
+        return 1
+    fi
+
+    printf '%s:%s' "${IMAGE_REPO}" "${IMAGE_TAG}"
+}
+
+should_skip_image_pull() {
+    case "${SKIP_IMAGE_PULL:-}" in
+        1|true|TRUE|yes|YES)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+ensure_local_image_available() {
+    local image_ref
+
+    if ! image_ref="$(resolve_image_ref)"; then
+        log_error "SKIP_IMAGE_PULL 已开启，但 IMAGE_REPO 或 IMAGE_TAG 未提供。"
+        return 1
+    fi
+
+    if ! docker image inspect "${image_ref}" >/dev/null 2>&1; then
+        log_error "SKIP_IMAGE_PULL 已开启，但本地未找到镜像 ${image_ref}。"
+        return 1
+    fi
+
+    log_info "检测到本地镜像 ${image_ref}，跳过远端镜像拉取。"
+}
+
 retry_compose_pull() {
     local attempt=1
 
@@ -155,8 +190,14 @@ build_local_image() {
 # 拉取并启动生产镜像
 deploy_stack() {
     mkdir -p "${LOG_DIR:-./logs}" "${UPLOAD_DIR:-./uploads}" "${CONFIG_DIR:-./configs}"
-    log_info "开始拉取镜像..."
-    retry_compose_pull
+
+    if should_skip_image_pull; then
+        ensure_local_image_available
+    else
+        log_info "开始拉取镜像..."
+        retry_compose_pull
+    fi
+
     remove_conflicting_container
     log_info "启动生产容器..."
     compose up -d
