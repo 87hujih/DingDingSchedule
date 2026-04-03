@@ -1,6 +1,21 @@
 # 任务清单
 
 ## 当前任务
+- [x] 固化本次部署失败的根因，确认问题发生在多次独立 SSH 建连而不是 `deploy.sh`。
+- [x] 重写 `.github/workflows/deploy.yml` 的部署尾段，移除 `scp-action` 和额外 `ssh-action`，改为单次 SSH 会话内完成文件落盘、部署执行和健康检查。
+- [x] 运行针对 workflow 的红绿校验与静态检查，并补充本次复盘。
+
+## 当前任务复盘
+- 已用 GitHub Actions 失败日志闭环确认根因：`Verify SSH connectivity` 与 `Sync deployment assets` 都成功，失败只发生在后续 `Execute deployment script` 新建 SSH 连接阶段，因此问题不在 `deploy.sh`，而在一次部署流程中反复创建独立 SSH/TCP 会话。
+- `.github/workflows/deploy.yml` 已移除 `appleboy/scp-action` 与独立 `Health check` 的第二个 `ssh-action`；现在构建后会先在 runner 端将 `deploy.sh`、`docker-compose.prod.yml`、`.env.prod.example` 做 base64 编码，再通过单次 `appleboy/ssh-action` 会话在远端落盘、执行部署脚本并完成健康检查。
+- 这次修复的本质不是“调大 timeout”，而是直接消掉最脆弱的连接边界：不再依赖“上传成功后还能再次新建 SSH 连接”这个前提。
+- 本轮验证证据：
+- 红灯检查：`$path = '.github/workflows/deploy.yml'; $content = Get-Content $path -Raw; $sshCount = ([regex]::Matches($content, 'appleboy/ssh-action@')).Count; if ($content -match 'appleboy/scp-action@' -or $sshCount -gt 1) { throw ... }`
+- 绿灯检查：同一条命令现在输出 `workflow now uses a single ssh-action deployment path`
+- 静态检查：`git diff --check -- .github/workflows/deploy.yml tasks/todo.md`
+- 当前 `git diff --check` 只有仓库既有的 CRLF warning，没有格式错误；本地未执行真实远端部署，也没有再次触发 GitHub Actions。
+
+## 当前任务
 - [x] 建立一级 intent 分类，并为 `help / action / live-query / rule / mixed / clarify` 补定向回归测试。
 - [x] 建立 `help` 能力目录与角色/会话过滤逻辑。
 - [x] 建立 `clarify` 缺参处理器，支持“先查辅助信息再追问”。
