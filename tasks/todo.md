@@ -1,56 +1,31 @@
 # 任务清单
 
 ## 当前任务
-- [x] 梳理 Agent 当前“能力介绍/规则说明/实时查询/执行操作”被混在同一分流器里的根因。
-- [x] 基于当前实现提出 2-3 种更本质的重构方向，并明确推荐路线。
-- [x] 与用户确认是做最小演进式改造，还是接受更完整的 Agent 分层重构。
-- [x] 在确认方向后落设计文档与实施计划。
+- [x] 建立一级 intent 分类，并为 `help / action / live-query / rule / mixed / clarify` 补定向回归测试。
+- [x] 建立 `help` 能力目录与角色/会话过滤逻辑。
+- [x] 建立 `clarify` 缺参处理器，支持“先查辅助信息再追问”。
+- [x] 将 `Agent.Chat` 重构为 `domain gate -> intent classifier -> executor` 主流程。
+- [x] 扩展 eval 口径，增加 `expected_intent / expected_executor`。
 
 ## 当前任务复盘
-- 已确认当前结构问题不在单个关键词规则，而在顶层分流模型：`domain gate -> answer mode` 把 `help / action / live-query / rule / mixed / clarify` 六类语义强行压成少数回答模式，导致帮助类问题误入 RAG、执行类问题被知识命中吞掉、缺参请求没有一级处理位置。
-- 已和用户确认采用“最小演进”的 `intent-first` 重构路线，而不是继续增强现有 answer mode router，也不是直接引入 planner。
-- 设计约束已明确：一级意图为 `help / action / live-query / rule / mixed / clarify`；`clarify` 默认策略是“先做低风险辅助查询，再追问”；`help` 采用“先讲整体能力，再说明当前用户当前场景可用能力”的回答方式。
-- 设计文档已写入 `docs/superpowers/specs/2026-04-03-agent-intent-first-routing-design.md`，下一步等待用户 review；待用户确认后，再进入 implementation plan。
-- implementation plan 已写入 `docs/superpowers/plans/2026-04-03-agent-intent-first-routing-plan.md`，任务拆成 5 个阶段：一级 intent 分类、help 能力目录、clarify 缺参处理、主链路改造、eval 刷新。
-
-## 当前任务
-- [x] 复现“订阅指定部门考勤”等自然语言订阅问法未稳定进入管理员工具链的问题。
-- [x] 补充 agent 失败回归测试，锁定自然语言订阅问法应走 tool-first，并给模型明确的订阅操作提示。
-- [x] 以最小改动扩展操作意图识别与系统提示词，让缺参订阅问法优先触发正确工具链。
-- [x] 运行定向与范围回归测试，并更新本次复盘记录。
-
-## 当前任务复盘
-- 已确认上一轮修复只覆盖了“添加考勤订阅”这一类显式短语，`hasActionSignal` 对“订阅指定部门考勤”仍然判不出操作意图；在强知识命中下，这类问法会再次落到 `knowledge-only`，工具列表被清空。
-- 已新增 `TestModeSelectorChoosesToolFirstForDepartmentScopedSubscriptionQuestion` 和 `TestAgentChatGuidesDepartmentScopedSubscriptionQuestionsToListDepartmentsFirst` 两条回归测试，先复现“自然语言订阅问法没有 tool call、也没有缺参提示”的旧行为，再锁定修复后的期望。
-- `internal/agent/query_router.go` 现已把操作意图拆成 `hasSubscriptionActionSignal` 与 `hasManualSignActionSignal`，并增加 `hasExplanatoryIntent` 作为反例过滤；这样“订阅指定部门考勤”“这个群有没有订阅考勤推送”这类表达会优先走 `tool-first`，而“订阅失败为什么”“考勤订阅是什么”这类说明型问法不会误判成执行操作。
-- 已新增 `internal/agent/action_prompt.go`，并在 `Agent.Chat` 构造消息时给管理员操作问法注入定向提示：订阅/取消/查询优先使用群订阅工具；当用户只说“指定部门/部分部门”但没有给出精确部门名时，先调用 `list_departments` 获取可选部门，再追问或继续订阅，避免空参数直接订阅全部。
-- 实际验证命令：
-- `go test ./internal/agent -run TestModeSelectorChoosesToolFirstForDepartmentScopedSubscriptionQuestion -v`
-- `go test ./internal/agent -run TestAgentChatGuidesDepartmentScopedSubscriptionQuestionsToListDepartmentsFirst -v`
+- 已在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-intent-first-routing` 上开始执行 `intent-first` 实施计划，避免在脏的 `master` 工作区直接推进大改。
+- 基线验证已完成：`go mod download` 与 `go test ./...` 在新 worktree 中通过，可以从干净起点推进。
+- Task 1 已完成：`internal/agent/query_router.go` 已新增一级 intent 结构和最小分类逻辑；`internal/agent/query_router_test.go` 已新增 6 类 intent 回归测试并通过。
+- Task 2 已完成：新增 `internal/agent/capabilities.go` 和 `internal/agent/capabilities_test.go`，`help` 问题已有独立能力目录，不再需要依赖知识命中来介绍系统能力；目录已支持按角色和单聊/群聊过滤。
+- Task 3 已完成：新增 `internal/agent/clarify.go` 和 `internal/agent/clarify_test.go`，明确“先查辅助信息再追问”的最小策略；按部门订阅会先查 `list_departments`，群订阅状态会优先走 `query_subscription_status`，缺日期/节次的补签只追问不执行。
+- Task 4 已完成：`internal/agent/agent.go` 已切换为 `domain gate -> intent classifier -> executor` 主流程；`help` 与 `clarify` 走无知识、无 LLM 的稳定路径，`rule/mixed` 才会触发知识检索，隐式规则问法默认回落到 `rule` 而不是误判成 `help`。
+- Task 5 已完成：`internal/agent/eval.go`、`internal/agent/eval_test.go` 与 `internal/agent/testdata/eval_cases.json` 已扩展 `expected_intent / expected_executor`，并新增 `你有什么功能`、`订阅指定部门考勤`、`查这个群有没有订阅考勤推送` 三类样本。
+- 本轮关键验证证据：
+- `go test ./internal/agent -run "TestIntentClassifier" -v`
+- `go test ./internal/agent -run "Test(ModeSelector|HasLiveSignal)" -v`
+- `go test ./internal/agent -run "TestBuildHelpReply|TestCapabilitiesFilter" -v`
+- `go test ./internal/agent -run "TestClarifyPlan" -v`
+- `go test ./internal/agent -run "TestAgentChat(AnswersCapabilityQuestionWithoutKnowledgeLookup|ClarifiesDepartmentScopedSubscriptionByListingDepartmentsFirst|ChecksSubscriptionStatusDirectlyInGroup)" -v`
+- `go test ./internal/agent -run "TestEvaluateCasesAggregatesIntentAndExecutorMatches" -v`
 - `go test -count=1 ./internal/agent -v`
-
-## 当前任务
-- [x] 复现“添加考勤订阅”被 RAG 错误分流为 knowledge-only、未触发 tool call 的问题。
-- [x] 补充 agent/query router 失败回归测试，锁定管理员操作意图应保留工具。
-- [x] 以最小改动修正分流规则，让操作类问法优先走 tool-first。
-- [x] 运行定向测试并更新本次复盘记录。
-
-## 当前任务复盘
-- 已确认根因不在 `subscribe_attendance_push` 工具本身，而在 RAG 分流：`Agent.Chat` 只有“实时问法”才会进入 `DecideForQuestion` 这层语义保护，像“添加考勤订阅”这类非实时操作问法在强知识命中下会直接落到 `knowledge-only`，导致工具列表被清空。
-- 已在 `internal/agent/query_router_test.go` 新增 `TestModeSelectorChoosesToolFirstForOperationalActionQuestion`，并在 `internal/agent/agent_rag_test.go` 新增端到端回归 `TestAgentChatKeepsToolFirstForSubscriptionActionQuestion`；两条测试先红后绿，覆盖路由层和真实对话链路。
-- `internal/agent/query_router.go` 已新增 `hasActionSignal`，把“添加/开启/取消/查看订阅”和“补签/代签”这类直接执行型问法识别为操作意图；当问题不是在问原因、流程、说明时，操作意图会优先走 `tool-first`，不再依赖知识命中与否。
-- `internal/agent/agent.go` 已统一改为使用 `DecideForQuestion` 做最终回答模式判定，避免“只有实时问法才有额外语义保护、操作问法却没有”的分叉。
-- 实际验证命令：
-- `go test ./internal/agent -run TestModeSelectorChoosesToolFirstForOperationalActionQuestion -v`
-- `go test ./internal/agent -run TestAgentChatKeepsToolFirstForSubscriptionActionQuestion -v`
-- `go test ./internal/agent -v`
-
-## 当前任务
-- [x] 审读当前考勤查询、部门过滤、登录用户部门信息与任务约束，确认问题边界。
-- [x] 澄清这次要优化的是“仅当前会话记住筛选”、还是“用户级默认部门偏好”。
-- [x] 继续确认记忆范围是“仅当前浏览器”还是“登录后跨设备共享”。
-- [x] 基于现有接口与权限模型给出 2-3 种方案对比，并明确推荐路线。
-- [ ] 等待用户确认方向后，再决定是否需要落设计文档与实施计划。
+- `go test -count=1 ./internal/app -run TestCallLogAdapterPersistsDomainModeAndRetrievalDetails -v`
+- `go test ./...`
+- `git diff --check`
 
 ## 当前任务
 - [x] 完成 Task 1：拆分领域门禁和回答模式决策，并通过定向测试。

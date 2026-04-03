@@ -97,25 +97,37 @@ func (p *testGroupSubPort) GetSubscription(context.Context, uint, string) (*agen
 	return &agenttools.GroupSubInfo{}, nil
 }
 
-type testDeptListPort struct {
-	mu    sync.Mutex
-	calls int
-	depts []agenttools.DeptItem
-}
-
-func (p *testDeptListPort) ListDepts(context.Context) ([]agenttools.DeptItem, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.calls++
-	return append([]agenttools.DeptItem(nil), p.depts...), nil
-}
-
 type capturedChatRequest struct {
 	Messages []struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	} `json:"messages"`
 	Tools []json.RawMessage `json:"tools"`
+}
+
+type testClarifyDeptPort struct{}
+
+func (testClarifyDeptPort) ListDepts(context.Context) ([]agenttools.DeptItem, error) {
+	return []agenttools.DeptItem{
+		{DeptID: 101, Name: "教务处"},
+		{DeptID: 102, Name: "学工处"},
+	}, nil
+}
+
+type testClarifyGroupSubPort struct {
+	info *agenttools.GroupSubInfo
+}
+
+func (p testClarifyGroupSubPort) Subscribe(context.Context, uint, string, string, uint, []int64) error {
+	return nil
+}
+
+func (p testClarifyGroupSubPort) Unsubscribe(context.Context, uint, string) error {
+	return nil
+}
+
+func (p testClarifyGroupSubPort) GetSubscription(context.Context, uint, string) (*agenttools.GroupSubInfo, error) {
+	return p.info, nil
 }
 
 // TestAgentChatUsesKnowledgeOnlyForLeaveSyncFailureQuestion 验证真实口语化规则问法会走 knowledge-only。
@@ -774,68 +786,62 @@ func TestAgentChatKeepsToolFirstForSubscriptionActionQuestion(t *testing.T) {
 	}
 }
 
-func TestAgentChatGuidesDepartmentScopedSubscriptionQuestionsToListDepartmentsFirst(t *testing.T) {
+func TestAgentChatAnswersCapabilityQuestionWithoutKnowledgeLookup(t *testing.T) {
 	t.Parallel()
 
-	knowledge := &testKnowledgePort{
-		hits: []agenttools.KnowledgeHit{
-			{
-				Title:      "系统总览",
-				SourcePath: "agent-knowledge/system-overview.md",
-				DocType:    "overview",
-				Audience:   "admin",
-				Intent:     "subscription",
-				Heading:    "群考勤自动推送",
-				Body:       "管理员可在群聊中订阅考勤自动推送。",
-				SourceRef:  "系统总览#群考勤自动推送",
-				Score:      18,
-			},
-		},
-	}
-	deptPort := &testDeptListPort{
-		depts: []agenttools.DeptItem{
-			{DeptID: 1, Name: "教务处"},
-			{DeptID: 2, Name: "学工处"},
-		},
-	}
-
-	var requests []capturedChatRequest
-	var mu sync.Mutex
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req capturedChatRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("decode request: %v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		mu.Lock()
-		requests = append(requests, req)
-		current := len(requests)
-		mu.Unlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		switch current {
-		case 1:
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"list_departments","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
-		case 2:
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"当前可选部门有：教务处、学工处。请告诉我需要订阅哪些部门。"},"finish_reason":"stop"}]}`))
-		default:
-			http.Error(w, `{"error":{"message":"unexpected extra request"}}`, http.StatusInternalServerError)
-		}
-	}))
-	defer server.Close()
-
+	knowledge := &testKnowledgePort{}
 	a := NewAgent(Deps{
-		LLMBaseURL:     server.URL,
+		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
 		Knowledge:      knowledge,
-		GroupSub:       &testGroupSubPort{},
-		Dept:           deptPort,
 		User:           testUserPort{},
 		Semester:       testSemesterPort{},
 		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "你有什么功能",
+		ConversationID:   "conv-help",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "我可以帮助处理这些系统能力") {
+		t.Fatalf("Chat() reply = %q, want capability overview", reply)
+	}
+	if !strings.Contains(reply, "你当前在这个会话里可直接使用") {
+		t.Fatalf("Chat() reply = %q, want current availability section", reply)
+	}
+
+	knowledge.mu.Lock()
+	defer knowledge.mu.Unlock()
+	if knowledge.calls != 0 {
+		t.Fatalf("knowledge search calls = %d, want 0", knowledge.calls)
+	}
+}
+
+func TestAgentChatClarifiesDepartmentScopedSubscriptionByListingDepartmentsFirst(t *testing.T) {
+	t.Parallel()
+
+	knowledge := &testKnowledgePort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		Knowledge:      knowledge,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		GroupSub:       testClarifyGroupSubPort{},
+		Dept:           testClarifyDeptPort{},
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
@@ -846,36 +852,71 @@ func TestAgentChatGuidesDepartmentScopedSubscriptionQuestionsToListDepartmentsFi
 		SenderID:          "ding-user",
 		SenderNick:        "Alice",
 		Content:           "订阅指定部门考勤",
-		ConversationID:    "conv-subscribe-dept",
+		ConversationID:    "conv-clarify",
 		ConversationType:  "2",
 		ConversationTitle: "测试群",
 	})
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
-	if !strings.Contains(reply, "教务处") {
-		t.Fatalf("Chat() reply = %q, want department options", reply)
+	if !strings.Contains(reply, "教务处") || !strings.Contains(reply, "学工处") {
+		t.Fatalf("Chat() reply = %q, want listed departments", reply)
+	}
+	if !strings.Contains(reply, "需要订阅哪些部门") {
+		t.Fatalf("Chat() reply = %q, want follow-up prompt", reply)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-	if len(requests) != 2 {
-		t.Fatalf("request count = %d, want 2", len(requests))
+	knowledge.mu.Lock()
+	defer knowledge.mu.Unlock()
+	if knowledge.calls != 0 {
+		t.Fatalf("knowledge search calls = %d, want 0", knowledge.calls)
 	}
-	if len(requests[0].Tools) == 0 {
-		t.Fatalf("department subscription request should keep tools")
+}
+
+func TestAgentChatChecksSubscriptionStatusDirectlyInGroup(t *testing.T) {
+	t.Parallel()
+
+	knowledge := &testKnowledgePort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		Knowledge:      knowledge,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		GroupSub: testClarifyGroupSubPort{
+			info: &agenttools.GroupSubInfo{
+				Subscribed: true,
+				GroupName:  "测试群",
+			},
+		},
+		Dept:   testClarifyDeptPort{},
+		Tenant: testTenantPort{},
+		Logger: zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "查这个群有没有订阅考勤推送",
+		ConversationID:    "conv-status",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
 	}
-	if !requestContains(requests[0], "订阅或取消当前群考勤推送时，优先使用管理员工具") {
-		t.Fatalf("department subscription request missing operation guidance, messages = %+v", requests[0].Messages)
-	}
-	if !requestContains(requests[0], "先调用 list_departments 获取可选部门") {
-		t.Fatalf("department subscription request missing department follow-up guidance, messages = %+v", requests[0].Messages)
+	if !strings.Contains(reply, "已订阅") {
+		t.Fatalf("Chat() reply = %q, want subscribed status", reply)
 	}
 
-	deptPort.mu.Lock()
-	defer deptPort.mu.Unlock()
-	if deptPort.calls != 1 {
-		t.Fatalf("ListDepts() call count = %d, want 1", deptPort.calls)
+	knowledge.mu.Lock()
+	defer knowledge.mu.Unlock()
+	if knowledge.calls != 0 {
+		t.Fatalf("knowledge search calls = %d, want 0", knowledge.calls)
 	}
 }
 

@@ -21,6 +21,22 @@ const (
 
 const retrievalStrongScoreThreshold = 8
 
+type intentType string
+
+const (
+	intentHelp      intentType = "help"
+	intentAction    intentType = "action"
+	intentLiveQuery intentType = "live-query"
+	intentRule      intentType = "rule"
+	intentMixed     intentType = "mixed"
+	intentClarify   intentType = "clarify"
+)
+
+type intentDecision struct {
+	Intent     intentType
+	AnswerMode answerMode
+}
+
 type queryRoute struct {
 	Kind queryKind
 }
@@ -71,23 +87,57 @@ func (r *queryRouter) Decide(inputs routeInputs) answerMode {
 	return answerModeReject
 }
 
+func (r *queryRouter) DecideIntent(question string, domainResult domainResult, retrievalResult RetrievalResult) intentDecision {
+	return classifyIntent(question, domainResult, retrievalResult)
+}
+
 // DecideForQuestion 在基础模式决策上补一层“是否真的在问规则”的保护，避免纯实时问题被误抬成 mixed。
 func (r *queryRouter) DecideForQuestion(question string, domainResult domainResult, retrievalResult RetrievalResult) answerMode {
-	normalized := normalizeQuery(question)
-	hasRule := hasRuleSignal(normalized)
-	if hasActionSignal(normalized) && !hasRule {
-		return answerModeToolFirst
+	return r.DecideIntent(question, domainResult, retrievalResult).AnswerMode
+}
+
+func classifyIntent(question string, domainResult domainResult, retrievalResult RetrievalResult) intentDecision {
+	if domainResult != domainIn {
+		return intentDecision{AnswerMode: answerModeReject}
 	}
-	mode := r.Decide(routeInputs{
+
+	normalized := normalizeQuery(question)
+	if hasHelpIntent(normalized) {
+		return intentDecision{Intent: intentHelp, AnswerMode: answerModeToolFirst}
+	}
+	if hasClarifyIntent(normalized) {
+		return intentDecision{Intent: intentClarify, AnswerMode: answerModeToolFirst}
+	}
+	if hasActionIntent(normalized) {
+		return intentDecision{Intent: intentAction, AnswerMode: answerModeToolFirst}
+	}
+
+	hasRule := hasRuleSignal(normalized)
+	hasLive := hasLiveSignal(normalized)
+	mode := newQueryRouter().Decide(routeInputs{
 		DomainResult:      domainResult,
-		HasLiveSignal:     hasLiveSignal(normalized),
+		HasLiveSignal:     hasLive,
 		RetrievalHitCount: len(retrievalResult.Hits),
 		TopScore:          topKnowledgeScore(retrievalResult),
 	})
-	if hasLiveSignal(normalized) && !hasRule && mode == answerModeMixed {
-		return answerModeToolFirst
+
+	if hasLive && hasRule {
+		if mode == answerModeReject {
+			mode = answerModeToolFirst
+		}
+		return intentDecision{Intent: intentMixed, AnswerMode: mode}
 	}
-	return mode
+	if hasRule {
+		return intentDecision{Intent: intentRule, AnswerMode: mode}
+	}
+	if hasLive {
+		if mode == answerModeReject {
+			mode = answerModeToolFirst
+		}
+		return intentDecision{Intent: intentLiveQuery, AnswerMode: mode}
+	}
+
+	return intentDecision{Intent: intentRule, AnswerMode: mode}
 }
 
 // normalizeQuery 统一移除常见空白和标点，便于后续关键词判断。
@@ -133,6 +183,18 @@ func hasRuleSignal(question string) bool {
 		"最终结算",
 	}
 	return containsAny(question, keywords)
+}
+
+func hasHelpIntent(question string) bool {
+	return containsAny(question, []string{
+		"你有什么功能",
+		"有什么功能",
+		"你能做什么",
+		"能做什么",
+		"怎么用你",
+		"如何使用你",
+		"你会什么",
+	})
 }
 
 // hasLiveSignal 判断问题是否需要实时业务数据参与回答。
@@ -207,12 +269,25 @@ func hasLiveSignal(question string) bool {
 	return strings.Contains(question, "第") && strings.Contains(question, "节")
 }
 
-// hasActionSignal 判断问题是否是直接执行型操作，而不是规则说明或背景介绍。
-func hasActionSignal(question string) bool {
-	if question == "" || hasExplanatoryIntent(question) {
+func hasActionIntent(question string) bool {
+	if hasExplanatoryIntent(question) {
 		return false
 	}
 	return hasSubscriptionActionSignal(question) || hasManualSignActionSignal(question)
+}
+
+func hasClarifyIntent(question string) bool {
+	if containsAny(question, []string{"订阅状态", "有没有订阅", "是否订阅", "有开", "开了没", "开没开"}) &&
+		containsAny(question, []string{"考勤", "推送"}) {
+		return true
+	}
+	if hasSubscriptionScopeIntent(question) && !containsQuotedOrEnumeratedDeptHints(question) {
+		return true
+	}
+	if hasManualSignActionSignal(question) && !containsAny(question, []string{"今天", "昨天", "明天", "第", "节", "-"}) {
+		return true
+	}
+	return false
 }
 
 func hasExplanatoryIntent(question string) bool {
@@ -238,28 +313,28 @@ func hasSubscriptionActionSignal(question string) bool {
 		containsAny(question, []string{"考勤", "推送"}) {
 		return true
 	}
-
 	if containsAny(question, []string{"有开", "开了没", "开没开"}) &&
 		containsAny(question, []string{"考勤推送", "考勤订阅"}) {
 		return true
 	}
-
-	if containsAny(question, []string{"订阅", "开启", "开通", "打开", "取消", "关闭"}) &&
+	if containsAny(question, []string{"订阅", "开启", "开通", "打开", "取消", "关闭", "查询"}) &&
 		containsAny(question, []string{"考勤", "推送"}) {
 		return true
 	}
-
-	if containsAny(question, []string{"指定部门", "部分部门", "某些部门", "几个部门"}) &&
-		containsAny(question, []string{"订阅", "推送", "考勤"}) {
-		return true
-	}
-
 	if containsAny(question, []string{"帮我", "给我", "请", "麻烦"}) &&
 		containsAny(question, []string{"考勤订阅", "考勤推送", "订阅状态", "指定部门考勤"}) {
 		return true
 	}
-
 	return false
+}
+
+func hasSubscriptionScopeIntent(question string) bool {
+	return containsAny(question, []string{"指定部门", "部分部门", "某些部门", "几个部门"}) &&
+		containsAny(question, []string{"订阅", "推送", "考勤"})
+}
+
+func containsQuotedOrEnumeratedDeptHints(question string) bool {
+	return containsAny(question, []string{"、", ",", "，", "和", "以及", "\"", "“", "教务处", "学工处"})
 }
 
 func hasManualSignActionSignal(question string) bool {
@@ -267,12 +342,10 @@ func hasManualSignActionSignal(question string) bool {
 		containsAny(question, []string{"补签", "代签"}) {
 		return true
 	}
-
 	if (strings.HasPrefix(question, "补签") || strings.HasPrefix(question, "代签") ||
 		strings.HasPrefix(question, "给")) && containsAny(question, []string{"补签", "代签"}) {
 		return true
 	}
-
 	return false
 }
 

@@ -127,3 +127,72 @@ func TestModeSelectorChoosesToolFirstForDepartmentScopedSubscriptionQuestion(t *
 		t.Fatalf("DecideForQuestion() = %q, want %q", mode, answerModeToolFirst)
 	}
 }
+
+func TestIntentClassifierReturnsHelpForCapabilityQuestion(t *testing.T) {
+	t.Parallel()
+
+	decision := classifyIntent("你有什么功能", domainIn, RetrievalResult{})
+	if decision.Intent != intentHelp {
+		t.Fatalf("Intent = %q, want %q", decision.Intent, intentHelp)
+	}
+}
+
+func TestIntentClassifierReturnsActionForSubscriptionCommand(t *testing.T) {
+	t.Parallel()
+
+	decision := classifyIntent("添加考勤订阅", domainIn, RetrievalResult{})
+	if decision.Intent != intentAction {
+		t.Fatalf("Intent = %q, want %q", decision.Intent, intentAction)
+	}
+}
+
+func TestIntentClassifierReturnsLiveQueryForRealtimeAttendanceQuestion(t *testing.T) {
+	t.Parallel()
+
+	decision := classifyIntent("今天第一节谁未到", domainIn, RetrievalResult{})
+	if decision.Intent != intentLiveQuery {
+		t.Fatalf("Intent = %q, want %q", decision.Intent, intentLiveQuery)
+	}
+}
+
+func TestIntentClassifierReturnsRuleForRuleQuestion(t *testing.T) {
+	t.Parallel()
+
+	decision := classifyIntent("迟到怎么判", domainIn, RetrievalResult{
+		Hits: []KnowledgeHit{{Score: 18}},
+	})
+	if decision.Intent != intentRule {
+		t.Fatalf("Intent = %q, want %q", decision.Intent, intentRule)
+	}
+}
+
+func TestIntentClassifierDefaultsToRuleForImplicitBusinessQuestion(t *testing.T) {
+	t.Parallel()
+
+	decision := classifyIntent("如果请假信息没能同步到位，会出现什么情况", domainIn, RetrievalResult{
+		Hits: []KnowledgeHit{{Score: 18}},
+	})
+	if decision.Intent != intentRule {
+		t.Fatalf("Intent = %q, want %q", decision.Intent, intentRule)
+	}
+}
+
+func TestIntentClassifierReturnsMixedForRealtimePlusRuleQuestion(t *testing.T) {
+	t.Parallel()
+
+	decision := classifyIntent("今天第一节谁未到，并说明迟到规则", domainIn, RetrievalResult{
+		Hits: []KnowledgeHit{{Score: 18}},
+	})
+	if decision.Intent != intentMixed {
+		t.Fatalf("Intent = %q, want %q", decision.Intent, intentMixed)
+	}
+}
+
+func TestIntentClassifierReturnsClarifyForDepartmentScopedSubscriptionWithoutDeptNames(t *testing.T) {
+	t.Parallel()
+
+	decision := classifyIntent("订阅指定部门考勤", domainIn, RetrievalResult{})
+	if decision.Intent != intentClarify {
+		t.Fatalf("Intent = %q, want %q", decision.Intent, intentClarify)
+	}
+}

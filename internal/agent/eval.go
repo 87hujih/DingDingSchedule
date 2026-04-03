@@ -15,6 +15,8 @@ type EvalCase struct {
 	Category         string   `json:"category"`
 	Question         string   `json:"question"`
 	ExpectedDomain   string   `json:"expected_domain,omitempty"`
+	ExpectedIntent   string   `json:"expected_intent,omitempty"`
+	ExpectedExecutor string   `json:"expected_executor,omitempty"`
 	ExpectedMode     string   `json:"expected_mode,omitempty"`
 	ExpectedRoute    string   `json:"expected_route,omitempty"`
 	ExpectedTools    []string `json:"expected_tools,omitempty"`
@@ -38,6 +40,12 @@ type EvalCaseResult struct {
 	Question         string
 	DomainResult     string
 	DomainMatched    bool
+	Intent           string
+	IntentChecked    bool
+	IntentMatched    bool
+	Executor         string
+	ExecutorChecked  bool
+	ExecutorMatched  bool
 	AnswerMode       string
 	ModeMatched      bool
 	Route            string
@@ -60,6 +68,12 @@ type EvalSummary struct {
 	TotalCases        int
 	DomainPassed      int
 	DomainAccuracy    float64
+	IntentCases       int
+	IntentPassed      int
+	IntentAccuracy    float64
+	ExecutorCases     int
+	ExecutorPassed    int
+	ExecutorAccuracy  float64
 	ModePassed        int
 	ModeAccuracy      float64
 	RoutePassed       int
@@ -120,17 +134,41 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 
 		var hits []KnowledgeHit
 		var retrievalErr error
-		if domainResult == domainIn {
+		decision := router.DecideIntent(tc.Question, domainResult, RetrievalResult{})
+		if domainResult == domainIn && shouldRetrieveEvalKnowledge(decision.Intent) {
 			hits, retrievalErr = searchEvalKnowledge(ctx, knowledge, tenantID, domainResult, tc.Question)
 			if retrievalErr != nil {
 				result.Error = retrievalErr.Error()
 			}
+			decision = router.DecideIntent(tc.Question, domainResult, RetrievalResult{
+				Hits:      hits,
+				TopScores: collectKnowledgeScores(hits),
+			})
 		}
 
-		answerMode := router.DecideForQuestion(tc.Question, domainResult, RetrievalResult{
-			Hits:      hits,
-			TopScores: collectKnowledgeScores(hits),
-		})
+		result.Intent = string(decision.Intent)
+		expectedIntent := defaultExpectedIntent(tc)
+		if expectedIntent != "" {
+			result.IntentChecked = true
+			summary.IntentCases++
+			result.IntentMatched = strings.EqualFold(result.Intent, expectedIntent)
+			if result.IntentMatched {
+				summary.IntentPassed++
+			}
+		}
+
+		result.Executor = evalExecutorForDecision(decision)
+		expectedExecutor := defaultExpectedExecutor(tc)
+		if expectedExecutor != "" {
+			result.ExecutorChecked = true
+			summary.ExecutorCases++
+			result.ExecutorMatched = strings.EqualFold(result.Executor, expectedExecutor)
+			if result.ExecutorMatched {
+				summary.ExecutorPassed++
+			}
+		}
+
+		answerMode := decision.AnswerMode
 		result.AnswerMode = string(answerMode)
 		expectedMode := strings.TrimSpace(tc.ExpectedMode)
 		if expectedMode == "" {
@@ -202,6 +240,8 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 	}
 
 	summary.DomainAccuracy = percent(summary.DomainPassed, summary.TotalCases)
+	summary.IntentAccuracy = percent(summary.IntentPassed, summary.IntentCases)
+	summary.ExecutorAccuracy = percent(summary.ExecutorPassed, summary.ExecutorCases)
 	summary.ModeAccuracy = percent(summary.ModePassed, summary.TotalCases)
 	summary.RouteAccuracy = percent(summary.RoutePassed, summary.TotalCases)
 	summary.RetrievalAccuracy = percent(summary.RetrievalPassed, summary.RetrievalCases)
@@ -214,6 +254,10 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 	return summary, results, nil
 }
 
+func shouldRetrieveEvalKnowledge(intent intentType) bool {
+	return intent == intentRule || intent == intentMixed
+}
+
 // searchEvalKnowledge 仅在站内问题上执行知识检索。
 func searchEvalKnowledge(ctx context.Context, knowledge KnowledgePort, tenantID uint, domainResult domainResult, question string) ([]KnowledgeHit, error) {
 	if knowledge == nil || tenantID == 0 {
@@ -223,6 +267,40 @@ func searchEvalKnowledge(ctx context.Context, knowledge KnowledgePort, tenantID 
 		return nil, nil
 	}
 	return knowledge.Search(ctx, tenantID, question, defaultKnowledgeTopK)
+}
+
+func defaultExpectedIntent(tc EvalCase) string {
+	if intent := strings.TrimSpace(tc.ExpectedIntent); intent != "" {
+		return intent
+	}
+
+	switch strings.TrimSpace(tc.ExpectedMode) {
+	case string(answerModeKnowledgeOnly):
+		return string(intentRule)
+	case string(answerModeMixed):
+		return string(intentMixed)
+	default:
+		return ""
+	}
+}
+
+func defaultExpectedExecutor(tc EvalCase) string {
+	if executor := strings.TrimSpace(tc.ExpectedExecutor); executor != "" {
+		return executor
+	}
+
+	switch strings.TrimSpace(tc.ExpectedMode) {
+	case string(answerModeKnowledgeOnly):
+		return "knowledge"
+	case string(answerModeMixed):
+		return "mixed"
+	case string(answerModeToolFirst):
+		return "tool"
+	case string(answerModeReject):
+		return "reject"
+	default:
+		return ""
+	}
 }
 
 func defaultExpectedMode(tc EvalCase) string {
@@ -267,6 +345,28 @@ func answerModeForExpectedMode(mode string) answerMode {
 		return answerModeReject
 	case string(answerModeToolFirst):
 		return answerModeToolFirst
+	default:
+		return ""
+	}
+}
+
+func evalExecutorForDecision(decision intentDecision) string {
+	switch decision.Intent {
+	case intentHelp:
+		return "help"
+	case intentClarify:
+		return "clarify"
+	}
+
+	switch decision.AnswerMode {
+	case answerModeKnowledgeOnly:
+		return "knowledge"
+	case answerModeMixed:
+		return "mixed"
+	case answerModeToolFirst:
+		return "tool"
+	case answerModeReject:
+		return "reject"
 	default:
 		return ""
 	}

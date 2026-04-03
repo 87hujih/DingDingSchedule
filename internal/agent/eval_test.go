@@ -105,3 +105,95 @@ func TestEvaluateCasesAggregatesRouteRetrievalToolAndKeywordMatches(t *testing.T
 		t.Fatalf("second case domain/mode should match: %+v", results[1])
 	}
 }
+
+func TestEvaluateCasesAggregatesIntentAndExecutorMatches(t *testing.T) {
+	t.Parallel()
+
+	cases := []EvalCase{
+		{
+			Name:             "help-question",
+			Category:         "tool",
+			Question:         "你有什么功能",
+			ExpectedDomain:   "in_domain",
+			ExpectedIntent:   "help",
+			ExpectedExecutor: "help",
+			ExpectedMode:     "tool-first",
+			ExpectedRoute:    "tool",
+		},
+		{
+			Name:             "clarify-question",
+			Category:         "tool",
+			Question:         "订阅指定部门考勤",
+			ExpectedDomain:   "in_domain",
+			ExpectedIntent:   "clarify",
+			ExpectedExecutor: "clarify",
+			ExpectedMode:     "tool-first",
+			ExpectedRoute:    "tool",
+		},
+		{
+			Name:             "rule-question",
+			Category:         "rag",
+			Question:         "如果请假信息没能同步到位，会出现什么情况",
+			ExpectedDomain:   "in_domain",
+			ExpectedIntent:   "rule",
+			ExpectedExecutor: "knowledge",
+			ExpectedMode:     "knowledge-only",
+			ExpectedRoute:    "rag",
+			ExpectedSources:  []string{"请假同步说明#3"},
+		},
+		{
+			Name:             "mixed-question",
+			Category:         "mixed",
+			Question:         "今天第一节谁未到，并说明迟到规则",
+			ExpectedDomain:   "in_domain",
+			ExpectedIntent:   "mixed",
+			ExpectedExecutor: "mixed",
+			ExpectedMode:     "mixed",
+			ExpectedRoute:    "mixed",
+			ExpectedSources:  []string{"考勤规则说明#1"},
+		},
+	}
+
+	knowledge := evalKnowledgePort{
+		hitsByQuery: map[string][]agenttools.KnowledgeHit{
+			"如果请假信息没能同步到位，会出现什么情况": {
+				{SourceRef: "请假同步说明#3", Body: "同步失败不会直接覆盖已经生成的考勤快照；排障后应重试同步。", Score: 18},
+			},
+			"今天第一节谁未到，并说明迟到规则": {
+				{SourceRef: "考勤规则说明#1", Body: "上课开始后超过 10 分钟打卡视为迟到。", Score: 18},
+			},
+		},
+	}
+
+	summary, results, err := EvaluateCases(context.Background(), knowledge, 42, cases, nil)
+	if err != nil {
+		t.Fatalf("EvaluateCases() error = %v", err)
+	}
+	if len(results) != 4 {
+		t.Fatalf("result count = %d, want 4", len(results))
+	}
+	if summary.IntentPassed != 4 || summary.IntentAccuracy != 100 {
+		t.Fatalf("intent summary = %+v", summary)
+	}
+	if summary.ExecutorPassed != 4 || summary.ExecutorAccuracy != 100 {
+		t.Fatalf("executor summary = %+v", summary)
+	}
+	if summary.ModePassed != 4 || summary.ModeAccuracy != 100 {
+		t.Fatalf("mode summary = %+v", summary)
+	}
+	if summary.RoutePassed != 4 || summary.RouteAccuracy != 100 {
+		t.Fatalf("route summary = %+v", summary)
+	}
+	if results[0].Intent != "help" || !results[0].IntentMatched {
+		t.Fatalf("first case intent should match: %+v", results[0])
+	}
+	if results[1].Executor != "clarify" || !results[1].ExecutorMatched {
+		t.Fatalf("second case executor should match: %+v", results[1])
+	}
+	if results[2].Intent != "rule" || results[2].Executor != "knowledge" {
+		t.Fatalf("third case should be rule/knowledge: %+v", results[2])
+	}
+	if results[3].Intent != "mixed" || results[3].Executor != "mixed" {
+		t.Fatalf("fourth case should be mixed/mixed: %+v", results[3])
+	}
+}
