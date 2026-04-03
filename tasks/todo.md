@@ -2,18 +2,30 @@
 
 ## 当前任务
 - [x] 建立一级 intent 分类，并为 `help / action / live-query / rule / mixed / clarify` 补定向回归测试。
-- [ ] 建立 `help` 能力目录与角色/会话过滤逻辑。
-- [ ] 建立 `clarify` 缺参处理器，支持“先查辅助信息再追问”。
-- [ ] 将 `Agent.Chat` 重构为 `domain gate -> intent classifier -> executor` 主流程。
-- [ ] 扩展 eval 口径，增加 `expected_intent / expected_executor`。
+- [x] 建立 `help` 能力目录与角色/会话过滤逻辑。
+- [x] 建立 `clarify` 缺参处理器，支持“先查辅助信息再追问”。
+- [x] 将 `Agent.Chat` 重构为 `domain gate -> intent classifier -> executor` 主流程。
+- [x] 扩展 eval 口径，增加 `expected_intent / expected_executor`。
 
 ## 当前任务复盘
 - 已在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-intent-first-routing` 上开始执行 `intent-first` 实施计划，避免在脏的 `master` 工作区直接推进大改。
 - 基线验证已完成：`go mod download` 与 `go test ./...` 在新 worktree 中通过，可以从干净起点推进。
 - Task 1 已完成：`internal/agent/query_router.go` 已新增一级 intent 结构和最小分类逻辑；`internal/agent/query_router_test.go` 已新增 6 类 intent 回归测试并通过。
+- Task 2 已完成：新增 `internal/agent/capabilities.go` 和 `internal/agent/capabilities_test.go`，`help` 问题已有独立能力目录，不再需要依赖知识命中来介绍系统能力；目录已支持按角色和单聊/群聊过滤。
+- Task 3 已完成：新增 `internal/agent/clarify.go` 和 `internal/agent/clarify_test.go`，明确“先查辅助信息再追问”的最小策略；按部门订阅会先查 `list_departments`，群订阅状态会优先走 `query_subscription_status`，缺日期/节次的补签只追问不执行。
+- Task 4 已完成：`internal/agent/agent.go` 已切换为 `domain gate -> intent classifier -> executor` 主流程；`help` 与 `clarify` 走无知识、无 LLM 的稳定路径，`rule/mixed` 才会触发知识检索，隐式规则问法默认回落到 `rule` 而不是误判成 `help`。
+- Task 5 已完成：`internal/agent/eval.go`、`internal/agent/eval_test.go` 与 `internal/agent/testdata/eval_cases.json` 已扩展 `expected_intent / expected_executor`，并新增 `你有什么功能`、`订阅指定部门考勤`、`查这个群有没有订阅考勤推送` 三类样本。
 - 本轮关键验证证据：
 - `go test ./internal/agent -run "TestIntentClassifier" -v`
 - `go test ./internal/agent -run "Test(ModeSelector|HasLiveSignal)" -v`
+- `go test ./internal/agent -run "TestBuildHelpReply|TestCapabilitiesFilter" -v`
+- `go test ./internal/agent -run "TestClarifyPlan" -v`
+- `go test ./internal/agent -run "TestAgentChat(AnswersCapabilityQuestionWithoutKnowledgeLookup|ClarifiesDepartmentScopedSubscriptionByListingDepartmentsFirst|ChecksSubscriptionStatusDirectlyInGroup)" -v`
+- `go test ./internal/agent -run "TestEvaluateCasesAggregatesIntentAndExecutorMatches" -v`
+- `go test -count=1 ./internal/agent -v`
+- `go test -count=1 ./internal/app -run TestCallLogAdapterPersistsDomainModeAndRetrievalDetails -v`
+- `go test ./...`
+- `git diff --check`
 
 ## 当前任务
 - [x] 完成 Task 1：拆分领域门禁和回答模式决策，并通过定向测试。
