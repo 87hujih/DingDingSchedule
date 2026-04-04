@@ -43,6 +43,8 @@ func fillSubscriptionSlots(filled map[string]string, matched *[]string, normaliz
 	case containsAny(normalized, []string{"指定部门", "部分部门"}):
 		filled["scope"] = "department"
 		recordMatchedSlot(matched, "scope")
+	case isDepartmentListQuestion(normalized):
+		return
 	default:
 		if normalized != "" && !containsAny(normalized, []string{"订阅", "开启", "开通", "打开", "关闭", "取消", "推送", "考勤"}) {
 			filled["scope"] = "department"
@@ -113,4 +115,15 @@ func missingSlots(required []string, filled map[string]string) []string {
 		missing = append(missing, slot)
 	}
 	return missing
+}
+
+func isDepartmentListQuestion(question string) bool {
+	return containsAny(question, []string{
+		"都有哪些部门",
+		"有哪些部门",
+		"有什么部门",
+		"列出部门",
+		"部门列表",
+		"可选部门",
+	})
 }

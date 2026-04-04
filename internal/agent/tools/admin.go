@@ -111,22 +111,36 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 			if err != nil {
 				return "", err
 			}
-			nameToID := make(map[string]int64, len(allDepts))
-			for _, d := range allDepts {
-				nameToID[d.Name] = d.DeptID
-			}
 			var notFound []string
+			var ambiguous []string
+			seenDeptIDs := make(map[int64]struct{}, len(p.DeptNames))
 			for _, name := range p.DeptNames {
-				id, ok := nameToID[name]
-				if !ok {
+				matches := findDeptMatchesByName(allDepts, name)
+				switch len(matches) {
+				case 0:
 					notFound = append(notFound, name)
-					continue
+				case 1:
+					if _, seen := seenDeptIDs[matches[0].DeptID]; seen {
+						continue
+					}
+					seenDeptIDs[matches[0].DeptID] = struct{}{}
+					deptIDs = append(deptIDs, matches[0].DeptID)
+				default:
+					ambiguous = append(ambiguous, name)
 				}
-				deptIDs = append(deptIDs, id)
+			}
+			if len(ambiguous) > 0 {
+				return marshalJSON(map[string]interface{}{
+					"error":                fmt.Sprintf("以下部门名称不唯一，请通过 list_departments 确认：%v", ambiguous),
+					"error_code":           "department_name_ambiguous",
+					"ambiguous_dept_names": ambiguous,
+				})
 			}
 			if len(notFound) > 0 {
 				return marshalJSON(map[string]interface{}{
-					"error": fmt.Sprintf("以下部门名称不存在，请通过 list_departments 确认：%v", notFound),
+					"error":              fmt.Sprintf("以下部门名称不存在，请通过 list_departments 确认：%v", notFound),
+					"error_code":         "department_name_not_found",
+					"invalid_dept_names": notFound,
 				})
 			}
 		}

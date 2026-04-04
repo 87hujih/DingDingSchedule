@@ -158,6 +158,7 @@ jobs:
           SSH_OPTS=(
             -o StrictHostKeyChecking=accept-new
             -o UserKnownHostsFile="${KNOWN_HOSTS}"
+            -o BatchMode=yes
             -o ControlMaster=auto
             -o ControlPersist=600
             -o ControlPath="${CONTROL_PATH}"
@@ -168,6 +169,7 @@ jobs:
           SCP_OPTS=(
             -o StrictHostKeyChecking=accept-new
             -o UserKnownHostsFile="${KNOWN_HOSTS}"
+            -o BatchMode=yes
             -o ControlMaster=auto
             -o ControlPersist=600
             -o ControlPath="${CONTROL_PATH}"

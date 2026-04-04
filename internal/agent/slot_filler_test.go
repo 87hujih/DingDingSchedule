@@ -94,3 +94,24 @@ func TestFillTaskSlotsLeavesTaskWaitingWhenReplyStillIncomplete(t *testing.T) {
 		t.Fatalf("ready = true, want false")
 	}
 }
+
+func TestFillTaskSlotsDoesNotTreatDepartmentListQuestionAsDeptName(t *testing.T) {
+	t.Parallel()
+
+	result := fillTaskSlots(&ActiveTask{
+		Type:          "subscribe_attendance_push",
+		Status:        taskStatusWaiting,
+		RequiredSlots: []string{"dept_names"},
+		FilledSlots:   map[string]string{"scope": "department"},
+	}, "现在都有哪些部门")
+
+	if _, ok := result.Filled["dept_names"]; ok {
+		t.Fatalf("dept_names should stay empty when user is asking for department list, got %q", result.Filled["dept_names"])
+	}
+	if len(result.MatchedSlots) != 0 {
+		t.Fatalf("matched slots = %v, want none", result.MatchedSlots)
+	}
+	if result.Ready {
+		t.Fatalf("ready = true, want false")
+	}
+}

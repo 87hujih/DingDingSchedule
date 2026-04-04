@@ -116,6 +116,15 @@ func (testClarifyDeptPort) ListDepts(context.Context) ([]agenttools.DeptItem, er
 	}, nil
 }
 
+type testFamilyDeptPort struct{}
+
+func (testFamilyDeptPort) ListDepts(context.Context) ([]agenttools.DeptItem, error) {
+	return []agenttools.DeptItem{
+		{DeptID: 201, Name: "家族7期"},
+		{DeptID: 202, Name: "乐知全栈一期"},
+	}, nil
+}
+
 type testClarifyGroupSubPort struct {
 	info *agenttools.GroupSubInfo
 }
@@ -1299,6 +1308,152 @@ func TestAgentChatResumesSubscriptionTaskWithDepartmentOnlyReply(t *testing.T) {
 	}
 	if len(groupSub.lastSubscribedIDs) != 1 || groupSub.lastSubscribedIDs[0] != 101 {
 		t.Fatalf("subscribed dept ids = %v, want [101]", groupSub.lastSubscribedIDs)
+	}
+}
+
+func TestAgentChatAcceptsChineseNumeralDepartmentAliasDuringSubscriptionFollowUp(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &testGroupSubPort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		GroupSub:       groupSub,
+		Dept:           testFamilyDeptPort{},
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "开启考勤订阅",
+		ConversationID:    "conv-family-alias",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("first Chat() error = %v", err)
+	}
+
+	secondReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "家族七期",
+		ConversationID:    "conv-family-alias",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("second Chat() error = %v", err)
+	}
+	if !strings.Contains(secondReply, "家族七期") {
+		t.Fatalf("second reply = %q, want subscription success for alias", secondReply)
+	}
+
+	groupSub.mu.Lock()
+	defer groupSub.mu.Unlock()
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastSubscribedIDs) != 1 || groupSub.lastSubscribedIDs[0] != 201 {
+		t.Fatalf("subscribed dept ids = %v, want [201]", groupSub.lastSubscribedIDs)
+	}
+}
+
+func TestAgentChatKeepsSubscriptionTaskAfterInvalidDepartmentAndListsDepartmentsOnFollowUp(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &testGroupSubPort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		GroupSub:       groupSub,
+		Dept:           testFamilyDeptPort{},
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "开启考勤订阅",
+		ConversationID:    "conv-family-retry",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("first Chat() error = %v", err)
+	}
+
+	secondReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "家族九期",
+		ConversationID:    "conv-family-retry",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("second Chat() error = %v", err)
+	}
+	if !strings.Contains(secondReply, "以下部门名称不存在") {
+		t.Fatalf("second reply = %q, want invalid department guidance", secondReply)
+	}
+
+	thirdReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "现在都有哪些部门",
+		ConversationID:    "conv-family-retry",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("third Chat() error = %v", err)
+	}
+	if !strings.Contains(thirdReply, "家族7期") || !strings.Contains(thirdReply, "乐知全栈一期") {
+		t.Fatalf("third reply = %q, want department list while staying in task", thirdReply)
+	}
+
+	fourthReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "家族7期",
+		ConversationID:    "conv-family-retry",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("fourth Chat() error = %v", err)
+	}
+	if !strings.Contains(fourthReply, "家族7期") {
+		t.Fatalf("fourth reply = %q, want corrected department to complete subscription", fourthReply)
+	}
+
+	groupSub.mu.Lock()
+	defer groupSub.mu.Unlock()
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastSubscribedIDs) != 1 || groupSub.lastSubscribedIDs[0] != 201 {
+		t.Fatalf("subscribed dept ids = %v, want [201]", groupSub.lastSubscribedIDs)
 	}
 }
 

@@ -1,6 +1,47 @@
 # 任务清单
 
 ## 当前任务
+- [x] 基于当前 `internal/agent` 实现归纳“显得不够智能”的结构性问题，聚焦编排层而不是单点关键词补丁。
+- [x] 与用户确认新一轮 Agent 编排重构的目标排序、容错边界和交互风格，避免方案在“自然对话”和“稳定执行”之间摇摆。
+- [x] 提出 2-3 个适合当前项目的 Agent 编排方案，对比状态管理、planner、工具执行和记忆策略的取舍。
+- [x] 给出推荐方案的分层设计、数据流、失败恢复策略和渐进式改造顺序，等待用户确认。
+- [x] 将确认后的方案写入设计文档，等待用户 review 后再进入 implementation plan 阶段。
+
+## 当前任务复盘
+- 已与用户确认这轮 Agent 编排重构的产品边界：目标是“自然对话 + 稳定完成任务”；上下文切换偏保守；任务内追问回答后继续保留任务；明显站外内容直接拒绝；闲聊/泛知识由 LLM 理解后委婉拒绝。
+- 已比较三条路线：继续补规则状态机、混合式 planner + 确定性 runtime、通用 ReAct agent；最终确定推荐方向是“轻 planner + 强执行器 + 富任务记忆 + 响应编排”。
+- 设计文档已写入 `docs/superpowers/specs/2026-04-04-agent-hybrid-planner-runtime-design.md`，内容覆盖目标约束、方案对比、推荐架构、planner contract、task runtime contract、任务记忆模型、失败恢复策略、与现有代码映射以及渐进式 rollout 顺序。
+- 按 skill 原流程本应执行 spec reviewer 子代理，但当前 harness 只有在用户明确要求时才允许 `spawn_agent`，因此本轮未启用子代理 review，而是由主线程完成回读校验。校验方式为读取 spec 关键段落，并执行 `git diff --check -- tasks/todo.md docs/superpowers/specs/2026-04-04-agent-hybrid-planner-runtime-design.md`；当前只有仓库既有的 LF/CRLF warning，没有新的格式错误。
+- 当前仓库 `.gitignore` 已忽略整个 `docs/` 目录，因此本次 spec 是本地文档，不会进入 Git 索引；后续如需把 spec 纳入版本库，需要先调整忽略策略或改用其他落盘位置。
+
+## 当前任务
+- [x] 复现 Agent 在订阅澄清流程里丢失任务上下文、误把“列出部门”当成部门名、以及无法识别“家族7期/家族七期”别名的完整链路。
+- [x] 先补失败回归测试，覆盖中文数字部门别名、订阅失败后继续追问部门列表、以及纠正部门名后继续完成订阅。
+- [x] 以最小改动修复会话任务延续、部门列表跟进识别和部门名称归一化匹配。
+- [x] 运行 `internal/agent` 与 `internal/agent/tools` 定向/范围测试，并补充本次复盘。
+
+## 当前任务复盘
+- 已确认这次“显得很傻”不是单点问题，而是三处叠加：`subscribe_attendance_push` 只认部门名精确字符串；部门名校验失败后 `ready task` 会被立即清空；当任务仍在等 `dept_names` 时，`fillTaskSlots` 会把“现在都有哪些部门”这种追问误塞进 `dept_names`，导致本该继续澄清的对话被当成执行参数。
+- `internal/agent/tools/dept_resolver.go` 新增了共享部门名归一化与匹配逻辑；现在会先尝试精确名，再尝试归一化名匹配，因此像“家族七期”可以稳定命中“家族7期”，同一套能力也会被依赖 `resolveDeptFilter` 的其他 Agent 工具复用。
+- `internal/agent/tools/admin.go` 的订阅工具改成基于共享匹配层解析 `dept_names`，并在“部门不存在/名称歧义”时返回结构化 `error_code`，让上层 Agent 能区分“任务失败需保留上下文”与“真正执行完成”。
+- `internal/agent/agent.go` 现在对 `subscribe_attendance_push` 的可纠正参数错误会把任务降回 `waiting dept_names`，而不是直接清空；回复中也会提示用户可以继续问“现在都有哪些部门”。这样用户先输错部门，再追问部门列表，再给出正确部门名时，仍然在同一个任务里完成订阅。
+- `internal/agent/slot_filler.go` 新增了“部门列表追问”识别，避免把“现在都有哪些部门 / 可选部门 / 部门列表”之类的话误当成实际部门名，从而触发错误订阅。
+- 本轮新增回归覆盖：
+- `TestFillTaskSlotsDoesNotTreatDepartmentListQuestionAsDeptName`
+- `TestAgentChatAcceptsChineseNumeralDepartmentAliasDuringSubscriptionFollowUp`
+- `TestAgentChatKeepsSubscriptionTaskAfterInvalidDepartmentAndListsDepartmentsOnFollowUp`
+- `TestSubscribeAttendancePushAcceptsChineseNumeralDeptAlias`
+- `resolveDeptFilter` 新增中文数字别名用例
+- 实际验证命令：
+- `go test ./internal/agent -run "Test(FillTaskSlotsDoesNotTreatDepartmentListQuestionAsDeptName|AgentChatAcceptsChineseNumeralDepartmentAliasDuringSubscriptionFollowUp|AgentChatKeepsSubscriptionTaskAfterInvalidDepartmentAndListsDepartmentsOnFollowUp)" -count=1`
+- `go test ./internal/agent/tools -run "Test(SubscribeAttendancePushAcceptsChineseNumeralDeptAlias|ResolveDeptFilter)" -count=1`
+- `gofmt -w internal/agent/agent.go internal/agent/slot_filler.go internal/agent/slot_filler_test.go internal/agent/agent_rag_test.go internal/agent/tools/admin.go internal/agent/tools/admin_test.go internal/agent/tools/dept_resolver.go internal/agent/tools/dept_resolver_test.go`
+- `go test ./internal/agent/... ./internal/agent/tools/... -count=1`
+- `go test ./internal/app -count=1`
+- `git diff --check -- internal/agent internal/app tasks/todo.md`
+- `git diff --check` 当前只有仓库既有的 LF/CRLF warning，没有新的格式错误。
+
+## 当前任务
 - [x] 复现 `git commit` 时 pre-commit `go vet` 的重复声明失败，锁定冲突文件与符号。
 - [x] 以最小改动消除 `internal/agent` 包内重复定义，避免删除独有逻辑。
 - [x] 重新运行会在提交前触发的 Go 校验，确认提交阻塞已解除。

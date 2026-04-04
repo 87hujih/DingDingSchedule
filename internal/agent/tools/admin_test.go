@@ -64,10 +64,12 @@ func (testAdminUserPort) SearchByName(context.Context, string) ([]UserInfo, erro
 
 type testGroupSubPort struct {
 	subscribeCalls int
+	lastDeptIDs    []int64
 }
 
-func (p *testGroupSubPort) Subscribe(context.Context, uint, string, string, uint, []int64) error {
+func (p *testGroupSubPort) Subscribe(_ context.Context, _ uint, _ string, _ string, _ uint, deptIDs []int64) error {
 	p.subscribeCalls++
+	p.lastDeptIDs = append([]int64(nil), deptIDs...)
 	return nil
 }
 
@@ -83,6 +85,15 @@ type testDeptPort struct{}
 
 func (testDeptPort) ListDepts(context.Context) ([]DeptItem, error) {
 	return nil, nil
+}
+
+type testAliasDeptPort struct{}
+
+func (testAliasDeptPort) ListDepts(context.Context) ([]DeptItem, error) {
+	return []DeptItem{
+		{DeptID: 301, Name: "家族7期"},
+		{DeptID: 302, Name: "乐知全栈一期"},
+	}, nil
 }
 
 func TestSubscribeAttendancePushRejectsMalformedParams(t *testing.T) {
@@ -107,6 +118,34 @@ func TestSubscribeAttendancePushRejectsMalformedParams(t *testing.T) {
 	}
 	if groupSub.subscribeCalls != 0 {
 		t.Fatalf("Subscribe() call count = %d, want 0", groupSub.subscribeCalls)
+	}
+}
+
+func TestSubscribeAttendancePushAcceptsChineseNumeralDeptAlias(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	groupSub := &testGroupSubPort{}
+	RegisterAdminTools(registry, &testAttendancePort{}, testAdminUserPort{}, groupSub, testAliasDeptPort{})
+
+	result, err := registry.Dispatch(context.Background(), &UserContext{
+		TenantID:         42,
+		UserID:           7,
+		UserRole:         1,
+		ConversationType: "2",
+		ConversationID:   "conv-1",
+	}, "subscribe_attendance_push", json.RawMessage(`{"dept_names":["家族七期"]}`))
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+	if !strings.Contains(result, `"success":true`) {
+		t.Fatalf("Dispatch() result = %s, want success payload", result)
+	}
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("Subscribe() call count = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 301 {
+		t.Fatalf("Subscribe() dept ids = %v, want [301]", groupSub.lastDeptIDs)
 	}
 }
 

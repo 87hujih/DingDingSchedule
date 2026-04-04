@@ -242,15 +242,15 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	case eventTaskFollowUp:
 		fill := fillTaskSlots(activeTask, msg.Content)
 		nextTask := applySlotFillToTask(activeTask, fill)
-		reply, followUpTools, err := a.respondForTaskState(ctx, uctx, sessionKey, nextTask)
+		reply, followUpTools, resultingTask, err := a.respondForTaskState(ctx, uctx, sessionKey, nextTask)
 		if err != nil {
-			applyConversationMetrics(&metrics, beforeTask, nextTask, matchedSlotNames(fill))
+			applyConversationMetrics(&metrics, beforeTask, resultingTaskOrFallback(resultingTask, nextTask), matchedSlotNames(fill))
 			a.deps.Logger.Errorw("task follow-up 执行失败", "user", uctx.Name, "question", msg.Content, "err", err)
 			a.writeCallLog(ctx, uctx, msg.Content, "", followUpTools, 0, startTime, "failed", err.Error(), metrics)
 			return "系统错误，请稍后重试", nil
 		}
-		afterTask := nextTask
-		if nextTask != nil && nextTask.Status == taskStatusReady {
+		afterTask := resultingTask
+		if afterTask == nil && nextTask != nil && nextTask.Status == taskStatusReady {
 			afterTask = taskWithStatus(nextTask, taskStatusCompleted)
 		}
 		applyConversationMetrics(&metrics, beforeTask, afterTask, matchedSlotNames(fill))
@@ -355,14 +355,14 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	switch planDecision.Kind {
 	case planKindClarify:
 		if planDecision.ActiveTask != nil {
-			reply, taskTools, err := a.respondForTaskState(ctx, uctx, sessionKey, planDecision.ActiveTask)
+			reply, taskTools, resultingTask, err := a.respondForTaskState(ctx, uctx, sessionKey, planDecision.ActiveTask)
 			if err != nil {
-				applyConversationMetrics(&metrics, beforeTask, planDecision.ActiveTask, nil)
+				applyConversationMetrics(&metrics, beforeTask, resultingTaskOrFallback(resultingTask, planDecision.ActiveTask), nil)
 				a.deps.Logger.Errorw("planner clarify 执行失败", "user", uctx.Name, "question", msg.Content, "err", err)
 				a.writeCallLog(ctx, uctx, msg.Content, "", taskTools, 0, startTime, "failed", err.Error(), metrics)
 				return "系统错误，请稍后重试", nil
 			}
-			applyConversationMetrics(&metrics, beforeTask, planDecision.ActiveTask, nil)
+			applyConversationMetrics(&metrics, beforeTask, resultingTaskOrFallback(resultingTask, planDecision.ActiveTask), nil)
 			metrics.QueryType = queryKindTool
 			metrics.AnswerMode = answerModeToolFirst
 			toolsCalled = append(toolsCalled, taskTools...)
@@ -378,16 +378,16 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		return reply, nil
 	case planKindTool:
 		if planDecision.ActiveTask != nil {
-			reply, taskTools, err := a.respondForTaskState(ctx, uctx, sessionKey, planDecision.ActiveTask)
+			reply, taskTools, resultingTask, err := a.respondForTaskState(ctx, uctx, sessionKey, planDecision.ActiveTask)
 			if err != nil {
-				applyConversationMetrics(&metrics, beforeTask, planDecision.ActiveTask, nil)
+				applyConversationMetrics(&metrics, beforeTask, resultingTaskOrFallback(resultingTask, planDecision.ActiveTask), nil)
 				a.deps.Logger.Errorw("planner task 执行失败", "user", uctx.Name, "question", msg.Content, "err", err)
 				a.writeCallLog(ctx, uctx, msg.Content, "", taskTools, 0, startTime, "failed", err.Error(), metrics)
 				return "系统错误，请稍后重试", nil
 			}
-			afterTask := planDecision.ActiveTask
-			if afterTask != nil && afterTask.Status == taskStatusReady {
-				afterTask = taskWithStatus(afterTask, taskStatusCompleted)
+			afterTask := resultingTask
+			if afterTask == nil && planDecision.ActiveTask != nil && planDecision.ActiveTask.Status == taskStatusReady {
+				afterTask = taskWithStatus(planDecision.ActiveTask, taskStatusCompleted)
 			}
 			applyConversationMetrics(&metrics, beforeTask, afterTask, nil)
 			metrics.QueryType = queryKindTool
@@ -508,19 +508,23 @@ func buildGreetingReply(uctx *tools.UserContext) string {
 	return "你好，我是课表助手。你可以直接让我查课表、考勤或请假相关信息。"
 }
 
-func (a *Agent) respondForTaskState(ctx context.Context, uctx *tools.UserContext, sessionKey string, task *ActiveTask) (string, []string, error) {
+func (a *Agent) respondForTaskState(ctx context.Context, uctx *tools.UserContext, sessionKey string, task *ActiveTask) (string, []string, *ActiveTask, error) {
 	if task == nil {
 		a.sessions.clearActiveTask(sessionKey)
-		return "请再具体说明你要查询或操作的内容。", nil, nil
+		return "请再具体说明你要查询或操作的内容。", nil, nil, nil
 	}
 
 	if task.Status == taskStatusReady {
-		reply, toolsCalled, err := a.executeReadyTask(ctx, uctx, task)
+		reply, toolsCalled, nextTask, err := a.executeReadyTask(ctx, uctx, task)
 		if err != nil {
-			return "", toolsCalled, err
+			return "", toolsCalled, nextTask, err
+		}
+		if nextTask != nil {
+			a.sessions.setActiveTask(sessionKey, nextTask)
+			return reply, toolsCalled, cloneActiveTask(nextTask), nil
 		}
 		a.sessions.clearActiveTask(sessionKey)
-		return reply, toolsCalled, nil
+		return reply, toolsCalled, nil, nil
 	}
 
 	a.sessions.setActiveTask(sessionKey, task)
@@ -528,32 +532,32 @@ func (a *Agent) respondForTaskState(ctx context.Context, uctx *tools.UserContext
 	if task.Type == "subscribe_attendance_push" && containsAnySlot(task.MissingSlots(), "dept_names") {
 		toolResult, err := a.registry.Dispatch(ctx, uctx, "list_departments", json.RawMessage(`{}`))
 		if err != nil {
-			return "", []string{"list_departments"}, err
+			return "", []string{"list_departments"}, cloneActiveTask(task), err
 		}
 		reply, err := buildClarifyReply(clarifyPlan{
 			ToolName:       "list_departments",
 			ToolArguments:  `{}`,
 			FollowUpPrompt: "我先列出当前可选部门。请告诉我需要订阅哪些部门。",
 		}, toolResult)
-		return reply, []string{"list_departments"}, err
+		return reply, []string{"list_departments"}, cloneActiveTask(task), err
 	}
 
-	return buildTaskClarifyReply(task), nil, nil
+	return buildTaskClarifyReply(task), nil, cloneActiveTask(task), nil
 }
 
-func (a *Agent) executeReadyTask(ctx context.Context, uctx *tools.UserContext, task *ActiveTask) (string, []string, error) {
+func (a *Agent) executeReadyTask(ctx context.Context, uctx *tools.UserContext, task *ActiveTask) (string, []string, *ActiveTask, error) {
 	if task == nil {
-		return "", nil, nil
+		return "", nil, nil, nil
 	}
 
 	switch task.Type {
 	case "query_subscription_status":
 		toolResult, err := a.registry.Dispatch(ctx, uctx, "query_subscription_status", json.RawMessage(`{}`))
 		if err != nil {
-			return "", []string{"query_subscription_status"}, err
+			return "", []string{"query_subscription_status"}, nil, err
 		}
 		reply, err := buildClarifyReply(clarifyPlan{ToolName: "query_subscription_status", ToolArguments: `{}`}, toolResult)
-		return reply, []string{"query_subscription_status"}, err
+		return reply, []string{"query_subscription_status"}, nil, err
 	case "subscribe_attendance_push":
 		payload := map[string]any{}
 		if task.FilledSlots["scope"] == "department" {
@@ -561,18 +565,27 @@ func (a *Agent) executeReadyTask(ctx context.Context, uctx *tools.UserContext, t
 		}
 		raw, err := json.Marshal(payload)
 		if err != nil {
-			return "", []string{"subscribe_attendance_push"}, err
+			return "", []string{"subscribe_attendance_push"}, nil, err
 		}
 		toolResult, err := a.registry.Dispatch(ctx, uctx, "subscribe_attendance_push", raw)
 		if err != nil {
-			return "", []string{"subscribe_attendance_push"}, err
+			return "", []string{"subscribe_attendance_push"}, nil, err
 		}
 		reply, err := renderToolMessage(toolResult)
-		return reply, []string{"subscribe_attendance_push"}, err
+		if err != nil {
+			return "", []string{"subscribe_attendance_push"}, nil, err
+		}
+		if retryTask, retryHint := recoverableTaskFromToolResult(task, toolResult); retryTask != nil {
+			if retryHint != "" {
+				reply = strings.TrimSpace(reply + " " + retryHint)
+			}
+			return reply, []string{"subscribe_attendance_push"}, retryTask, nil
+		}
+		return reply, []string{"subscribe_attendance_push"}, nil, nil
 	case "sign_for_user":
 		section, err := strconv.Atoi(task.FilledSlots["section"])
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 		payload := map[string]any{
 			"user_name": task.FilledSlots["user_name"],
@@ -581,17 +594,56 @@ func (a *Agent) executeReadyTask(ctx context.Context, uctx *tools.UserContext, t
 		}
 		raw, err := json.Marshal(payload)
 		if err != nil {
-			return "", []string{"sign_for_user"}, err
+			return "", []string{"sign_for_user"}, nil, err
 		}
 		toolResult, err := a.registry.Dispatch(ctx, uctx, "sign_for_user", raw)
 		if err != nil {
-			return "", []string{"sign_for_user"}, err
+			return "", []string{"sign_for_user"}, nil, err
 		}
 		reply, err := renderToolMessage(toolResult)
-		return reply, []string{"sign_for_user"}, err
+		return reply, []string{"sign_for_user"}, nil, err
 	default:
-		return "", nil, nil
+		return "", nil, nil, nil
 	}
+}
+
+type toolErrorPayload struct {
+	Error              string   `json:"error"`
+	ErrorCode          string   `json:"error_code"`
+	InvalidDeptNames   []string `json:"invalid_dept_names"`
+	AmbiguousDeptNames []string `json:"ambiguous_dept_names"`
+}
+
+func recoverableTaskFromToolResult(task *ActiveTask, toolResult string) (*ActiveTask, string) {
+	if task == nil || task.Type != "subscribe_attendance_push" || task.FilledSlots["scope"] != "department" {
+		return nil, ""
+	}
+
+	payload := parseToolErrorPayload(toolResult)
+	switch payload.ErrorCode {
+	case "department_name_not_found", "department_name_ambiguous":
+		retryTask := &ActiveTask{
+			Type:          "subscribe_attendance_push",
+			Status:        taskStatusWaiting,
+			RequiredSlots: []string{"dept_names"},
+			FilledSlots:   map[string]string{"scope": "department"},
+			ExpiresAt:     time.Now().Add(sessionTTL),
+			LastPrompt:    "clarify_dept_names",
+		}
+		if payload.ErrorCode == "department_name_not_found" {
+			return retryTask, "你也可以回复“现在都有哪些部门”，我会把可选部门列给你。"
+		}
+		return retryTask, ""
+	default:
+		return nil, ""
+	}
+}
+
+func resultingTaskOrFallback(result *ActiveTask, fallback *ActiveTask) *ActiveTask {
+	if result != nil {
+		return result
+	}
+	return fallback
 }
 
 func renderToolMessage(toolResult string) (string, error) {
@@ -891,11 +943,13 @@ func buildClarifyReply(plan clarifyPlan, toolResult string) (string, error) {
 }
 
 func extractToolError(toolResult string) string {
-	var payload struct {
-		Error string `json:"error"`
-	}
+	return strings.TrimSpace(parseToolErrorPayload(toolResult).Error)
+}
+
+func parseToolErrorPayload(toolResult string) toolErrorPayload {
+	var payload toolErrorPayload
 	if err := json.Unmarshal([]byte(toolResult), &payload); err != nil {
-		return ""
+		return toolErrorPayload{}
 	}
-	return strings.TrimSpace(payload.Error)
+	return payload
 }
