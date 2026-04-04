@@ -1,6 +1,29 @@
 # 任务清单
 
 ## 当前任务
+- [x] 复现 `git commit` 时 pre-commit `go vet` 的重复声明失败，锁定冲突文件与符号。
+- [x] 以最小改动消除 `internal/agent` 包内重复定义，避免删除独有逻辑。
+- [x] 重新运行会在提交前触发的 Go 校验，确认提交阻塞已解除。
+
+## 当前任务复盘
+- 已复现提交阻塞：`go test ./internal/agent -run TestInterpretConversation -count=1` 在修复前因 `internal/agent/conversation_gate.go` 与 `agent.go`、`conversation_interpreter.go` 中的 `buildGreetingReply`、`hasGreetingIntent`、`shortFollowUpMaxRunes` 重复定义而直接构建失败。
+- 根因不是业务逻辑错误，而是未跟踪文件 `internal/agent/conversation_gate.go` 混入了同 package 的旧拷贝实现；Go 在编译 package 时会把未跟踪 `.go` 文件也算进去，因此即使不打算提交该文件，也会卡住 pre-commit 的 `go vet`。
+- 本次采用最小修复：保留 `conversation_gate.go` 中独有的 `isClarificationFollowUp` 相关 helper，只删除与现有实现冲突的重复符号，避免直接删除用户可能还要保留的文件内容。
+- 修复后验证命令：
+- `go vet ./...`
+- `go test ./internal/agent -run TestInterpretConversation -count=1`
+
+## 当前任务
+- [x] 将 `docs/` 全目录加入忽略规则，移除现有白名单例外。
+- [x] 从 Git 索引中取消跟踪 `docs/` 已跟踪文件，但保留本地文件。
+- [x] 运行 Git 状态验证，确认 `docs/` 不再被跟踪。
+
+## 当前任务复盘
+- `.gitignore` 已从“部分忽略 + 白名单保留”收敛为直接忽略整个 `docs/` 目录，后续新增文档默认不再进入 Git。
+- 已执行 `git rm -r --cached --ignore-unmatch docs`，取消跟踪 `docs/` 中现有索引项，但未删除本地文件。
+- 验证方式为：`git -c core.excludesfile=.git/info/exclude status --short --ignored -- docs .gitignore tasks/todo.md` 显示 `!! docs/`，且 `git -c core.excludesfile=.git/info/exclude ls-files docs` 无输出；另外 `Get-ChildItem -Recurse -File docs | Measure-Object` 统计本地仍有 62 个文件。
+
+## 当前任务
 - [x] 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-unified-planner-refactor` 中建立 unified planner 重构的范围基线。
 - [x] 确认 `go test ./internal/agent/... -count=1` 与 `go test ./internal/app -run "TestCallLogAdapterPersistsDomainModeAndRetrievalDetails" -count=1` 在 worktree 中通过。
 - [x] 额外运行 `go test ./... -count=1`，确认全仓失败仍只来自既有 `internal/ci` workflow 测试。
