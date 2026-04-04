@@ -201,10 +201,24 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	userMsg := tools.Message{Role: "user", Content: msg.Content}
 	metrics := callMetrics{}
 
+	if hasGreetingIntent(msg.Content) {
+		reply := buildGreetingReply(uctx)
+		metrics.DomainResult = domainIn
+		metrics.QueryType = queryKindTool
+		metrics.AnswerMode = answerModeToolFirst
+		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return reply, nil
+	}
+
 	// 7. 先做领域门禁，站外问题直接拒答，不进入检索与 LLM。
 	domainResult := domainOut
 	if a.domainGate != nil {
 		domainResult = a.domainGate.Check(msg.Content)
+	}
+	continueClarify := domainResult != domainIn && isClarificationFollowUp(msg.Content, history)
+	if continueClarify {
+		domainResult = domainIn
 	}
 	metrics.DomainResult = domainResult
 	if domainResult != domainIn {
@@ -216,7 +230,12 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		return reply, nil
 	}
 
-	initialDecision := a.router.DecideIntent(msg.Content, domainResult, RetrievalResult{})
+	initialDecision := intentDecision{}
+	if continueClarify {
+		initialDecision = intentDecision{Intent: intentAction, AnswerMode: answerModeToolFirst}
+	} else {
+		initialDecision = a.router.DecideIntent(msg.Content, domainResult, RetrievalResult{})
+	}
 	switch initialDecision.Intent {
 	case intentHelp:
 		reply := buildHelpReply(uctx)

@@ -1,6 +1,39 @@
 # 任务清单
 
 ## 当前任务
+- [x] 基于当前 `internal/agent` 的实现，归纳“机械拒答”和“多轮失忆”的根因，不停留在关键词补丁层。
+- [x] 提出 2-3 个从架构层解决问题的方向，比较状态管理、领域策略和回复策略的边界。
+- [x] 与用户确认目标体验优先级，再决定是做强状态机、轻量对话槽位，还是更开放的闲聊兜底。
+- [x] 将已确认设计写入 `docs/superpowers/specs/2026-04-03-agent-conversation-task-mode-design.md` 并完成回读校验。
+- [x] 等待用户 review spec；确认后再进入 implementation plan 阶段。
+- [x] 将已确认 spec 拆成 implementation plan，写入 `docs/superpowers/plans/2026-04-03-agent-conversation-task-mode-plan.md`。
+- [ ] 等待进入 implementation plan 执行阶段。
+
+## 当前任务复盘
+- 已确认这轮问题的根因不是“domain 关键词太少”，而是 Agent 把每条消息都当成独立请求处理：领域门禁早于会话状态判断，`clarify` 状态只存在于 assistant 文本里，没有结构化 `active_task`。
+- 已与用户确认目标体验是“任务型助手”，并采用平衡型任务切换策略：默认先尝试把消息解释为当前任务的补充参数；若明显是新业务请求，则中断旧任务并切任务。待补任务在同一会话内保留 30 分钟，超时自动清空。
+- 设计文档已落盘到 `docs/superpowers/specs/2026-04-03-agent-conversation-task-mode-design.md`，内容包括三种方案对比、推荐的轻量任务状态层、`greeting / task_follow_up / new_request / cancel / unknown` 会话事件、首批任务类型、槽位解析策略、回复策略、日志字段和渐进式落地顺序。
+- implementation plan 已落盘到 `docs/superpowers/plans/2026-04-03-agent-conversation-task-mode-plan.md`，按“会话状态 -> 会话解释器 -> 任务路由/槽位补全 -> Agent 主编排 -> 日志持久化 -> 回归验证”拆成 6 个任务，覆盖文件边界、红绿测试命令和建议提交粒度。
+- 当前 harness 未获用户授权使用子代理，因此这轮未执行 skill 中建议的 reviewer subagent，而是由主线程完成一次人工回读校验。校验方式为回读 plan 文件开头、文件图和任务顺序，并执行 `git diff --check -- docs/superpowers/plans/2026-04-03-agent-conversation-task-mode-plan.md docs/superpowers/specs/2026-04-03-agent-conversation-task-mode-design.md tasks/todo.md`；当前只有仓库既有的 CRLF warning，没有格式错误。
+
+## 当前任务
+- [x] 复现并锁定 Agent 多轮补充回复被领域门禁误拒的问题，明确根因与触发链路。
+- [x] 先补失败回归测试，覆盖“开启考勤订阅”后的部门名跟进回复，以及“你好”类寒暄语。
+- [x] 以最小改动修复会话感知门禁与寒暄处理，避免破坏现有 rule/tool/clarify 路由。
+- [x] 运行 `internal/agent` 定向与范围测试，并补充本次复盘。
+
+## 当前任务复盘
+- 已确认根因不在 `sessionManager` 本身，而在 `Agent.chat` 的判定顺序：历史消息虽然已通过 `a.sessions.getMessages(sessionKey)` 取出，但随后仍先对当前这条用户消息单独执行 `domainGate.Check(msg.Content)` 和单轮 intent 分类，因此像“信工24级”这类依赖上一轮追问语境的短回复会在进入 LLM 前被直接判为站外。
+- 已按 TDD 先补两条失败回归测试：`TestAgentChatAllowsDepartmentOnlyFollowUpAfterSubscriptionClarify` 复现“开启考勤订阅 -> 信工24级”第二轮被拒；`TestAgentChatRepliesPolitelyToGreeting` 复现“你好”被直接返回站外拒答。
+- `internal/agent/agent.go` 现已在主门禁前新增两个最小前置分支：寒暄语走本地欢迎回复；若当前消息本身不在领域内，但上一条 assistant 明确在追问补充信息，则将本轮视为“澄清后的跟进回复”，直接走带 history 的 `tool-first` 流程，而不是再次按单轮问题做领域门禁和意图判定。
+- 新增 `internal/agent/conversation_gate.go`，集中封装 `hasGreetingIntent`、`buildGreetingReply`、`isClarificationFollowUp` 与 assistant 追问信号判断，避免把这类会话判断逻辑散落回 `agent.go` 主循环。
+- 实际验证命令：
+- `go test ./internal/agent -run "TestAgentChat(AllowsDepartmentOnlyFollowUpAfterSubscriptionClarify|RepliesPolitelyToGreeting)" -count=1`
+- `go test ./internal/agent/... -count=1`
+- `git diff --check -- internal/agent tasks/todo.md`
+- 当前 `git diff --check` 只有仓库既有的 CRLF warning，没有格式错误。
+
+## 当前任务
 - [x] 固化新的部署根因，确认失败点已经切换到服务器访问 `ghcr.io` 超时。
 - [x] 给 `deploy.sh` 增加“已预载镜像时跳过远端拉取”的分支。
 - [x] 重写 `.github/workflows/deploy.yml` 的部署阶段，改为 runner 拉镜像并通过单条 SSH 主连接流式 `docker load` 到服务器。

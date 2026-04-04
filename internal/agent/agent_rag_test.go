@@ -109,8 +109,10 @@ type testClarifyDeptPort struct{}
 
 func (testClarifyDeptPort) ListDepts(context.Context) ([]agenttools.DeptItem, error) {
 	return []agenttools.DeptItem{
-		{DeptID: 101, Name: "教务处"},
-		{DeptID: 102, Name: "学工处"},
+		{DeptID: 101, Name: "信工24级"},
+		{DeptID: 102, Name: "信工23级"},
+		{DeptID: 103, Name: "教务处"},
+		{DeptID: 104, Name: "学工处"},
 	}, nil
 }
 
@@ -917,6 +919,139 @@ func TestAgentChatChecksSubscriptionStatusDirectlyInGroup(t *testing.T) {
 	defer knowledge.mu.Unlock()
 	if knowledge.calls != 0 {
 		t.Fatalf("knowledge search calls = %d, want 0", knowledge.calls)
+	}
+}
+
+func TestAgentChatAllowsDepartmentOnlyFollowUpAfterSubscriptionClarify(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &testGroupSubPort{}
+
+	var requests []capturedChatRequest
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req capturedChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		requests = append(requests, req)
+		current := len(requests)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch current {
+		case 1:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"需要先确认订阅范围。您希望订阅哪个范围的考勤推送？如果只订阅特定部门，请直接回复部门名称。当前可以订阅的部门有：信工24级、信工23级。"},"finish_reason":"stop"}]}`))
+		case 2:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"subscribe_attendance_push","arguments":"{\"dept_names\":[\"信工24级\"]}"}}]},"finish_reason":"tool_calls"}]}`))
+		case 3:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"已为此群开启考勤推送（仅限：信工24级）。"},"finish_reason":"stop"}]}`))
+		default:
+			http.Error(w, `{"error":{"message":"unexpected extra request"}}`, http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     server.URL,
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		GroupSub:       groupSub,
+		Dept:           testClarifyDeptPort{},
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	firstReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "开启考勤订阅",
+		ConversationID:    "conv-follow-up",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("first Chat() error = %v", err)
+	}
+	if !strings.Contains(firstReply, "订阅") {
+		t.Fatalf("first reply = %q, want clarify prompt", firstReply)
+	}
+
+	secondReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "信工24级",
+		ConversationID:    "conv-follow-up",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("second Chat() error = %v", err)
+	}
+	if secondReply == outOfDomainReply {
+		t.Fatalf("second reply = %q, should continue previous subscription flow", secondReply)
+	}
+	if !strings.Contains(secondReply, "信工24级") {
+		t.Fatalf("second reply = %q, want selected department echoed", secondReply)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+
+	groupSub.mu.Lock()
+	defer groupSub.mu.Unlock()
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastSubscribedIDs) != 1 || groupSub.lastSubscribedIDs[0] != 101 {
+		t.Fatalf("subscribed dept ids = %v, want [101]", groupSub.lastSubscribedIDs)
+	}
+}
+
+func TestAgentChatRepliesPolitelyToGreeting(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "你好",
+		ConversationID:   "conv-greeting",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if reply == outOfDomainReply {
+		t.Fatalf("reply = %q, want greeting reply", reply)
+	}
+	if !strings.Contains(reply, "你好") {
+		t.Fatalf("reply = %q, want greeting", reply)
 	}
 }
 
