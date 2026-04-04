@@ -1,0 +1,72 @@
+package agent
+
+func plan(input PlanInput) PlanDecision {
+	knowledgeStrength := classifyKnowledgeStrengthFromResult(input.Retrieval)
+
+	if input.ConversationEvent.Event == eventTaskFollowUp && input.ActiveTask != nil {
+		return PlanDecision{
+			Kind:              planKindContinueTask,
+			ActiveTask:        cloneActiveTask(input.ActiveTask),
+			KnowledgeStrength: knowledgeStrength,
+		}
+	}
+
+	if input.DomainHint == domainHintObviousOut {
+		return PlanDecision{
+			Kind:              planKindObviousOut,
+			KnowledgeStrength: knowledgeStrength,
+		}
+	}
+
+	if input.TaskCandidate != nil {
+		if input.TaskCandidate.Status == taskStatusReady {
+			return PlanDecision{
+				Kind:              planKindTool,
+				ActiveTask:        cloneActiveTask(input.TaskCandidate),
+				KnowledgeStrength: knowledgeStrength,
+			}
+		}
+		return PlanDecision{
+			Kind:              planKindClarify,
+			ActiveTask:        cloneActiveTask(input.TaskCandidate),
+			ClarifyReason:     "missing_slots",
+			KnowledgeStrength: knowledgeStrength,
+		}
+	}
+
+	if knowledgeStrength == knowledgeStrengthStrong {
+		if input.HasLiveSignal {
+			return PlanDecision{
+				Kind:              planKindMixed,
+				KnowledgeStrength: knowledgeStrength,
+			}
+		}
+		return PlanDecision{
+			Kind:              planKindRAG,
+			KnowledgeStrength: knowledgeStrength,
+		}
+	}
+
+	if input.HasActionIntent || input.HasLiveSignal {
+		return PlanDecision{
+			Kind:              planKindTool,
+			KnowledgeStrength: knowledgeStrength,
+		}
+	}
+
+	return PlanDecision{
+		Kind:              planKindClarify,
+		ClarifyReason:     "weak_domain_match",
+		KnowledgeStrength: knowledgeStrength,
+	}
+}
+
+func classifyKnowledgeStrengthFromResult(result RetrievalResult) KnowledgeStrength {
+	if len(result.Hits) == 0 {
+		return knowledgeStrengthNone
+	}
+	if topKnowledgeScore(result) >= retrievalStrongScoreThreshold {
+		return knowledgeStrengthStrong
+	}
+	return knowledgeStrengthWeak
+}

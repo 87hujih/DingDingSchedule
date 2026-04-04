@@ -2,62 +2,42 @@ package agent
 
 import "testing"
 
-func TestDomainGateAcceptsLeaveSyncFailureQuestion(t *testing.T) {
+func TestDomainHintReturnsLikelyInForAttendanceRuleQuestion(t *testing.T) {
 	t.Parallel()
 
 	gate := newDomainGate()
-	result := gate.Check("如果请假信息没能同步到位，会出现什么情况")
-	if result != domainIn {
-		t.Fatalf("Check() = %q, want %q", result, domainIn)
+	result := gate.Hint("如果请假信息没能同步到位，会出现什么情况")
+	if result != domainHintLikelyIn {
+		t.Fatalf("Hint() = %q, want %q", result, domainHintLikelyIn)
 	}
 }
 
-func TestDomainGateAcceptsRuleQuestionWithoutExplicitRuleKeyword(t *testing.T) {
+func TestDomainHintReturnsObviousOutForWeatherQuestion(t *testing.T) {
 	t.Parallel()
 
 	gate := newDomainGate()
-	result := gate.Check("当前的考勤规则是什么")
-	if result != domainIn {
-		t.Fatalf("Check() = %q, want %q", result, domainIn)
+	result := gate.Hint("今天上海天气怎么样")
+	if result != domainHintObviousOut {
+		t.Fatalf("Hint() = %q, want %q", result, domainHintObviousOut)
 	}
 }
 
-func TestDomainGateRejectsWeatherQuestion(t *testing.T) {
+func TestDomainHintReturnsObviousOutForCodingQuestion(t *testing.T) {
 	t.Parallel()
 
 	gate := newDomainGate()
-	result := gate.Check("今天上海天气怎么样")
-	if result != domainOut {
-		t.Fatalf("Check() = %q, want %q", result, domainOut)
+	result := gate.Hint("帮我写一个二分查找")
+	if result != domainHintObviousOut {
+		t.Fatalf("Hint() = %q, want %q", result, domainHintObviousOut)
 	}
 }
 
-func TestDomainGateRejectsCodingQuestion(t *testing.T) {
+func TestDomainHintReturnsUnknownForShortAmbiguousBusinessLikeMessage(t *testing.T) {
 	t.Parallel()
 
 	gate := newDomainGate()
-	result := gate.Check("帮我写一个二分查找")
-	if result != domainOut {
-		t.Fatalf("Check() = %q, want %q", result, domainOut)
-	}
-}
-
-func TestDomainGateAcceptsFreeUsersQuestionWithMeiKe(t *testing.T) {
-	t.Parallel()
-
-	gate := newDomainGate()
-	result := gate.Check("帮我查周三第1到2节哪些人没课")
-	if result != domainIn {
-		t.Fatalf("Check() = %q, want %q", result, domainIn)
-	}
-}
-
-func TestDomainGateAcceptsRealtimeViewQuestion(t *testing.T) {
-	t.Parallel()
-
-	gate := newDomainGate()
-	result := gate.Check("实时视图什么时候才会变成最终结算？")
-	if result != domainIn {
-		t.Fatalf("Check() = %q, want %q", result, domainIn)
+	result := gate.Hint("信工24级")
+	if result != domainHintUnknown {
+		t.Fatalf("Hint() = %q, want %q", result, domainHintUnknown)
 	}
 }

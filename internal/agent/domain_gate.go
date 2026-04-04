@@ -14,11 +14,32 @@ func newDomainGate() *domainGate {
 	return &domainGate{}
 }
 
-// Check 判断问题是否属于课表、考勤、请假、作息或系统说明等站内范围。
-func (g *domainGate) Check(question string) domainResult {
+// Hint 返回保守的领域提示，而不是最终裁决。
+func (g *domainGate) Hint(question string) DomainHint {
 	normalized := normalizeQuery(question)
 	if normalized == "" {
-		return domainOut
+		return domainHintObviousOut
+	}
+
+	obviousOutKeywords := []string{
+		"天气",
+		"气温",
+		"新闻",
+		"八卦",
+		"股票",
+		"基金",
+		"比特币",
+		"写代码",
+		"写一个",
+		"二分查找",
+		"冒泡排序",
+		"python",
+		"java",
+		"golang",
+		"算法",
+	}
+	if containsAny(normalized, obviousOutKeywords) {
+		return domainHintObviousOut
 	}
 
 	keywords := []string{
@@ -45,6 +66,14 @@ func (g *domainGate) Check(question string) domainResult {
 		"系统",
 	}
 	if containsAny(normalized, keywords) {
+		return domainHintLikelyIn
+	}
+	return domainHintUnknown
+}
+
+// Check 判断问题是否属于课表、考勤、请假、作息或系统说明等站内范围。
+func (g *domainGate) Check(question string) domainResult {
+	if g.Hint(question) == domainHintLikelyIn {
 		return domainIn
 	}
 	return domainOut
