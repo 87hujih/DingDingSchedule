@@ -1,6 +1,14 @@
 # 任务清单
 
 ## 当前任务
+- [ ] 基于当前 `master` 主链路，收敛“RAG 被饿死”和统一站外拒答的结构性根因，并明确这轮重构的边界。
+- [ ] 输出统一 planner 重构方案，明确 `会话状态 / 领域判断 / 检索预判 / 执行决策 / 拒答策略` 的新顺序。
+- [x] 将已确认方案写入 spec，避免继续在现有 `domainGate + router + taskRouter` 上叠补丁。
+- [ ] 等待用户 review spec；确认后再进入 implementation plan。
+- [ ] 在隔离 worktree 中按 TDD 重构 `internal/agent` 主编排，并补范围回归测试。
+- [ ] 完成范围内验证、合并准备和复盘记录。
+
+## 当前任务
 - [x] 在隔离 worktree 中建立 Agent 会话任务模式的范围内基线，并确认全仓 `internal/ci` 失败不纳入本轮。
 - [x] 为 Agent 增加 `active_task` 会话状态、会话解释器和槽位补全，并补齐单测。
 - [x] 将会话任务模式接入 `Agent.Chat`，覆盖寒暄、多轮补参、取消和新请求切换。
