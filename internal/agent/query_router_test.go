@@ -196,3 +196,23 @@ func TestIntentClassifierReturnsClarifyForDepartmentScopedSubscriptionWithoutDep
 		t.Fatalf("Intent = %q, want %q", decision.Intent, intentClarify)
 	}
 }
+
+func TestSignalHelpersTreatPriorityRuleQuestionAsRuleButNotLive(t *testing.T) {
+	t.Parallel()
+
+	normalized := normalizeQuery("如果休息日和有课撞上了，系统按谁优先")
+	if !hasRuleSignal(normalized) {
+		t.Fatalf("hasRuleSignal() = false, want true")
+	}
+	if hasLiveSignal(normalized) {
+		t.Fatalf("hasLiveSignal() = true, want false")
+	}
+}
+
+func TestSignalHelpersTreatSubscriptionCommandAsActionIntent(t *testing.T) {
+	t.Parallel()
+
+	if !hasActionIntent(normalizeQuery("添加考勤订阅")) {
+		t.Fatalf("hasActionIntent() = false, want true")
+	}
+}

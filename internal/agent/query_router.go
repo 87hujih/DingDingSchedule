@@ -48,6 +48,7 @@ type routeInputs struct {
 	TopScore          int
 }
 
+// queryRouter 现在只保留 signal helper 和兼容接口；统一 planner 才拥有主流程裁决权。
 type queryRouter struct{}
 
 // newQueryRouter 创建轻量问题分流器。
@@ -176,6 +177,7 @@ func hasRuleSignal(question string) bool {
 		"为什么",
 		"区别",
 		"影响",
+		"优先",
 		"优先级",
 		"生效",
 		"顺延",

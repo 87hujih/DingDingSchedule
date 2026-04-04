@@ -6,6 +6,7 @@ import (
 	"schedule_server/internal/agent/tools"
 )
 
+// buildTaskFromRequest 根据新请求构建任务候选，不直接拥有主流程裁决权。
 func buildTaskFromRequest(question string, uctx *tools.UserContext) *ActiveTask {
 	normalized := normalizeQuery(question)
 	expiresAt := time.Now().Add(sessionTTL)
