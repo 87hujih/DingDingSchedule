@@ -47,6 +47,16 @@ func topKnowledgeScore(result RetrievalResult) int {
 	return 0
 }
 
+func classifyKnowledgeStrength(result RetrievalResult) KnowledgeStrength {
+	if len(result.Hits) == 0 {
+		return knowledgeStrengthNone
+	}
+	if topKnowledgeScore(result) >= retrievalStrongScoreThreshold {
+		return knowledgeStrengthStrong
+	}
+	return knowledgeStrengthWeak
+}
+
 // collectKnowledgeSourceRefs 提取去重后的来源引用，用于日志和评测。
 func collectKnowledgeSourceRefs(hits []KnowledgeHit) []string {
 	sources := make([]string, 0, len(hits))

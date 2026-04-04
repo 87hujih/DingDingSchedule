@@ -109,3 +109,73 @@ func TestPlannerReturnsToolForActionWithoutStrongKnowledge(t *testing.T) {
 		t.Fatalf("Kind = %q, want %q", decision.Kind, planKindTool)
 	}
 }
+
+func TestClassifyKnowledgeStrengthReturnsNoneForNoHits(t *testing.T) {
+	t.Parallel()
+
+	strength := classifyKnowledgeStrength(RetrievalResult{})
+	if strength != knowledgeStrengthNone {
+		t.Fatalf("strength = %q, want %q", strength, knowledgeStrengthNone)
+	}
+}
+
+func TestClassifyKnowledgeStrengthReturnsWeakForLowScoreHits(t *testing.T) {
+	t.Parallel()
+
+	strength := classifyKnowledgeStrength(RetrievalResult{
+		Hits:      []KnowledgeHit{{Title: "系统说明", Score: 3}},
+		TopScores: []int{3},
+	})
+	if strength != knowledgeStrengthWeak {
+		t.Fatalf("strength = %q, want %q", strength, knowledgeStrengthWeak)
+	}
+}
+
+func TestClassifyKnowledgeStrengthReturnsStrongForHighScoreHits(t *testing.T) {
+	t.Parallel()
+
+	strength := classifyKnowledgeStrength(RetrievalResult{
+		Hits:      []KnowledgeHit{{Title: "考勤规则", Score: 18}},
+		TopScores: []int{18},
+	})
+	if strength != knowledgeStrengthStrong {
+		t.Fatalf("strength = %q, want %q", strength, knowledgeStrengthStrong)
+	}
+}
+
+func TestPlannerTreatsNoHitsAsClarifyInsteadOfReject(t *testing.T) {
+	t.Parallel()
+
+	decision := plan(PlanInput{
+		Question:          "这个怎么处理",
+		ConversationEvent: conversationDecision{Event: eventNewRequest},
+		DomainHint:        domainHintUnknown,
+		Retrieval:         RetrievalResult{},
+	})
+	if decision.Kind != planKindClarify {
+		t.Fatalf("Kind = %q, want %q", decision.Kind, planKindClarify)
+	}
+	if decision.KnowledgeStrength != knowledgeStrengthNone {
+		t.Fatalf("KnowledgeStrength = %q, want %q", decision.KnowledgeStrength, knowledgeStrengthNone)
+	}
+}
+
+func TestPlannerTreatsWeakKnowledgeAsClarify(t *testing.T) {
+	t.Parallel()
+
+	decision := plan(PlanInput{
+		Question:          "这个怎么处理",
+		ConversationEvent: conversationDecision{Event: eventNewRequest},
+		DomainHint:        domainHintUnknown,
+		Retrieval: RetrievalResult{
+			Hits:      []KnowledgeHit{{Title: "系统说明", Score: 3}},
+			TopScores: []int{3},
+		},
+	})
+	if decision.Kind != planKindClarify {
+		t.Fatalf("Kind = %q, want %q", decision.Kind, planKindClarify)
+	}
+	if decision.KnowledgeStrength != knowledgeStrengthWeak {
+		t.Fatalf("KnowledgeStrength = %q, want %q", decision.KnowledgeStrength, knowledgeStrengthWeak)
+	}
+}

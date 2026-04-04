@@ -1,7 +1,7 @@
 package agent
 
 func plan(input PlanInput) PlanDecision {
-	knowledgeStrength := classifyKnowledgeStrengthFromResult(input.Retrieval)
+	knowledgeStrength := classifyKnowledgeStrength(input.Retrieval)
 
 	if input.ConversationEvent.Event == eventTaskFollowUp && input.ActiveTask != nil {
 		return PlanDecision{
@@ -59,14 +59,4 @@ func plan(input PlanInput) PlanDecision {
 		ClarifyReason:     "weak_domain_match",
 		KnowledgeStrength: knowledgeStrength,
 	}
-}
-
-func classifyKnowledgeStrengthFromResult(result RetrievalResult) KnowledgeStrength {
-	if len(result.Hits) == 0 {
-		return knowledgeStrengthNone
-	}
-	if topKnowledgeScore(result) >= retrievalStrongScoreThreshold {
-		return knowledgeStrengthStrong
-	}
-	return knowledgeStrengthWeak
 }
