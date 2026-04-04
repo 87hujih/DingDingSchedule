@@ -15,6 +15,10 @@ type AgentCallLog struct {
 	TaskStatusBefore        string `gorm:"size:32"`
 	TaskStatusAfter         string `gorm:"size:32"`
 	DomainResult            string `gorm:"size:20"`
+	DomainHint              string `gorm:"size:20"`
+	PlanKind                string `gorm:"size:32"`
+	KnowledgeStrength       string `gorm:"size:16"`
+	PlannerReason           string `gorm:"size:64"`
 	AnswerMode              string `gorm:"size:32"`
 	Question                string `gorm:"type:text"` // 用户提问
 	ToolsCalled             string `gorm:"size:500"`  // 调用的工具，逗号分隔

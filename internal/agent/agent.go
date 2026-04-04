@@ -69,6 +69,10 @@ type callMetrics struct {
 	TaskStatusBefore        string
 	TaskStatusAfter         string
 	DomainResult            domainResult
+	DomainHint              DomainHint
+	PlanKind                PlanKind
+	KnowledgeStrength       KnowledgeStrength
+	PlannerReason           string
 	AnswerMode              answerMode
 	LLMDurationMs           int64
 	RetrievalDurationMs     int64
@@ -216,6 +220,8 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		reply := buildGreetingReply(uctx)
 		applyConversationMetrics(&metrics, beforeTask, beforeTask, nil)
 		metrics.DomainResult = domainIn
+		metrics.PlanKind = planKindTool
+		metrics.PlannerReason = conversationDecision.Reason
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
 		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
@@ -226,6 +232,8 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		reply := "已取消当前任务。如需继续，请重新告诉我。"
 		applyConversationMetrics(&metrics, beforeTask, taskWithStatus(beforeTask, taskStatusCanceled), nil)
 		metrics.DomainResult = domainIn
+		metrics.PlanKind = planKindTool
+		metrics.PlannerReason = conversationDecision.Reason
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
 		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
@@ -247,6 +255,9 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		}
 		applyConversationMetrics(&metrics, beforeTask, afterTask, matchedSlotNames(fill))
 		metrics.DomainResult = domainIn
+		metrics.PlanKind = planKindContinueTask
+		metrics.KnowledgeStrength = knowledgeStrengthNone
+		metrics.PlannerReason = conversationDecision.Reason
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
 		toolsCalled = append(toolsCalled, followUpTools...)
@@ -257,6 +268,9 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		reply := buildUnknownFollowUpReply(activeTask)
 		applyConversationMetrics(&metrics, beforeTask, beforeTask, nil)
 		metrics.DomainResult = domainIn
+		metrics.PlanKind = planKindClarify
+		metrics.KnowledgeStrength = knowledgeStrengthNone
+		metrics.PlannerReason = conversationDecision.Reason
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
 		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
@@ -272,6 +286,8 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	if hasHelpIntent(normalized) {
 		reply := buildHelpReply(uctx)
 		metrics.DomainResult = domainIn
+		metrics.PlanKind = planKindTool
+		metrics.PlannerReason = "help_intent"
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
 		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
@@ -283,8 +299,12 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	if a.domainGate != nil {
 		domainHint = a.domainGate.Hint(msg.Content)
 	}
+	metrics.DomainHint = domainHint
 	if domainHint == domainHintObviousOut {
 		metrics.DomainResult = domainOut
+		metrics.PlanKind = planKindObviousOut
+		metrics.KnowledgeStrength = knowledgeStrengthNone
+		metrics.PlannerReason = "obvious_out"
 		a.deps.Logger.Infow("明显站外问题，直接拒答", "user", uctx.Name, "question", msg.Content)
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeReject
@@ -328,6 +348,9 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		HasClarifyIntent:  hasClarifyIntent(normalized),
 		HasHelpIntent:     hasHelpIntent(normalized),
 	})
+	metrics.PlanKind = planDecision.Kind
+	metrics.KnowledgeStrength = planDecision.KnowledgeStrength
+	metrics.PlannerReason = planDecision.ClarifyReason
 
 	switch planDecision.Kind {
 	case planKindClarify:
@@ -642,6 +665,10 @@ func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, quest
 		TaskStatusBefore:        metrics.TaskStatusBefore,
 		TaskStatusAfter:         metrics.TaskStatusAfter,
 		DomainResult:            string(metrics.DomainResult),
+		DomainHint:              string(metrics.DomainHint),
+		PlanKind:                string(metrics.PlanKind),
+		KnowledgeStrength:       string(metrics.KnowledgeStrength),
+		PlannerReason:           metrics.PlannerReason,
 		AnswerMode:              string(metrics.AnswerMode),
 		Question:                question,
 		ToolsCalled:             toolsCalled,

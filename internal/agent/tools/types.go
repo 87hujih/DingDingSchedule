@@ -230,6 +230,10 @@ type CallLog struct {
 	TaskStatusBefore        string
 	TaskStatusAfter         string
 	DomainResult            string
+	DomainHint              string
+	PlanKind                string
+	KnowledgeStrength       string
+	PlannerReason           string
 	AnswerMode              string
 	Question                string
 	ToolsCalled             []string // 调用的工具名列表

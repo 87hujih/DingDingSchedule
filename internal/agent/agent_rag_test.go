@@ -654,6 +654,15 @@ func TestAgentChatWritesKnowledgeMetricsToCallLog(t *testing.T) {
 	if log.QueryType != "rag" {
 		t.Fatalf("QueryType = %q, want rag", log.QueryType)
 	}
+	if log.DomainHint != "likely_in" {
+		t.Fatalf("DomainHint = %q, want likely_in", log.DomainHint)
+	}
+	if log.PlanKind != "rag" {
+		t.Fatalf("PlanKind = %q, want rag", log.PlanKind)
+	}
+	if log.KnowledgeStrength != "strong" {
+		t.Fatalf("KnowledgeStrength = %q, want strong", log.KnowledgeStrength)
+	}
 	if log.ToolCallCount != 0 {
 		t.Fatalf("ToolCallCount = %d, want 0", log.ToolCallCount)
 	}
@@ -717,6 +726,18 @@ func TestAgentChatWritesConversationTaskMetricsToCallLog(t *testing.T) {
 	if firstLog.ConversationEvent != "new_request" {
 		t.Fatalf("first ConversationEvent = %q, want new_request", firstLog.ConversationEvent)
 	}
+	if firstLog.DomainHint != "likely_in" {
+		t.Fatalf("first DomainHint = %q, want likely_in", firstLog.DomainHint)
+	}
+	if firstLog.PlanKind != "clarify" {
+		t.Fatalf("first PlanKind = %q, want clarify", firstLog.PlanKind)
+	}
+	if firstLog.KnowledgeStrength != "none" {
+		t.Fatalf("first KnowledgeStrength = %q, want none", firstLog.KnowledgeStrength)
+	}
+	if firstLog.PlannerReason != "missing_slots" {
+		t.Fatalf("first PlannerReason = %q, want missing_slots", firstLog.PlannerReason)
+	}
 	if firstLog.ActiveTaskType != "subscribe_attendance_push" {
 		t.Fatalf("first ActiveTaskType = %q, want subscribe_attendance_push", firstLog.ActiveTaskType)
 	}
@@ -745,6 +766,12 @@ func TestAgentChatWritesConversationTaskMetricsToCallLog(t *testing.T) {
 	}
 	if secondLog.ConversationEvent != "task_follow_up" {
 		t.Fatalf("second ConversationEvent = %q, want task_follow_up", secondLog.ConversationEvent)
+	}
+	if secondLog.PlanKind != "continue_task" {
+		t.Fatalf("second PlanKind = %q, want continue_task", secondLog.PlanKind)
+	}
+	if secondLog.KnowledgeStrength != "none" {
+		t.Fatalf("second KnowledgeStrength = %q, want none", secondLog.KnowledgeStrength)
 	}
 	if secondLog.ActiveTaskType != "subscribe_attendance_push" {
 		t.Fatalf("second ActiveTaskType = %q, want subscribe_attendance_push", secondLog.ActiveTaskType)

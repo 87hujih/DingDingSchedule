@@ -160,6 +160,10 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 		TaskStatusBefore:        "waiting_slots",
 		TaskStatusAfter:         "completed",
 		DomainResult:            "in_domain",
+		DomainHint:              "unknown",
+		PlanKind:                "clarify",
+		KnowledgeStrength:       "weak",
+		PlannerReason:           "weak_domain_match",
 		AnswerMode:              "knowledge-only",
 		Question:                "如果请假信息没能同步到位，会出现什么情况",
 		ToolsCalled:             []string{"get_current_time"},
@@ -186,6 +190,18 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	}
 	if row.DomainResult != "in_domain" {
 		t.Fatalf("DomainResult = %q, want in_domain", row.DomainResult)
+	}
+	if row.DomainHint != "unknown" {
+		t.Fatalf("DomainHint = %q, want unknown", row.DomainHint)
+	}
+	if row.PlanKind != "clarify" {
+		t.Fatalf("PlanKind = %q, want clarify", row.PlanKind)
+	}
+	if row.KnowledgeStrength != "weak" {
+		t.Fatalf("KnowledgeStrength = %q, want weak", row.KnowledgeStrength)
+	}
+	if row.PlannerReason != "weak_domain_match" {
+		t.Fatalf("PlannerReason = %q, want weak_domain_match", row.PlannerReason)
 	}
 	if row.AnswerMode != "knowledge-only" {
 		t.Fatalf("AnswerMode = %q, want knowledge-only", row.AnswerMode)

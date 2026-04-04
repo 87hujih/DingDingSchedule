@@ -4,21 +4,25 @@
 - [x] 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-unified-planner-refactor` 中建立 unified planner 重构的范围基线。
 - [x] 确认 `go test ./internal/agent/... -count=1` 与 `go test ./internal/app -run "TestCallLogAdapterPersistsDomainModeAndRetrievalDetails" -count=1` 在 worktree 中通过。
 - [x] 额外运行 `go test ./... -count=1`，确认全仓失败仍只来自既有 `internal/ci` workflow 测试。
-- [ ] 按 TDD 进入 `planner/domain hint` 的首批失败测试与最小实现。
+- [x] 完成 unified planner 主链路重构：`domain hint + retrieval prepass + task candidate + unified planner + execute`。
+- [x] 扩展调用日志与离线评测口径，补充 `domain_hint / plan_kind / knowledge_strength / planner_reason`。
+- [x] 完成范围回归与全仓对比，确认没有引入新的非基线失败。
 
 ## 当前任务复盘
 - 本轮实现工作已切到隔离 worktree：`G:\gofile\schedule_server\.worktrees\agent-unified-planner-refactor`，分支为 `codex/agent-unified-planner-refactor`，避免根工作区未跟踪文件和提交 hook 干扰。
-- worktree 范围基线结果：
-- `go mod download`
-- `go test ./internal/agent/... -count=1`
+- `internal/agent/agent.go` 已改成统一证据收集与 planner 决策：新请求不再先被硬门禁拦截，而是先走 `domain hint`、按需检索预判、任务候选识别，再统一映射到 `obvious_out / clarify / tool / rag / mixed`。
+- `internal/agent/planner.go` 现在只会在“强知识 + 实时 + 明确规则信号”时走 `mixed`；纯实时查询即使命中知识也保持 `tool`，避免再次把 live query 抬成错误的 mixed。
+- `internal/agent/tools/types.go`、`internal/model/agent_call_log.go`、`internal/app/agent_wiring.go` 已扩展 planner 证据字段：`domain_hint / plan_kind / knowledge_strength / planner_reason`，`agent_wiring_test.go` 与 `agent_rag_test.go` 已补持久化和真实对话断言。
+- `internal/agent/eval.go` 与 `internal/agent/testdata/eval_cases.json` 已切到 planner 口径：离线评测现在先计算 `ExpectedPlanKind`，再兼容输出旧的 intent/executor/mode/route，避免继续把旧 router 当主契约。
+- 本轮关键验证命令：
 - `go test ./internal/app -run "TestCallLogAdapterPersistsDomainModeAndRetrievalDetails" -count=1`
-- 上述命令均通过。
-- 全仓基线结果：
+- `go test ./internal/agent -run "TestEvaluateCases" -count=1`
+- `go test ./internal/agent/... -count=1`
 - `go test ./... -count=1`
-- 仍失败于既有 `internal/ci` 测试：
+- 当前全仓对比结果仍只失败于既有 `internal/ci` 测试：
 - `TestDeployWorkflowSupportsSSHKeyOrPassword`
 - `TestDeployWorkflowChecksHealthViaSSHOnTargetHost`
-- 因此后续执行统一 planner 重构时，完成条件继续按范围内回归收敛，不把这两个既有 CI 失败记入本轮回归。
+- `git diff --check -- internal/agent internal/app internal/model tasks/todo.md` 只有仓库既有的 CRLF warning，没有新的格式错误。
 
 ## 当前任务
 - [ ] 基于当前 `master` 主链路，收敛“RAG 被饿死”和统一站外拒答的结构性根因，并明确这轮重构的边界。

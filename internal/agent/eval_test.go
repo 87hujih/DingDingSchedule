@@ -197,3 +197,63 @@ func TestEvaluateCasesAggregatesIntentAndExecutorMatches(t *testing.T) {
 		t.Fatalf("fourth case should be mixed/mixed: %+v", results[3])
 	}
 }
+
+func TestEvaluateCasesAggregatesPlannerDecisionMatches(t *testing.T) {
+	t.Parallel()
+
+	cases := []EvalCase{
+		{
+			Name:             "clarify-question",
+			Category:         "tool",
+			Question:         "订阅指定部门考勤",
+			ExpectedDomain:   "in_domain",
+			ExpectedPlanKind: "clarify",
+			ExpectedMode:     "tool-first",
+		},
+		{
+			Name:             "rule-question",
+			Category:         "rag",
+			Question:         "如果请假信息没能同步到位，会出现什么情况",
+			ExpectedDomain:   "in_domain",
+			ExpectedPlanKind: "rag",
+			ExpectedMode:     "knowledge-only",
+			ExpectedSources:  []string{"请假同步说明#3"},
+		},
+		{
+			Name:             "reject-question",
+			Category:         "reject",
+			Question:         "今天上海天气怎么样？",
+			ExpectedDomain:   "out_of_domain",
+			ExpectedPlanKind: "obvious_out",
+			ExpectedMode:     "reject",
+		},
+	}
+
+	knowledge := evalKnowledgePort{
+		hitsByQuery: map[string][]agenttools.KnowledgeHit{
+			"如果请假信息没能同步到位，会出现什么情况": {
+				{SourceRef: "请假同步说明#3", Body: "同步失败不会直接覆盖已经生成的考勤快照；排障后应重试同步。", Score: 18},
+			},
+		},
+	}
+
+	summary, results, err := EvaluateCases(context.Background(), knowledge, 42, cases, nil)
+	if err != nil {
+		t.Fatalf("EvaluateCases() error = %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("result count = %d, want 3", len(results))
+	}
+	if summary.PlanCases != 3 || summary.PlanPassed != 3 || summary.PlanAccuracy != 100 {
+		t.Fatalf("plan summary = %+v", summary)
+	}
+	if results[0].PlanKind != "clarify" || !results[0].PlanMatched {
+		t.Fatalf("first case should be clarify: %+v", results[0])
+	}
+	if results[1].PlanKind != "rag" || !results[1].PlanMatched {
+		t.Fatalf("second case should be rag: %+v", results[1])
+	}
+	if results[2].PlanKind != "obvious_out" || !results[2].PlanMatched {
+		t.Fatalf("third case should be obvious_out: %+v", results[2])
+	}
+}

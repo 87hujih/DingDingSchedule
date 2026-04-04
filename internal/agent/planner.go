@@ -35,9 +35,15 @@ func plan(input PlanInput) PlanDecision {
 	}
 
 	if knowledgeStrength == knowledgeStrengthStrong {
-		if input.HasLiveSignal {
+		if input.HasLiveSignal && input.HasRuleSignal {
 			return PlanDecision{
 				Kind:              planKindMixed,
+				KnowledgeStrength: knowledgeStrength,
+			}
+		}
+		if input.HasLiveSignal {
+			return PlanDecision{
+				Kind:              planKindTool,
 				KnowledgeStrength: knowledgeStrength,
 			}
 		}
