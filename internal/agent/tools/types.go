@@ -225,6 +225,10 @@ type CallLog struct {
 	UserName                string
 	ConvType                string // "1"=单聊, "2"=群聊
 	QueryType               string // tool / rag / mixed
+	ConversationEvent       string
+	ActiveTaskType          string
+	TaskStatusBefore        string
+	TaskStatusAfter         string
 	DomainResult            string
 	AnswerMode              string
 	Question                string
@@ -236,6 +240,7 @@ type CallLog struct {
 	RetrievalCandidateCount int
 	RetrievalTopRefs        []string
 	RetrievalScores         []int
+	FollowUpMatchedSlots    []string
 	RetrievalFilteredReason string
 	KnowledgeDocTypes       []string
 	RetrievalDurationMs     int64

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,6 +64,10 @@ type Agent struct {
 
 type callMetrics struct {
 	QueryType               queryKind
+	ConversationEvent       conversationEvent
+	ActiveTaskType          string
+	TaskStatusBefore        string
+	TaskStatusAfter         string
 	DomainResult            domainResult
 	AnswerMode              answerMode
 	LLMDurationMs           int64
@@ -71,6 +77,7 @@ type callMetrics struct {
 	SourceRefs              []string
 	RetrievalTopRefs        []string
 	RetrievalScores         []int
+	FollowUpMatchedSlots    []string
 	RetrievalFilteredReason string
 	KnowledgeDocTypes       []string
 }
@@ -196,13 +203,59 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	startTime := time.Now()
 	var toolsCalled []string
 
-	// 6. 加载历史消息
-	history := a.sessions.getMessages(sessionKey)
+	// 6. 加载历史消息和活动任务
+	history, activeTask := a.sessions.getSessionState(sessionKey)
 	userMsg := tools.Message{Role: "user", Content: msg.Content}
 	metrics := callMetrics{}
+	beforeTask := cloneActiveTask(activeTask)
 
-	if hasGreetingIntent(msg.Content) {
+	conversationDecision := interpretConversation(msg.Content, activeTask)
+	metrics.ConversationEvent = conversationDecision.Event
+	switch conversationDecision.Event {
+	case eventGreeting:
 		reply := buildGreetingReply(uctx)
+		applyConversationMetrics(&metrics, beforeTask, beforeTask, nil)
+		metrics.DomainResult = domainIn
+		metrics.QueryType = queryKindTool
+		metrics.AnswerMode = answerModeToolFirst
+		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return reply, nil
+	case eventCancel:
+		a.sessions.clearActiveTask(sessionKey)
+		reply := "已取消当前任务。如需继续，请重新告诉我。"
+		applyConversationMetrics(&metrics, beforeTask, taskWithStatus(beforeTask, taskStatusCanceled), nil)
+		metrics.DomainResult = domainIn
+		metrics.QueryType = queryKindTool
+		metrics.AnswerMode = answerModeToolFirst
+		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return reply, nil
+	case eventTaskFollowUp:
+		fill := fillTaskSlots(activeTask, msg.Content)
+		nextTask := applySlotFillToTask(activeTask, fill)
+		reply, followUpTools, err := a.respondForTaskState(ctx, uctx, sessionKey, nextTask)
+		if err != nil {
+			applyConversationMetrics(&metrics, beforeTask, nextTask, matchedSlotNames(fill))
+			a.deps.Logger.Errorw("task follow-up 执行失败", "user", uctx.Name, "question", msg.Content, "err", err)
+			a.writeCallLog(ctx, uctx, msg.Content, "", followUpTools, 0, startTime, "failed", err.Error(), metrics)
+			return "系统错误，请稍后重试", nil
+		}
+		afterTask := nextTask
+		if nextTask != nil && nextTask.Status == taskStatusReady {
+			afterTask = taskWithStatus(nextTask, taskStatusCompleted)
+		}
+		applyConversationMetrics(&metrics, beforeTask, afterTask, matchedSlotNames(fill))
+		metrics.DomainResult = domainIn
+		metrics.QueryType = queryKindTool
+		metrics.AnswerMode = answerModeToolFirst
+		toolsCalled = append(toolsCalled, followUpTools...)
+		a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, 0, startTime, "success", "", metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return reply, nil
+	case eventUnknown:
+		reply := buildUnknownFollowUpReply(activeTask)
+		applyConversationMetrics(&metrics, beforeTask, beforeTask, nil)
 		metrics.DomainResult = domainIn
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
@@ -210,15 +263,15 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return reply, nil
 	}
+	if activeTask != nil {
+		a.sessions.clearActiveTask(sessionKey)
+	}
+	applyConversationMetrics(&metrics, beforeTask, nil, nil)
 
 	// 7. 先做领域门禁，站外问题直接拒答，不进入检索与 LLM。
 	domainResult := domainOut
 	if a.domainGate != nil {
 		domainResult = a.domainGate.Check(msg.Content)
-	}
-	continueClarify := domainResult != domainIn && isClarificationFollowUp(msg.Content, history)
-	if continueClarify {
-		domainResult = domainIn
 	}
 	metrics.DomainResult = domainResult
 	if domainResult != domainIn {
@@ -230,12 +283,28 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		return reply, nil
 	}
 
-	initialDecision := intentDecision{}
-	if continueClarify {
-		initialDecision = intentDecision{Intent: intentAction, AnswerMode: answerModeToolFirst}
-	} else {
-		initialDecision = a.router.DecideIntent(msg.Content, domainResult, RetrievalResult{})
+	if task := buildTaskFromRequest(msg.Content, uctx); task != nil {
+		reply, taskTools, err := a.respondForTaskState(ctx, uctx, sessionKey, task)
+		if err != nil {
+			applyConversationMetrics(&metrics, beforeTask, task, nil)
+			a.deps.Logger.Errorw("task request 执行失败", "user", uctx.Name, "question", msg.Content, "err", err)
+			a.writeCallLog(ctx, uctx, msg.Content, "", taskTools, 0, startTime, "failed", err.Error(), metrics)
+			return "系统错误，请稍后重试", nil
+		}
+		afterTask := task
+		if task.Status == taskStatusReady {
+			afterTask = taskWithStatus(task, taskStatusCompleted)
+		}
+		applyConversationMetrics(&metrics, beforeTask, afterTask, nil)
+		metrics.QueryType = queryKindTool
+		metrics.AnswerMode = answerModeToolFirst
+		toolsCalled = append(toolsCalled, taskTools...)
+		a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, 0, startTime, "success", "", metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return reply, nil
 	}
+
+	initialDecision := a.router.DecideIntent(msg.Content, domainResult, RetrievalResult{})
 	switch initialDecision.Intent {
 	case intentHelp:
 		reply := buildHelpReply(uctx)
@@ -381,6 +450,154 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	return "处理轮次过多，请简化您的问题后重试", nil
 }
 
+func buildGreetingReply(uctx *tools.UserContext) string {
+	if uctx != nil && uctx.UserRole >= 1 {
+		return "你好，我是课表助手。你可以直接让我查课表、考勤、请假；如果需要，也可以继续处理补签、统计和群订阅。"
+	}
+	return "你好，我是课表助手。你可以直接让我查课表、考勤或请假相关信息。"
+}
+
+func (a *Agent) respondForTaskState(ctx context.Context, uctx *tools.UserContext, sessionKey string, task *ActiveTask) (string, []string, error) {
+	if task == nil {
+		a.sessions.clearActiveTask(sessionKey)
+		return "请再具体说明你要查询或操作的内容。", nil, nil
+	}
+
+	if task.Status == taskStatusReady {
+		reply, toolsCalled, err := a.executeReadyTask(ctx, uctx, task)
+		if err != nil {
+			return "", toolsCalled, err
+		}
+		a.sessions.clearActiveTask(sessionKey)
+		return reply, toolsCalled, nil
+	}
+
+	a.sessions.setActiveTask(sessionKey, task)
+
+	if task.Type == "subscribe_attendance_push" && containsAnySlot(task.MissingSlots(), "dept_names") {
+		toolResult, err := a.registry.Dispatch(ctx, uctx, "list_departments", json.RawMessage(`{}`))
+		if err != nil {
+			return "", []string{"list_departments"}, err
+		}
+		reply, err := buildClarifyReply(clarifyPlan{
+			ToolName:       "list_departments",
+			ToolArguments:  `{}`,
+			FollowUpPrompt: "我先列出当前可选部门。请告诉我需要订阅哪些部门。",
+		}, toolResult)
+		return reply, []string{"list_departments"}, err
+	}
+
+	return buildTaskClarifyReply(task), nil, nil
+}
+
+func (a *Agent) executeReadyTask(ctx context.Context, uctx *tools.UserContext, task *ActiveTask) (string, []string, error) {
+	if task == nil {
+		return "", nil, nil
+	}
+
+	switch task.Type {
+	case "query_subscription_status":
+		toolResult, err := a.registry.Dispatch(ctx, uctx, "query_subscription_status", json.RawMessage(`{}`))
+		if err != nil {
+			return "", []string{"query_subscription_status"}, err
+		}
+		reply, err := buildClarifyReply(clarifyPlan{ToolName: "query_subscription_status", ToolArguments: `{}`}, toolResult)
+		return reply, []string{"query_subscription_status"}, err
+	case "subscribe_attendance_push":
+		payload := map[string]any{}
+		if task.FilledSlots["scope"] == "department" {
+			payload["dept_names"] = splitTaskValues(task.FilledSlots["dept_names"])
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return "", []string{"subscribe_attendance_push"}, err
+		}
+		toolResult, err := a.registry.Dispatch(ctx, uctx, "subscribe_attendance_push", raw)
+		if err != nil {
+			return "", []string{"subscribe_attendance_push"}, err
+		}
+		reply, err := renderToolMessage(toolResult)
+		return reply, []string{"subscribe_attendance_push"}, err
+	case "sign_for_user":
+		section, err := strconv.Atoi(task.FilledSlots["section"])
+		if err != nil {
+			return "", nil, err
+		}
+		payload := map[string]any{
+			"user_name": task.FilledSlots["user_name"],
+			"date":      materializeTaskDate(task.FilledSlots["date"]),
+			"section":   section,
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return "", []string{"sign_for_user"}, err
+		}
+		toolResult, err := a.registry.Dispatch(ctx, uctx, "sign_for_user", raw)
+		if err != nil {
+			return "", []string{"sign_for_user"}, err
+		}
+		reply, err := renderToolMessage(toolResult)
+		return reply, []string{"sign_for_user"}, err
+	default:
+		return "", nil, nil
+	}
+}
+
+func renderToolMessage(toolResult string) (string, error) {
+	if toolErr := extractToolError(toolResult); toolErr != "" {
+		return toolErr, nil
+	}
+
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(toolResult), &payload); err != nil {
+		return toolResult, nil
+	}
+	if strings.TrimSpace(payload.Message) != "" {
+		return strings.TrimSpace(payload.Message), nil
+	}
+	if strings.TrimSpace(toolResult) == "" {
+		return "操作已完成。", nil
+	}
+	return toolResult, nil
+}
+
+func materializeTaskDate(value string) string {
+	switch value {
+	case "today":
+		return time.Now().Format("2006-01-02")
+	case "yesterday":
+		return time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	case "tomorrow":
+		return time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+	default:
+		return value
+	}
+}
+
+func splitTaskValues(value string) []string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(trimmed, func(r rune) bool {
+		return r == '、' || r == ',' || r == '，'
+	})
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		values = append(values, name)
+	}
+	if len(values) == 0 {
+		return []string{trimmed}
+	}
+	return values
+}
+
 // writeCallLog 异步写入调用记录，不阻塞对话响应
 func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, question, reply string, toolsCalled []string, rounds int, startTime time.Time, status, errMsg string, metrics callMetrics) {
 	if a.deps.CallLog == nil {
@@ -392,6 +609,10 @@ func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, quest
 		UserName:                uctx.Name,
 		ConvType:                uctx.ConversationType,
 		QueryType:               string(metrics.QueryType),
+		ConversationEvent:       string(metrics.ConversationEvent),
+		ActiveTaskType:          metrics.ActiveTaskType,
+		TaskStatusBefore:        metrics.TaskStatusBefore,
+		TaskStatusAfter:         metrics.TaskStatusAfter,
 		DomainResult:            string(metrics.DomainResult),
 		AnswerMode:              string(metrics.AnswerMode),
 		Question:                question,
@@ -403,6 +624,7 @@ func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, quest
 		RetrievalCandidateCount: metrics.RetrievalCandidateCount,
 		RetrievalTopRefs:        append([]string(nil), metrics.RetrievalTopRefs...),
 		RetrievalScores:         append([]int(nil), metrics.RetrievalScores...),
+		FollowUpMatchedSlots:    append([]string(nil), metrics.FollowUpMatchedSlots...),
 		RetrievalFilteredReason: metrics.RetrievalFilteredReason,
 		KnowledgeDocTypes:       append([]string(nil), metrics.KnowledgeDocTypes...),
 		RetrievalDurationMs:     metrics.RetrievalDurationMs,
@@ -413,6 +635,54 @@ func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, quest
 		ErrorMsg:                errMsg,
 	}
 	go a.deps.CallLog.Write(context.Background(), log)
+}
+
+func applyConversationMetrics(metrics *callMetrics, before, after *ActiveTask, matchedSlots []string) {
+	if metrics == nil {
+		return
+	}
+	metrics.ActiveTaskType = taskTypeForLog(after)
+	if metrics.ActiveTaskType == "" {
+		metrics.ActiveTaskType = taskTypeForLog(before)
+	}
+	metrics.TaskStatusBefore = taskStatusForLog(before)
+	metrics.TaskStatusAfter = taskStatusForLog(after)
+	metrics.FollowUpMatchedSlots = append([]string(nil), matchedSlots...)
+}
+
+func taskTypeForLog(task *ActiveTask) string {
+	if task == nil {
+		return ""
+	}
+	return task.Type
+}
+
+func taskStatusForLog(task *ActiveTask) string {
+	if task == nil {
+		return ""
+	}
+	return string(task.Status)
+}
+
+func taskWithStatus(task *ActiveTask, status taskStatus) *ActiveTask {
+	cloned := cloneActiveTask(task)
+	if cloned == nil {
+		return nil
+	}
+	cloned.Status = status
+	return cloned
+}
+
+func matchedSlotNames(fill slotFillResult) []string {
+	if len(fill.Filled) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(fill.Filled))
+	for name := range fill.Filled {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // buildSystemPrompt 构建系统提示词

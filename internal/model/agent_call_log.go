@@ -10,6 +10,10 @@ type AgentCallLog struct {
 	UserName                string `gorm:"size:100"`
 	ConvType                string `gorm:"size:1"`  // "1"=单聊, "2"=群聊
 	QueryType               string `gorm:"size:20"` // tool / rag / mixed
+	ConversationEvent       string `gorm:"size:32"`
+	ActiveTaskType          string `gorm:"size:64"`
+	TaskStatusBefore        string `gorm:"size:32"`
+	TaskStatusAfter         string `gorm:"size:32"`
 	DomainResult            string `gorm:"size:20"`
 	AnswerMode              string `gorm:"size:32"`
 	Question                string `gorm:"type:text"` // 用户提问
@@ -21,6 +25,7 @@ type AgentCallLog struct {
 	RetrievalCandidateCount int
 	RetrievalTopRefs        string `gorm:"type:text"`
 	RetrievalScores         string `gorm:"type:text"`
+	FollowUpMatchedSlots    string `gorm:"type:text"`
 	RetrievalFilteredReason string `gorm:"size:255"`
 	KnowledgeDocTypes       string `gorm:"type:text"`
 	RetrievalDurationMs     int64

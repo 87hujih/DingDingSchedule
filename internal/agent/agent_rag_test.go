@@ -132,6 +132,75 @@ func (p testClarifyGroupSubPort) GetSubscription(context.Context, uint, string) 
 	return p.info, nil
 }
 
+type testTaskAttendancePort struct {
+	mu          sync.Mutex
+	signCalls   int
+	lastDate    string
+	lastSection int
+	lastUserIDs []uint
+}
+
+func (p *testTaskAttendancePort) GetAttendanceDetail(context.Context, agenttools.AttendanceQuery) (*agenttools.AttendanceResult, error) {
+	return nil, nil
+}
+
+func (p *testTaskAttendancePort) GetAttendanceText(context.Context, agenttools.AttendanceQuery) (string, error) {
+	return "", nil
+}
+
+func (p *testTaskAttendancePort) GetWeeklyAbsenceRanking(context.Context) ([]agenttools.RankItem, error) {
+	return nil, nil
+}
+
+func (p *testTaskAttendancePort) GetWeeklyAttendanceRateRanking(context.Context) ([]agenttools.RankItem, error) {
+	return nil, nil
+}
+
+func (p *testTaskAttendancePort) FindRecordByDateSection(context.Context, string, int) (uint, error) {
+	return 0, nil
+}
+
+func (p *testTaskAttendancePort) SignForUsers(context.Context, uint, []uint) error {
+	return nil
+}
+
+func (p *testTaskAttendancePort) SignForUsersBySlot(_ context.Context, date string, section int, userIDs []uint) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.signCalls++
+	p.lastDate = date
+	p.lastSection = section
+	p.lastUserIDs = append([]uint(nil), userIDs...)
+	return nil
+}
+
+type testTaskUserPort struct{}
+
+func (testTaskUserPort) FindByDingUserID(context.Context, string) (*agenttools.UserInfo, error) {
+	return &agenttools.UserInfo{
+		ID:         7,
+		Name:       "Alice",
+		DingUserID: "ding-user",
+		Role:       1,
+		TenantID:   42,
+	}, nil
+}
+
+func (testTaskUserPort) SearchByName(_ context.Context, name string) ([]agenttools.UserInfo, error) {
+	if strings.TrimSpace(name) == "张三" {
+		return []agenttools.UserInfo{
+			{
+				ID:         99,
+				Name:       "张三",
+				DingUserID: "ding-zhangsan",
+				Role:       0,
+				TenantID:   42,
+			},
+		}, nil
+	}
+	return nil, nil
+}
+
 // TestAgentChatUsesKnowledgeOnlyForLeaveSyncFailureQuestion 验证真实口语化规则问法会走 knowledge-only。
 func TestAgentChatUsesKnowledgeOnlyForLeaveSyncFailureQuestion(t *testing.T) {
 	t.Parallel()
@@ -602,6 +671,101 @@ func TestAgentChatWritesKnowledgeMetricsToCallLog(t *testing.T) {
 	}
 }
 
+// TestAgentChatWritesConversationTaskMetricsToCallLog 验证多轮任务状态会写入调用日志。
+func TestAgentChatWritesConversationTaskMetricsToCallLog(t *testing.T) {
+	t.Parallel()
+
+	callLog := newTestCallLogPort()
+	groupSub := &testGroupSubPort{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"unexpected llm request"}}`, http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     server.URL,
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		CallLog:        callLog,
+		GroupSub:       groupSub,
+		Dept:           testClarifyDeptPort{},
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "开启考勤订阅",
+		ConversationID:    "conv-call-log",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("first Chat() error = %v", err)
+	}
+	firstLog, ok := callLog.Wait(time.Second)
+	if !ok {
+		t.Fatalf("expected first call log to be written")
+	}
+	if firstLog.ConversationEvent != "new_request" {
+		t.Fatalf("first ConversationEvent = %q, want new_request", firstLog.ConversationEvent)
+	}
+	if firstLog.ActiveTaskType != "subscribe_attendance_push" {
+		t.Fatalf("first ActiveTaskType = %q, want subscribe_attendance_push", firstLog.ActiveTaskType)
+	}
+	if firstLog.TaskStatusBefore != "" {
+		t.Fatalf("first TaskStatusBefore = %q, want empty", firstLog.TaskStatusBefore)
+	}
+	if firstLog.TaskStatusAfter != "waiting_slots" {
+		t.Fatalf("first TaskStatusAfter = %q, want waiting_slots", firstLog.TaskStatusAfter)
+	}
+
+	_, err = a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "信工24级",
+		ConversationID:    "conv-call-log",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("second Chat() error = %v", err)
+	}
+	secondLog, ok := callLog.Wait(time.Second)
+	if !ok {
+		t.Fatalf("expected second call log to be written")
+	}
+	if secondLog.ConversationEvent != "task_follow_up" {
+		t.Fatalf("second ConversationEvent = %q, want task_follow_up", secondLog.ConversationEvent)
+	}
+	if secondLog.ActiveTaskType != "subscribe_attendance_push" {
+		t.Fatalf("second ActiveTaskType = %q, want subscribe_attendance_push", secondLog.ActiveTaskType)
+	}
+	if secondLog.TaskStatusBefore != "waiting_slots" {
+		t.Fatalf("second TaskStatusBefore = %q, want waiting_slots", secondLog.TaskStatusBefore)
+	}
+	if secondLog.TaskStatusAfter != "completed" {
+		t.Fatalf("second TaskStatusAfter = %q, want completed", secondLog.TaskStatusAfter)
+	}
+	if strings.Join(secondLog.FollowUpMatchedSlots, ",") != "dept_names,scope" {
+		t.Fatalf("second FollowUpMatchedSlots = %v, want [dept_names scope]", secondLog.FollowUpMatchedSlots)
+	}
+	if secondLog.ToolCallCount != 1 {
+		t.Fatalf("second ToolCallCount = %d, want 1", secondLog.ToolCallCount)
+	}
+	if len(secondLog.ToolsCalled) != 1 || secondLog.ToolsCalled[0] != "subscribe_attendance_push" {
+		t.Fatalf("second ToolsCalled = %v, want [subscribe_attendance_push]", secondLog.ToolsCalled)
+	}
+}
+
 // TestAgentChatInjectsKnowledgeContextBeforeToolCallsForMixedQuestions 验证 mixed 路径会在保留工具时注入知识上下文。
 func TestAgentChatInjectsKnowledgeContextBeforeToolCallsForMixedQuestions(t *testing.T) {
 	t.Parallel()
@@ -689,7 +853,7 @@ func TestAgentChatInjectsKnowledgeContextBeforeToolCallsForMixedQuestions(t *tes
 	}
 }
 
-func TestAgentChatKeepsToolFirstForSubscriptionActionQuestion(t *testing.T) {
+func TestAgentChatPromptsForSubscriptionScopeBeforeExecuting(t *testing.T) {
 	t.Parallel()
 
 	knowledge := &testKnowledgePort{
@@ -765,26 +929,29 @@ func TestAgentChatKeepsToolFirstForSubscriptionActionQuestion(t *testing.T) {
 	if reply == "" {
 		t.Fatalf("Chat() reply should not be empty")
 	}
+	if !strings.Contains(reply, "需要先确认订阅范围") {
+		t.Fatalf("reply = %q, want clarify scope prompt", reply)
+	}
+	if !strings.Contains(reply, "全部人员") {
+		t.Fatalf("reply = %q, want clarify options", reply)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(requests) != 2 {
-		t.Fatalf("request count = %d, want 2", len(requests))
+	if len(requests) != 0 {
+		t.Fatalf("request count = %d, want 0", len(requests))
 	}
-	if len(requests[0].Tools) == 0 {
-		t.Fatalf("subscription action request should keep tools")
-	}
-	if requestContains(requests[0], "系统总览#群考勤自动推送") {
-		t.Fatalf("subscription action request should not be knowledge-only, messages = %+v", requests[0].Messages)
+
+	knowledge.mu.Lock()
+	defer knowledge.mu.Unlock()
+	if knowledge.calls != 0 {
+		t.Fatalf("knowledge calls = %d, want 0", knowledge.calls)
 	}
 
 	groupSub.mu.Lock()
 	defer groupSub.mu.Unlock()
-	if groupSub.subscribeCalls != 1 {
-		t.Fatalf("subscribe calls = %d, want 1", groupSub.subscribeCalls)
-	}
-	if groupSub.lastConversation != "conv-subscribe" {
-		t.Fatalf("conversation id = %q, want conv-subscribe", groupSub.lastConversation)
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("subscribe calls = %d, want 0", groupSub.subscribeCalls)
 	}
 }
 
@@ -922,42 +1089,12 @@ func TestAgentChatChecksSubscriptionStatusDirectlyInGroup(t *testing.T) {
 	}
 }
 
-func TestAgentChatAllowsDepartmentOnlyFollowUpAfterSubscriptionClarify(t *testing.T) {
+func TestAgentChatResumesSubscriptionTaskWithDepartmentOnlyReply(t *testing.T) {
 	t.Parallel()
 
 	groupSub := &testGroupSubPort{}
-
-	var requests []capturedChatRequest
-	var mu sync.Mutex
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req capturedChatRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("decode request: %v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		mu.Lock()
-		requests = append(requests, req)
-		current := len(requests)
-		mu.Unlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		switch current {
-		case 1:
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"需要先确认订阅范围。您希望订阅哪个范围的考勤推送？如果只订阅特定部门，请直接回复部门名称。当前可以订阅的部门有：信工24级、信工23级。"},"finish_reason":"stop"}]}`))
-		case 2:
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"subscribe_attendance_push","arguments":"{\"dept_names\":[\"信工24级\"]}"}}]},"finish_reason":"tool_calls"}]}`))
-		case 3:
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"已为此群开启考勤推送（仅限：信工24级）。"},"finish_reason":"stop"}]}`))
-		default:
-			http.Error(w, `{"error":{"message":"unexpected extra request"}}`, http.StatusInternalServerError)
-		}
-	}))
-	defer server.Close()
-
 	a := NewAgent(Deps{
-		LLMBaseURL:     server.URL,
+		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
 		GroupSub:       groupSub,
@@ -982,8 +1119,8 @@ func TestAgentChatAllowsDepartmentOnlyFollowUpAfterSubscriptionClarify(t *testin
 	if err != nil {
 		t.Fatalf("first Chat() error = %v", err)
 	}
-	if !strings.Contains(firstReply, "订阅") {
-		t.Fatalf("first reply = %q, want clarify prompt", firstReply)
+	if !strings.Contains(firstReply, "全部人员") {
+		t.Fatalf("first reply = %q, want scope guidance", firstReply)
 	}
 
 	secondReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -998,17 +1135,8 @@ func TestAgentChatAllowsDepartmentOnlyFollowUpAfterSubscriptionClarify(t *testin
 	if err != nil {
 		t.Fatalf("second Chat() error = %v", err)
 	}
-	if secondReply == outOfDomainReply {
-		t.Fatalf("second reply = %q, should continue previous subscription flow", secondReply)
-	}
 	if !strings.Contains(secondReply, "信工24级") {
 		t.Fatalf("second reply = %q, want selected department echoed", secondReply)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(requests) != 3 {
-		t.Fatalf("request count = %d, want 3", len(requests))
 	}
 
 	groupSub.mu.Lock()
@@ -1021,7 +1149,183 @@ func TestAgentChatAllowsDepartmentOnlyFollowUpAfterSubscriptionClarify(t *testin
 	}
 }
 
-func TestAgentChatRepliesPolitelyToGreeting(t *testing.T) {
+func TestAgentChatResumesManualSignTaskAcrossMultipleReplies(t *testing.T) {
+	t.Parallel()
+
+	attendance := &testTaskAttendancePort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		Attendance:     attendance,
+		User:           testTaskUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	firstReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "帮我补签",
+		ConversationID:   "conv-sign",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("first Chat() error = %v", err)
+	}
+	if !strings.Contains(firstReply, "姓名") {
+		t.Fatalf("first reply = %q, want user guidance", firstReply)
+	}
+
+	secondReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "张三",
+		ConversationID:   "conv-sign",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("second Chat() error = %v", err)
+	}
+	if !strings.Contains(secondReply, "日期") || !strings.Contains(secondReply, "节次") {
+		t.Fatalf("second reply = %q, want date and section guidance", secondReply)
+	}
+
+	thirdReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "今天第一节",
+		ConversationID:   "conv-sign",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("third Chat() error = %v", err)
+	}
+	if !strings.Contains(thirdReply, "张三") {
+		t.Fatalf("third reply = %q, want sign success", thirdReply)
+	}
+
+	attendance.mu.Lock()
+	defer attendance.mu.Unlock()
+	if attendance.signCalls != 1 {
+		t.Fatalf("sign calls = %d, want 1", attendance.signCalls)
+	}
+	if attendance.lastSection != 1 {
+		t.Fatalf("last section = %d, want 1", attendance.lastSection)
+	}
+	if len(attendance.lastUserIDs) != 1 || attendance.lastUserIDs[0] != 99 {
+		t.Fatalf("last user ids = %v, want [99]", attendance.lastUserIDs)
+	}
+}
+
+func TestAgentChatCancelsActiveTaskWhenUserSaysCancel(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		GroupSub:       &testGroupSubPort{},
+		Dept:           testClarifyDeptPort{},
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "开启考勤订阅",
+		ConversationID:    "conv-cancel",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("first Chat() error = %v", err)
+	}
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "取消",
+		ConversationID:    "conv-cancel",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("cancel Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "取消") {
+		t.Fatalf("reply = %q, want cancel acknowledgement", reply)
+	}
+
+	_, task := a.sessions.getSessionState("42:conv-cancel:ding-user")
+	if task != nil {
+		t.Fatalf("active task = %#v, want nil", task)
+	}
+}
+
+func TestAgentChatSwitchesToNewRequestWhenNewBusinessQuestionArrives(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(Deps{
+		LLMBaseURL: "http://127.0.0.1:0",
+		LLMAPIKey:  "test-key",
+		LLMModel:   "test-model",
+		GroupSub: testClarifyGroupSubPort{
+			info: &agenttools.GroupSubInfo{},
+		},
+		Dept:           testClarifyDeptPort{},
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "开启考勤订阅",
+		ConversationID:    "conv-switch",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("first Chat() error = %v", err)
+	}
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "查这个群有没有订阅考勤推送",
+		ConversationID:    "conv-switch",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("switch Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "还没有订阅") {
+		t.Fatalf("reply = %q, want subscription status response", reply)
+	}
+}
+
+func TestAgentChatRepliesPolitelyToGreetingWithoutDomainReject(t *testing.T) {
 	t.Parallel()
 
 	a := NewAgent(Deps{
@@ -1048,7 +1352,7 @@ func TestAgentChatRepliesPolitelyToGreeting(t *testing.T) {
 		t.Fatalf("Chat() error = %v", err)
 	}
 	if reply == outOfDomainReply {
-		t.Fatalf("reply = %q, want greeting reply", reply)
+		t.Fatalf("reply = %q, should not be out-of-domain", reply)
 	}
 	if !strings.Contains(reply, "你好") {
 		t.Fatalf("reply = %q, want greeting", reply)

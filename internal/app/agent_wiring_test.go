@@ -155,6 +155,10 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 		UserName:                "Alice",
 		ConvType:                "1",
 		QueryType:               "rag",
+		ConversationEvent:       "task_follow_up",
+		ActiveTaskType:          "subscribe_attendance_push",
+		TaskStatusBefore:        "waiting_slots",
+		TaskStatusAfter:         "completed",
 		DomainResult:            "in_domain",
 		AnswerMode:              "knowledge-only",
 		Question:                "如果请假信息没能同步到位，会出现什么情况",
@@ -166,6 +170,7 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 		RetrievalCandidateCount: 3,
 		RetrievalTopRefs:        []string{"请假同步说明#3", "系统总览#1"},
 		RetrievalScores:         []int{18, 9},
+		FollowUpMatchedSlots:    []string{"dept_names", "scope"},
 		RetrievalFilteredReason: "no_hits",
 		KnowledgeDocTypes:       []string{"rule", "overview"},
 		RetrievalDurationMs:     12,
@@ -185,6 +190,18 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	if row.AnswerMode != "knowledge-only" {
 		t.Fatalf("AnswerMode = %q, want knowledge-only", row.AnswerMode)
 	}
+	if row.ConversationEvent != "task_follow_up" {
+		t.Fatalf("ConversationEvent = %q, want task_follow_up", row.ConversationEvent)
+	}
+	if row.ActiveTaskType != "subscribe_attendance_push" {
+		t.Fatalf("ActiveTaskType = %q, want subscribe_attendance_push", row.ActiveTaskType)
+	}
+	if row.TaskStatusBefore != "waiting_slots" {
+		t.Fatalf("TaskStatusBefore = %q, want waiting_slots", row.TaskStatusBefore)
+	}
+	if row.TaskStatusAfter != "completed" {
+		t.Fatalf("TaskStatusAfter = %q, want completed", row.TaskStatusAfter)
+	}
 	if row.RetrievalCandidateCount != 3 {
 		t.Fatalf("RetrievalCandidateCount = %d, want 3", row.RetrievalCandidateCount)
 	}
@@ -193,6 +210,9 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	}
 	if row.RetrievalScores != "18,9" {
 		t.Fatalf("RetrievalScores = %q, want 18,9", row.RetrievalScores)
+	}
+	if row.FollowUpMatchedSlots != "dept_names,scope" {
+		t.Fatalf("FollowUpMatchedSlots = %q, want dept_names,scope", row.FollowUpMatchedSlots)
 	}
 	if row.RetrievalFilteredReason != "no_hits" {
 		t.Fatalf("RetrievalFilteredReason = %q, want no_hits", row.RetrievalFilteredReason)

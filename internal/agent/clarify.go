@@ -17,6 +17,66 @@ type clarifyPlan struct {
 	FollowUpPrompt  string
 }
 
+func buildTaskClarifyReply(task *ActiveTask) string {
+	if task == nil {
+		return "请再具体说明你要查询或操作的内容。"
+	}
+
+	switch task.Type {
+	case "subscribe_attendance_push":
+		if containsAnySlot(task.MissingSlots(), "scope") {
+			return "需要先确认订阅范围。你可以回复“全部人员”，也可以直接回复具体部门名称。"
+		}
+		if containsAnySlot(task.MissingSlots(), "dept_names") {
+			return "请直接回复需要订阅的部门名称。"
+		}
+	case "sign_for_user":
+		missing := task.MissingSlots()
+		if len(missing) > 0 {
+			return fmt.Sprintf("我还缺少%s，请补充后我再帮你补签。", strings.Join(localizeSlotNames(missing), "和"))
+		}
+	}
+
+	return "请继续补充当前任务需要的信息。"
+}
+
+func buildUnknownFollowUpReply(task *ActiveTask) string {
+	if task == nil {
+		return "请再具体说明你要查询或操作的内容。"
+	}
+
+	reply := buildTaskClarifyReply(task)
+	if strings.TrimSpace(reply) == "" {
+		return "我没理解你刚才这句是在补充什么信息，请换个更明确的说法。"
+	}
+	return "我没理解你刚才这句是在补充什么信息。" + reply
+}
+
+func localizeSlotNames(slots []string) []string {
+	if len(slots) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(slots))
+	for _, slot := range slots {
+		switch slot {
+		case "scope":
+			names = append(names, "订阅范围")
+		case "dept_names":
+			names = append(names, "部门名称")
+		case "user_name":
+			names = append(names, "姓名")
+		case "date":
+			names = append(names, "日期")
+		case "section":
+			names = append(names, "节次")
+		default:
+			names = append(names, slot)
+		}
+	}
+	return names
+}
+
 func buildClarifyPlan(question string, uctx *tools.UserContext) clarifyPlan {
 	normalized := normalizeQuery(question)
 

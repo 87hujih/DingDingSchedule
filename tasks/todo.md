@@ -1,6 +1,27 @@
 # 任务清单
 
 ## 当前任务
+- [x] 在隔离 worktree 中建立 Agent 会话任务模式的范围内基线，并确认全仓 `internal/ci` 失败不纳入本轮。
+- [x] 为 Agent 增加 `active_task` 会话状态、会话解释器和槽位补全，并补齐单测。
+- [x] 将会话任务模式接入 `Agent.Chat`，覆盖寒暄、多轮补参、取消和新请求切换。
+- [x] 扩展调用日志，记录 `conversation_event / active_task_type / task_status_before / task_status_after / follow_up_matched_slots`，并补齐适配层测试。
+- [x] 完成范围内验证并整理本轮复盘。
+
+## 当前任务复盘
+- 已在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-conversation-task-mode` 中推进 `agent conversation-task-mode` 实现；本轮基线按用户确认收敛到范围内验证，不处理预存的 `internal/ci` workflow 测试失败。
+- `internal/agent/session.go`、`internal/agent/conversation_state.go`、`internal/agent/conversation_interpreter.go`、`internal/agent/task_router.go`、`internal/agent/slot_filler.go` 已建立轻量任务状态层：会话现在除了 history，还会维护 30 分钟过期的 `active_task`，并能区分 `greeting / task_follow_up / new_request / cancel / unknown`。
+- `internal/agent/agent.go`、`internal/agent/clarify.go` 已接入任务状态主流程：像“开启考勤订阅 -> 信工24级”和“补签 -> 今天 -> 第一节 -> 张三”这类跟进消息，不再先被领域门禁拒掉，而是优先按当前任务补槽位、执行工具或继续追问。
+- `internal/agent/tools/types.go`、`internal/model/agent_call_log.go`、`internal/app/agent_wiring.go` 已扩展调用日志字段；现在日志可以区分寒暄、跟进补参、取消和新请求，并记录任务类型、状态流转以及补到的槽位，便于之后排查“为什么回成了那句机械拒答”。
+- 新增或更新的关键回归覆盖包括：`conversation_state_test.go`、`conversation_interpreter_test.go`、`task_router_test.go`、`slot_filler_test.go`、`clarify_test.go`、`agent_rag_test.go`、`agent_wiring_test.go`。
+- 实际验证命令：
+- `go test ./internal/agent -run "TestSessionManager|TestSessionManagerStores|TestSessionManagerClears|TestSessionManagerPurges" -count=1`
+- `go test ./internal/agent -run "TestInterpretConversation" -count=1`
+- `go test ./internal/agent -run "TestBuildTaskFromRequest|TestFillTaskSlots" -count=1`
+- `go test ./internal/agent -run "TestBuildTaskClarifyReplyFor|TestBuildUnknownFollowUpReply|TestAgentChat(Resumes|Cancels|Switches|RepliesPolitely)" -count=1`
+- `go test ./internal/agent/... -count=1`
+- `go test ./internal/app -run "TestCallLogAdapterPersistsDomainModeAndRetrievalDetails" -count=1`
+
+## 当前任务
 - [x] 基于当前 `internal/agent` 的实现，归纳“机械拒答”和“多轮失忆”的根因，不停留在关键词补丁层。
 - [x] 提出 2-3 个从架构层解决问题的方向，比较状态管理、领域策略和回复策略的边界。
 - [x] 与用户确认目标体验优先级，再决定是做强状态机、轻量对话槽位，还是更开放的闲聊兜底。
