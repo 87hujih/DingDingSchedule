@@ -4,7 +4,9 @@
 - [ ] 基于当前 `master` 主链路，收敛“RAG 被饿死”和统一站外拒答的结构性根因，并明确这轮重构的边界。
 - [ ] 输出统一 planner 重构方案，明确 `会话状态 / 领域判断 / 检索预判 / 执行决策 / 拒答策略` 的新顺序。
 - [x] 将已确认方案写入 spec，避免继续在现有 `domainGate + router + taskRouter` 上叠补丁。
-- [ ] 等待用户 review spec；确认后再进入 implementation plan。
+- [x] 等待用户 review spec；确认后进入 implementation plan。
+- [x] 将已确认 spec 拆成 implementation plan，写入 `docs/superpowers/plans/2026-04-04-agent-unified-planner-refactor-plan.md`。
+- [ ] 等待进入 implementation plan 执行阶段。
 - [ ] 在隔离 worktree 中按 TDD 重构 `internal/agent` 主编排，并补范围回归测试。
 - [ ] 完成范围内验证、合并准备和复盘记录。
 
