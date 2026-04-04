@@ -268,84 +268,43 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	}
 	applyConversationMetrics(&metrics, beforeTask, nil, nil)
 
-	// 7. 先做领域门禁，站外问题直接拒答，不进入检索与 LLM。
-	domainResult := domainOut
-	if a.domainGate != nil {
-		domainResult = a.domainGate.Check(msg.Content)
+	normalized := normalizeQuery(msg.Content)
+	if hasHelpIntent(normalized) {
+		reply := buildHelpReply(uctx)
+		metrics.DomainResult = domainIn
+		metrics.QueryType = queryKindTool
+		metrics.AnswerMode = answerModeToolFirst
+		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return reply, nil
 	}
-	metrics.DomainResult = domainResult
-	if domainResult != domainIn {
-		a.deps.Logger.Infow("站外问题，直接拒答", "user", uctx.Name, "question", msg.Content)
-		metrics.QueryType = modeToQueryKind(answerModeReject)
+
+	domainHint := domainHintUnknown
+	if a.domainGate != nil {
+		domainHint = a.domainGate.Hint(msg.Content)
+	}
+	if domainHint == domainHintObviousOut {
+		metrics.DomainResult = domainOut
+		a.deps.Logger.Infow("明显站外问题，直接拒答", "user", uctx.Name, "question", msg.Content)
+		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeReject
 		reply := outOfDomainReply
 		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
 		return reply, nil
 	}
+	metrics.DomainResult = domainIn
 
-	if task := buildTaskFromRequest(msg.Content, uctx); task != nil {
-		reply, taskTools, err := a.respondForTaskState(ctx, uctx, sessionKey, task)
-		if err != nil {
-			applyConversationMetrics(&metrics, beforeTask, task, nil)
-			a.deps.Logger.Errorw("task request 执行失败", "user", uctx.Name, "question", msg.Content, "err", err)
-			a.writeCallLog(ctx, uctx, msg.Content, "", taskTools, 0, startTime, "failed", err.Error(), metrics)
-			return "系统错误，请稍后重试", nil
-		}
-		afterTask := task
-		if task.Status == taskStatusReady {
-			afterTask = taskWithStatus(task, taskStatusCompleted)
-		}
-		applyConversationMetrics(&metrics, beforeTask, afterTask, nil)
-		metrics.QueryType = queryKindTool
-		metrics.AnswerMode = answerModeToolFirst
-		toolsCalled = append(toolsCalled, taskTools...)
-		a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, 0, startTime, "success", "", metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return reply, nil
-	}
-
-	initialDecision := a.router.DecideIntent(msg.Content, domainResult, RetrievalResult{})
-	switch initialDecision.Intent {
-	case intentHelp:
-		reply := buildHelpReply(uctx)
-		metrics.QueryType = modeToQueryKind(initialDecision.AnswerMode)
-		metrics.AnswerMode = initialDecision.AnswerMode
-		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return reply, nil
-	case intentClarify:
-		reply, clarifyTools, err := a.handleClarifyIntent(ctx, uctx, msg.Content)
-		if err != nil {
-			a.deps.Logger.Errorw("clarify 执行失败", "user", uctx.Name, "question", msg.Content, "err", err)
-			a.writeCallLog(ctx, uctx, msg.Content, "", clarifyTools, 0, startTime, "failed", err.Error(), metrics)
-			return "系统错误，请稍后重试", nil
-		}
-		if reply == "" {
-			reply = "请再具体说明你要查询或操作的内容。"
-		}
-		toolsCalled = append(toolsCalled, clarifyTools...)
-		metrics.QueryType = modeToQueryKind(initialDecision.AnswerMode)
-		metrics.AnswerMode = initialDecision.AnswerMode
-		a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, 0, startTime, "success", "", metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return reply, nil
-	}
-
+	taskCandidate := buildTaskFromRequest(msg.Content, uctx)
 	retrievalResult := RetrievalResult{}
-	shouldRetrieveKnowledge := initialDecision.Intent == intentRule || initialDecision.Intent == intentMixed
-	if shouldRetrieveKnowledge && a.deps.Knowledge != nil {
+	if a.deps.Knowledge != nil && taskCandidate == nil {
 		retrievalStart := time.Now()
 		retrievalResult, err = a.retrieveKnowledge(ctx, uctx.TenantID, msg.Content)
 		metrics.RetrievalDurationMs = elapsedMs(retrievalStart)
 		if err != nil {
-			a.deps.Logger.Errorw("知识检索失败", "user", uctx.Name, "question", msg.Content, "err", err)
-			if initialDecision.Intent != intentMixed {
-				return "规则知识检索暂时不可用，请稍后重试", nil
-			}
+			a.deps.Logger.Errorw("知识预检失败", "user", uctx.Name, "question", msg.Content, "err", err)
 			retrievalResult = RetrievalResult{}
 		}
 	}
-
 	metrics.RetrievalHitCount = len(retrievalResult.Hits)
 	metrics.RetrievalCandidateCount = retrievalResult.CandidateCount
 	metrics.SourceRefs = append([]string(nil), retrievalResult.TopRefs...)
@@ -353,18 +312,87 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	metrics.RetrievalScores = append([]int(nil), retrievalResult.TopScores...)
 	metrics.RetrievalFilteredReason = retrievalResult.FilteredReason
 	metrics.KnowledgeDocTypes = append([]string(nil), retrievalResult.KnowledgeDocTypes...)
-	decision := initialDecision
-	if shouldRetrieveKnowledge {
-		decision = a.router.DecideIntent(msg.Content, domainResult, retrievalResult)
+
+	planDecision := plan(PlanInput{
+		Question:          msg.Content,
+		UserContext:       uctx,
+		History:           history,
+		ActiveTask:        nil,
+		ConversationEvent: conversationDecision,
+		DomainHint:        domainHint,
+		Retrieval:         retrievalResult,
+		TaskCandidate:     taskCandidate,
+		HasLiveSignal:     hasLiveSignal(normalized),
+		HasRuleSignal:     hasRuleSignal(normalized),
+		HasActionIntent:   hasActionIntent(normalized),
+		HasClarifyIntent:  hasClarifyIntent(normalized),
+		HasHelpIntent:     hasHelpIntent(normalized),
+	})
+
+	switch planDecision.Kind {
+	case planKindClarify:
+		if planDecision.ActiveTask != nil {
+			reply, taskTools, err := a.respondForTaskState(ctx, uctx, sessionKey, planDecision.ActiveTask)
+			if err != nil {
+				applyConversationMetrics(&metrics, beforeTask, planDecision.ActiveTask, nil)
+				a.deps.Logger.Errorw("planner clarify 执行失败", "user", uctx.Name, "question", msg.Content, "err", err)
+				a.writeCallLog(ctx, uctx, msg.Content, "", taskTools, 0, startTime, "failed", err.Error(), metrics)
+				return "系统错误，请稍后重试", nil
+			}
+			applyConversationMetrics(&metrics, beforeTask, planDecision.ActiveTask, nil)
+			metrics.QueryType = queryKindTool
+			metrics.AnswerMode = answerModeToolFirst
+			toolsCalled = append(toolsCalled, taskTools...)
+			a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, 0, startTime, "success", "", metrics)
+			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+			return reply, nil
+		}
+		reply := buildPlannerClarifyReply(planDecision.ClarifyReason, nil)
+		metrics.QueryType = queryKindTool
+		metrics.AnswerMode = answerModeToolFirst
+		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return reply, nil
+	case planKindTool:
+		if planDecision.ActiveTask != nil {
+			reply, taskTools, err := a.respondForTaskState(ctx, uctx, sessionKey, planDecision.ActiveTask)
+			if err != nil {
+				applyConversationMetrics(&metrics, beforeTask, planDecision.ActiveTask, nil)
+				a.deps.Logger.Errorw("planner task 执行失败", "user", uctx.Name, "question", msg.Content, "err", err)
+				a.writeCallLog(ctx, uctx, msg.Content, "", taskTools, 0, startTime, "failed", err.Error(), metrics)
+				return "系统错误，请稍后重试", nil
+			}
+			afterTask := planDecision.ActiveTask
+			if afterTask != nil && afterTask.Status == taskStatusReady {
+				afterTask = taskWithStatus(afterTask, taskStatusCompleted)
+			}
+			applyConversationMetrics(&metrics, beforeTask, afterTask, nil)
+			metrics.QueryType = queryKindTool
+			metrics.AnswerMode = answerModeToolFirst
+			toolsCalled = append(toolsCalled, taskTools...)
+			a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, 0, startTime, "success", "", metrics)
+			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+			return reply, nil
+		}
 	}
-	answerMode := decision.AnswerMode
+
+	answerMode := answerModeToolFirst
+	switch planDecision.Kind {
+	case planKindRAG:
+		answerMode = answerModeKnowledgeOnly
+	case planKindMixed:
+		answerMode = answerModeMixed
+	case planKindTool:
+		answerMode = answerModeToolFirst
+	}
 	metrics.QueryType = modeToQueryKind(answerMode)
 	metrics.AnswerMode = answerMode
 
-	if answerMode == answerModeReject {
-		a.deps.Logger.Infow("领域内问题无有效知识命中，直接拒答", "user", uctx.Name, "question", msg.Content)
-		a.writeCallLog(ctx, uctx, msg.Content, noKnowledgeReply, nil, 0, startTime, "success", "", metrics)
-		return noKnowledgeReply, nil
+	if answerMode == answerModeKnowledgeOnly && classifyKnowledgeStrength(retrievalResult) != knowledgeStrengthStrong {
+		reply := buildPlannerClarifyReply("weak_knowledge_match", nil)
+		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return reply, nil
 	}
 
 	// 8. 构建完整消息列表（system + retrieval prompt + history + 当前用户消息）

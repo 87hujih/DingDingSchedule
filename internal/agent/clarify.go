@@ -52,6 +52,23 @@ func buildUnknownFollowUpReply(task *ActiveTask) string {
 	return "我没理解你刚才这句是在补充什么信息。" + reply
 }
 
+func buildPlannerClarifyReply(reason string, task *ActiveTask) string {
+	switch reason {
+	case "missing_slots":
+		if task != nil {
+			return buildTaskClarifyReply(task)
+		}
+	case "weak_knowledge_match":
+		return "我先没法确认你具体想问哪一类规则或处理方式。请补充更具体的场景，比如涉及哪类考勤、请假或订阅问题。"
+	case "weak_domain_match", "ambiguous_request":
+		return "我还没完全理解你的意思。你可以直接说明要查哪类课表、考勤、请假、补签或订阅问题。"
+	}
+	if task != nil {
+		return buildTaskClarifyReply(task)
+	}
+	return "请再具体说明你要查询或操作的内容。"
+}
+
 func localizeSlotNames(slots []string) []string {
 	if len(slots) == 0 {
 		return nil

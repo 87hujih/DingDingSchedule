@@ -766,6 +766,132 @@ func TestAgentChatWritesConversationTaskMetricsToCallLog(t *testing.T) {
 	}
 }
 
+func TestAgentDoesNotRejectUnknownBusinessLikeMessageBeforeRetrieval(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		Knowledge:      &testKnowledgePort{},
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "同步失败会怎样",
+		ConversationID:   "conv-unknown-business-like",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if reply == outOfDomainReply {
+		t.Fatalf("reply = %q, should not reject business-like message before retrieval", reply)
+	}
+}
+
+func TestAgentUsesRetrievalPrepassForNonObviousOutRequest(t *testing.T) {
+	t.Parallel()
+
+	knowledge := &testKnowledgePort{
+		hits: []agenttools.KnowledgeHit{
+			{
+				Title:     "系统说明",
+				Heading:   "同步异常",
+				Body:      "同步异常需要管理员进一步确认。",
+				SourceRef: "系统说明#同步异常",
+				Score:     3,
+			},
+		},
+	}
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		Knowledge:      knowledge,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "同步失败会怎样",
+		ConversationID:   "conv-retrieval-prepass",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+
+	knowledge.mu.Lock()
+	defer knowledge.mu.Unlock()
+	if knowledge.calls != 1 {
+		t.Fatalf("knowledge calls = %d, want 1", knowledge.calls)
+	}
+}
+
+func TestAgentClarifiesWeakKnowledgeMatchInsteadOfRejecting(t *testing.T) {
+	t.Parallel()
+
+	knowledge := &testKnowledgePort{
+		hits: []agenttools.KnowledgeHit{
+			{
+				Title:     "系统说明",
+				Heading:   "同步异常",
+				Body:      "同步异常需要管理员进一步确认。",
+				SourceRef: "系统说明#同步异常",
+				Score:     3,
+			},
+		},
+	}
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		Knowledge:      knowledge,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "考勤同步异常怎么处理",
+		ConversationID:   "conv-weak-knowledge",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if reply == outOfDomainReply {
+		t.Fatalf("reply = %q, should not be out-of-domain", reply)
+	}
+	if reply == noKnowledgeReply {
+		t.Fatalf("reply = %q, should clarify instead of rejecting weak knowledge match", reply)
+	}
+}
+
 // TestAgentChatInjectsKnowledgeContextBeforeToolCallsForMixedQuestions 验证 mixed 路径会在保留工具时注入知识上下文。
 func TestAgentChatInjectsKnowledgeContextBeforeToolCallsForMixedQuestions(t *testing.T) {
 	t.Parallel()
