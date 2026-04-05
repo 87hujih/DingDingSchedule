@@ -234,6 +234,14 @@ type CallLog struct {
 	PlanKind                string
 	KnowledgeStrength       string
 	PlannerReason           string
+	PlannerAction           string
+	PlannerConfidence       float64
+	TaskID                  string
+	TaskKeepOpen            bool
+	TaskSwitch              bool
+	LastErrorCode           string
+	ShadowPlannerAction     string
+	ShadowPlannerMatched    bool
 	AnswerMode              string
 	Question                string
 	ToolsCalled             []string // 调用的工具名列表

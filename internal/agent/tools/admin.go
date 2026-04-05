@@ -46,7 +46,8 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 		}
 		if len(users) == 0 {
 			return marshalJSON(map[string]interface{}{
-				"error": fmt.Sprintf("找不到用户「%s」，请确认姓名", p.UserName),
+				"error":      fmt.Sprintf("找不到用户「%s」，请确认姓名", p.UserName),
+				"error_code": "user_name_not_found",
 			})
 		}
 		if len(users) > 1 {
@@ -55,8 +56,10 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 				names[i] = u.Name
 			}
 			return marshalJSON(map[string]interface{}{
-				"error": fmt.Sprintf("找到%d个同名用户，请提供更精确的姓名", len(users)),
-				"users": names,
+				"error":           fmt.Sprintf("找到%d个同名用户，请提供更精确的姓名", len(users)),
+				"error_code":      "user_name_ambiguous",
+				"candidate_users": names,
+				"users":           names,
 			})
 		}
 

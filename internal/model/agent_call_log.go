@@ -19,6 +19,14 @@ type AgentCallLog struct {
 	PlanKind                string `gorm:"size:32"`
 	KnowledgeStrength       string `gorm:"size:16"`
 	PlannerReason           string `gorm:"size:64"`
+	PlannerAction           string `gorm:"size:32"`
+	PlannerConfidence       float64
+	TaskID                  string `gorm:"size:64"`
+	TaskKeepOpen            bool
+	TaskSwitch              bool
+	LastErrorCode           string `gorm:"size:64"`
+	ShadowPlannerAction     string `gorm:"size:32"`
+	ShadowPlannerMatched    bool
 	AnswerMode              string `gorm:"size:32"`
 	Question                string `gorm:"type:text"` // 用户提问
 	ToolsCalled             string `gorm:"size:500"`  // 调用的工具，逗号分隔

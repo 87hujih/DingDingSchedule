@@ -99,3 +99,41 @@ func TestSessionManagerPurgesExpiredTaskStateWithSession(t *testing.T) {
 		t.Fatalf("active task = %#v, want nil", task)
 	}
 }
+
+func TestSessionManagerStoresTaskInstance(t *testing.T) {
+	t.Parallel()
+
+	sm := newSessionManager()
+	key := "tenant:user"
+
+	sm.setTaskInstance(key, &TaskInstance{
+		ID:           "task-1",
+		Type:         "subscribe_attendance_push",
+		Status:       "waiting_slots",
+		Slots:        map[string]string{"scope": "department"},
+		MissingSlots: []string{"dept_names"},
+		ExpiresAt:    time.Now().Add(sessionTTL),
+	})
+
+	_, task := sm.getTaskState(key)
+	if task == nil {
+		t.Fatalf("task memory = nil, want value")
+	}
+	if task.ID != "task-1" {
+		t.Fatalf("task ID = %q, want task-1", task.ID)
+	}
+	if task.Type != "subscribe_attendance_push" {
+		t.Fatalf("task type = %q, want subscribe_attendance_push", task.Type)
+	}
+
+	_, legacyTask := sm.getSessionState(key)
+	if legacyTask == nil {
+		t.Fatalf("legacy active task = nil, want compatibility value")
+	}
+	if legacyTask.Type != "subscribe_attendance_push" {
+		t.Fatalf("legacy task type = %q, want subscribe_attendance_push", legacyTask.Type)
+	}
+	if legacyTask.FilledSlots["scope"] != "department" {
+		t.Fatalf("legacy task scope = %q, want department", legacyTask.FilledSlots["scope"])
+	}
+}

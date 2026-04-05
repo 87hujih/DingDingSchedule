@@ -164,6 +164,14 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 		PlanKind:                "clarify",
 		KnowledgeStrength:       "weak",
 		PlannerReason:           "weak_domain_match",
+		PlannerAction:           "continue_task",
+		PlannerConfidence:       0.82,
+		TaskID:                  "task-123",
+		TaskKeepOpen:            true,
+		TaskSwitch:              false,
+		LastErrorCode:           "department_name_not_found",
+		ShadowPlannerAction:     "clarify",
+		ShadowPlannerMatched:    false,
 		AnswerMode:              "knowledge-only",
 		Question:                "如果请假信息没能同步到位，会出现什么情况",
 		ToolsCalled:             []string{"get_current_time"},
@@ -202,6 +210,30 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	}
 	if row.PlannerReason != "weak_domain_match" {
 		t.Fatalf("PlannerReason = %q, want weak_domain_match", row.PlannerReason)
+	}
+	if row.PlannerAction != "continue_task" {
+		t.Fatalf("PlannerAction = %q, want continue_task", row.PlannerAction)
+	}
+	if row.PlannerConfidence != 0.82 {
+		t.Fatalf("PlannerConfidence = %v, want 0.82", row.PlannerConfidence)
+	}
+	if row.TaskID != "task-123" {
+		t.Fatalf("TaskID = %q, want task-123", row.TaskID)
+	}
+	if !row.TaskKeepOpen {
+		t.Fatalf("TaskKeepOpen = false, want true")
+	}
+	if row.TaskSwitch {
+		t.Fatalf("TaskSwitch = true, want false")
+	}
+	if row.LastErrorCode != "department_name_not_found" {
+		t.Fatalf("LastErrorCode = %q, want department_name_not_found", row.LastErrorCode)
+	}
+	if row.ShadowPlannerAction != "clarify" {
+		t.Fatalf("ShadowPlannerAction = %q, want clarify", row.ShadowPlannerAction)
+	}
+	if row.ShadowPlannerMatched {
+		t.Fatalf("ShadowPlannerMatched = true, want false")
 	}
 	if row.AnswerMode != "knowledge-only" {
 		t.Fatalf("AnswerMode = %q, want knowledge-only", row.AnswerMode)

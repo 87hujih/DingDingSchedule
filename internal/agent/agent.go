@@ -54,6 +54,7 @@ type Agent struct {
 	deps        Deps
 	llmClient   *LLMClient
 	registry    *tools.Registry
+	runtime     *taskRuntime
 	domainGate  *domainGate
 	router      *queryRouter
 	sessions    *sessionManager
@@ -73,6 +74,14 @@ type callMetrics struct {
 	PlanKind                PlanKind
 	KnowledgeStrength       KnowledgeStrength
 	PlannerReason           string
+	PlannerAction           string
+	PlannerConfidence       float64
+	TaskID                  string
+	TaskKeepOpen            bool
+	TaskSwitch              bool
+	LastErrorCode           string
+	ShadowPlannerAction     string
+	ShadowPlannerMatched    bool
 	AnswerMode              answerMode
 	LLMDurationMs           int64
 	RetrievalDurationMs     int64
@@ -89,9 +98,14 @@ type callMetrics struct {
 // NewAgent 创建 Agent
 func NewAgent(deps Deps) *Agent {
 	a := &Agent{
-		deps:        deps,
-		llmClient:   NewLLMClient(deps.LLMBaseURL, deps.LLMAPIKey, deps.LLMModel),
-		sessions:    newSessionManager(),
+		deps:      deps,
+		llmClient: NewLLMClient(deps.LLMBaseURL, deps.LLMAPIKey, deps.LLMModel),
+		sessions:  newSessionManager(),
+		runtime: newTaskRuntime([]TaskHandler{
+			newSubscribeTaskHandler(),
+			newSubscriptionStatusTaskHandler(),
+			newManualSignTaskHandler(),
+		}),
 		domainGate:  newDomainGate(),
 		router:      newQueryRouter(),
 		limiter:     newRateLimiter(),
@@ -212,22 +226,44 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	userMsg := tools.Message{Role: "user", Content: msg.Content}
 	metrics := callMetrics{}
 	beforeTask := cloneActiveTask(activeTask)
+	shadowTask := plannerTaskFromLegacyTask(sessionKey, activeTask)
+	shadowDecision := planConversation(PlannerInput{
+		Message:     msg.Content,
+		ActiveTask:  shadowTask,
+		UserContext: uctx,
+	})
+	applyShadowPlannerMetrics(&metrics, shadowDecision, shadowTask)
+	normalized := normalizeQuery(msg.Content)
+	domainHint := domainHintUnknown
+	if a.domainGate != nil {
+		domainHint = a.domainGate.Hint(msg.Content)
+	}
+	metrics.DomainHint = domainHint
 
-	conversationDecision := interpretConversation(msg.Content, activeTask)
-	metrics.ConversationEvent = conversationDecision.Event
-	switch conversationDecision.Event {
-	case eventGreeting:
+	if hasGreetingIntent(normalized) {
+		recordLegacyPlannerAction(&metrics, plannerActionSocialRefuse)
 		reply := buildGreetingReply(uctx)
 		applyConversationMetrics(&metrics, beforeTask, beforeTask, nil)
+		metrics.ConversationEvent = eventGreeting
 		metrics.DomainResult = domainIn
 		metrics.PlanKind = planKindTool
-		metrics.PlannerReason = conversationDecision.Reason
+		metrics.PlannerReason = "greeting"
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
 		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return reply, nil
+	}
+
+	if handled, reply, err := a.tryHandlePlannerPrimary(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, beforeTask, &metrics, shadowDecision); handled {
+		return reply, err
+	}
+
+	conversationDecision := interpretConversation(msg.Content, activeTask)
+	metrics.ConversationEvent = conversationDecision.Event
+	switch conversationDecision.Event {
 	case eventCancel:
+		recordLegacyPlannerAction(&metrics, plannerActionCancelTask)
 		a.sessions.clearActiveTask(sessionKey)
 		reply := "已取消当前任务。如需继续，请重新告诉我。"
 		applyConversationMetrics(&metrics, beforeTask, taskWithStatus(beforeTask, taskStatusCanceled), nil)
@@ -240,6 +276,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return reply, nil
 	case eventTaskFollowUp:
+		recordLegacyPlannerAction(&metrics, plannerActionContinueTask)
 		fill := fillTaskSlots(activeTask, msg.Content)
 		nextTask := applySlotFillToTask(activeTask, fill)
 		reply, followUpTools, resultingTask, err := a.respondForTaskState(ctx, uctx, sessionKey, nextTask)
@@ -265,6 +302,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return reply, nil
 	case eventUnknown:
+		recordLegacyPlannerAction(&metrics, plannerActionTaskMeta)
 		reply := buildUnknownFollowUpReply(activeTask)
 		applyConversationMetrics(&metrics, beforeTask, beforeTask, nil)
 		metrics.DomainResult = domainIn
@@ -282,8 +320,8 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	}
 	applyConversationMetrics(&metrics, beforeTask, nil, nil)
 
-	normalized := normalizeQuery(msg.Content)
 	if hasHelpIntent(normalized) {
+		recordLegacyPlannerAction(&metrics, plannerActionSocialRefuse)
 		reply := buildHelpReply(uctx)
 		metrics.DomainResult = domainIn
 		metrics.PlanKind = planKindTool
@@ -294,13 +332,22 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return reply, nil
 	}
-
-	domainHint := domainHintUnknown
-	if a.domainGate != nil {
-		domainHint = a.domainGate.Hint(msg.Content)
+	if shadowDecision.Action == plannerActionSocialRefuse {
+		recordLegacyPlannerAction(&metrics, plannerActionSocialRefuse)
+		reply := composePlannerReply(shadowDecision, nil, nil)
+		metrics.DomainResult = domainIn
+		metrics.PlanKind = planKindClarify
+		metrics.KnowledgeStrength = knowledgeStrengthNone
+		metrics.PlannerReason = shadowDecision.Reason
+		metrics.QueryType = queryKindTool
+		metrics.AnswerMode = answerModeReject
+		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return reply, nil
 	}
-	metrics.DomainHint = domainHint
+
 	if domainHint == domainHintObviousOut {
+		recordLegacyPlannerAction(&metrics, plannerActionOffTopicReject)
 		metrics.DomainResult = domainOut
 		metrics.PlanKind = planKindObviousOut
 		metrics.KnowledgeStrength = knowledgeStrengthNone
@@ -308,7 +355,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		a.deps.Logger.Infow("明显站外问题，直接拒答", "user", uctx.Name, "question", msg.Content)
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeReject
-		reply := outOfDomainReply
+		reply := composePlannerReply(PlannerDecision{Action: plannerActionOffTopicReject}, nil, nil)
 		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
 		return reply, nil
 	}
@@ -355,6 +402,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	switch planDecision.Kind {
 	case planKindClarify:
 		if planDecision.ActiveTask != nil {
+			recordLegacyPlannerAction(&metrics, legacyTaskPlannerAction(beforeTask, planDecision.ActiveTask))
 			reply, taskTools, resultingTask, err := a.respondForTaskState(ctx, uctx, sessionKey, planDecision.ActiveTask)
 			if err != nil {
 				applyConversationMetrics(&metrics, beforeTask, resultingTaskOrFallback(resultingTask, planDecision.ActiveTask), nil)
@@ -370,6 +418,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 			return reply, nil
 		}
+		recordLegacyPlannerAction(&metrics, plannerActionTaskMeta)
 		reply := buildPlannerClarifyReply(planDecision.ClarifyReason, nil)
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
@@ -378,6 +427,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		return reply, nil
 	case planKindTool:
 		if planDecision.ActiveTask != nil {
+			recordLegacyPlannerAction(&metrics, legacyTaskPlannerAction(beforeTask, planDecision.ActiveTask))
 			reply, taskTools, resultingTask, err := a.respondForTaskState(ctx, uctx, sessionKey, planDecision.ActiveTask)
 			if err != nil {
 				applyConversationMetrics(&metrics, beforeTask, resultingTaskOrFallback(resultingTask, planDecision.ActiveTask), nil)
@@ -397,6 +447,10 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 			return reply, nil
 		}
+	}
+
+	if metrics.ShadowPlannerAction == "" {
+		recordLegacyPlannerAction(&metrics, plannerActionSocialRefuse)
 	}
 
 	answerMode := answerModeToolFirst
@@ -514,6 +568,10 @@ func (a *Agent) respondForTaskState(ctx context.Context, uctx *tools.UserContext
 		return "请再具体说明你要查询或操作的内容。", nil, nil, nil
 	}
 
+	if reply, toolsCalled, nextTask, handled, err := a.respondForRuntimeTaskState(ctx, uctx, sessionKey, task); handled {
+		return reply, toolsCalled, nextTask, err
+	}
+
 	if task.Status == taskStatusReady {
 		reply, toolsCalled, nextTask, err := a.executeReadyTask(ctx, uctx, task)
 		if err != nil {
@@ -543,6 +601,299 @@ func (a *Agent) respondForTaskState(ctx context.Context, uctx *tools.UserContext
 	}
 
 	return buildTaskClarifyReply(task), nil, cloneActiveTask(task), nil
+}
+
+func (a *Agent) respondForRuntimeTaskState(ctx context.Context, uctx *tools.UserContext, sessionKey string, task *ActiveTask) (string, []string, *ActiveTask, bool, error) {
+	if a.runtime == nil || task == nil {
+		return "", nil, nil, false, nil
+	}
+
+	taskMemory := a.runtimeTaskMemory(sessionKey, task)
+	handler, dispatch := a.runtime.resolveRuntimeHandler(taskMemory)
+	if dispatch.FallbackReason != "" {
+		return "", nil, nil, false, nil
+	}
+
+	if taskMemory.Status == string(taskStatusReady) {
+		result, toolsCalled, err := handler.Execute(ctx, taskMemory, uctx, a.registry)
+		if err != nil {
+			return "", toolsCalled, activeTaskFromTaskInstance(taskMemory), true, err
+		}
+		if result.KeepTaskOpen {
+			a.sessions.setTaskInstance(sessionKey, taskMemory)
+			return result.Reply, toolsCalled, activeTaskFromTaskInstance(taskMemory), true, nil
+		}
+		a.sessions.clearTaskInstance(sessionKey)
+		return result.Reply, toolsCalled, nil, true, nil
+	}
+
+	toolsCalled, err := handler.Prepare(ctx, taskMemory, a.deps)
+	if err != nil {
+		return "", toolsCalled, activeTaskFromTaskInstance(taskMemory), true, err
+	}
+	a.sessions.setTaskInstance(sessionKey, taskMemory)
+	reply := handler.BuildClarifyReply(taskMemory)
+	if strings.TrimSpace(reply) == "" {
+		reply = buildTaskClarifyReply(activeTaskFromTaskInstance(taskMemory))
+	}
+	return reply, toolsCalled, activeTaskFromTaskInstance(taskMemory), true, nil
+}
+
+func (a *Agent) runtimeTaskMemory(sessionKey string, task *ActiveTask) *TaskInstance {
+	if task == nil {
+		return nil
+	}
+
+	_, current := a.sessions.getTaskState(sessionKey)
+	var next *TaskInstance
+	if current != nil && current.Type == task.Type {
+		next = cloneTaskInstance(current)
+	} else {
+		next = plannerTaskFromLegacyTask(sessionKey, task)
+	}
+	if next == nil {
+		next = plannerTaskFromLegacyTask(sessionKey, task)
+	}
+	if next == nil {
+		return nil
+	}
+
+	next.Type = task.Type
+	next.Status = string(task.Status)
+	next.Slots = cloneTaskSlots(task.FilledSlots)
+	next.MissingSlots = append([]string(nil), task.MissingSlots()...)
+	next.ExpiresAt = task.ExpiresAt
+	if next.ID == "" {
+		next.ID = fmt.Sprintf("%s:%s", sessionKey, task.Type)
+	}
+	return next
+}
+
+func (a *Agent) tryHandlePlannerPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, beforeTask *ActiveTask, metrics *callMetrics, decision PlannerDecision) (bool, string, error) {
+	if !shouldHandlePlannerPrimary(decision, beforeTask) {
+		return false, "", nil
+	}
+
+	recordLegacyPlannerAction(metrics, a.legacyPlannerPrimaryAction(question, beforeTask, uctx))
+	metrics.ConversationEvent = plannerConversationEvent(decision, beforeTask)
+
+	switch decision.Action {
+	case plannerActionOffTopicReject:
+		reply := composePlannerReply(decision, nil, nil)
+		applyConversationMetrics(metrics, beforeTask, nil, nil)
+		metrics.DomainResult = domainOut
+		metrics.PlanKind = planKindObviousOut
+		metrics.KnowledgeStrength = knowledgeStrengthNone
+		metrics.PlannerReason = decision.Reason
+		metrics.QueryType = queryKindTool
+		metrics.AnswerMode = answerModeReject
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		return true, reply, nil
+	case plannerActionSocialRefuse:
+		reply := composePlannerReply(decision, nil, nil)
+		applyConversationMetrics(metrics, beforeTask, beforeTask, nil)
+		metrics.DomainResult = domainIn
+		metrics.PlanKind = planKindClarify
+		metrics.KnowledgeStrength = knowledgeStrengthNone
+		metrics.PlannerReason = decision.Reason
+		metrics.QueryType = queryKindTool
+		metrics.AnswerMode = answerModeReject
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	case plannerActionCancelTask:
+		a.sessions.clearTaskInstance(sessionKey)
+		reply := composePlannerReply(decision, nil, nil)
+		applyConversationMetrics(metrics, beforeTask, taskWithStatus(beforeTask, taskStatusCanceled), nil)
+		metrics.DomainResult = domainIn
+		metrics.PlanKind = planKindTool
+		metrics.KnowledgeStrength = knowledgeStrengthNone
+		metrics.PlannerReason = decision.Reason
+		metrics.QueryType = queryKindTool
+		metrics.AnswerMode = answerModeToolFirst
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	case plannerActionTaskMeta:
+		taskMemory := a.runtimeTaskMemory(sessionKey, beforeTask)
+		if taskMemory == nil {
+			return false, "", nil
+		}
+		var toolsCalled []string
+		if a.runtime != nil {
+			if handler, dispatch := a.runtime.resolveRuntimeHandler(taskMemory); dispatch.FallbackReason == "" {
+				var err error
+				toolsCalled, err = handler.Prepare(ctx, taskMemory, a.deps)
+				if err != nil {
+					applyConversationMetrics(metrics, beforeTask, activeTaskFromTaskInstance(taskMemory), nil)
+					metrics.DomainResult = domainIn
+					metrics.PlanKind = planKindClarify
+					metrics.KnowledgeStrength = knowledgeStrengthNone
+					metrics.PlannerReason = decision.Reason
+					metrics.QueryType = queryKindTool
+					metrics.AnswerMode = answerModeToolFirst
+					a.writeCallLog(ctx, uctx, question, "", toolsCalled, 0, startTime, "failed", err.Error(), *metrics)
+					return true, "系统错误，请稍后重试", nil
+				}
+			}
+		}
+		reply := composePlannerReply(decision, taskMemory, nil)
+		a.sessions.setTaskInstance(sessionKey, taskMemory)
+		afterTask := activeTaskFromTaskInstance(taskMemory)
+		applyConversationMetrics(metrics, beforeTask, afterTask, nil)
+		metrics.DomainResult = domainIn
+		metrics.PlanKind = planKindClarify
+		metrics.KnowledgeStrength = knowledgeStrengthNone
+		metrics.PlannerReason = decision.Reason
+		metrics.QueryType = queryKindTool
+		metrics.AnswerMode = answerModeToolFirst
+		a.writeCallLog(ctx, uctx, question, reply, toolsCalled, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	case plannerActionStartTask, plannerActionContinueTask:
+		nextTask, matchedSlots := a.plannerTaskFromDecision(sessionKey, beforeTask, question, uctx, decision)
+		if nextTask == nil {
+			return false, "", nil
+		}
+
+		reply, taskTools, resultingTask, err := a.respondForTaskState(ctx, uctx, sessionKey, nextTask)
+		if err != nil {
+			applyConversationMetrics(metrics, beforeTask, resultingTaskOrFallback(resultingTask, nextTask), matchedSlots)
+			a.writeCallLog(ctx, uctx, question, "", taskTools, 0, startTime, "failed", err.Error(), *metrics)
+			return true, "系统错误，请稍后重试", nil
+		}
+
+		afterTask := resultingTask
+		if afterTask == nil && nextTask.Status == taskStatusReady {
+			afterTask = taskWithStatus(nextTask, taskStatusCompleted)
+		}
+		applyConversationMetrics(metrics, beforeTask, afterTask, matchedSlots)
+		metrics.DomainResult = domainIn
+		metrics.PlanKind = plannerPrimaryPlanKind(decision, nextTask)
+		metrics.KnowledgeStrength = knowledgeStrengthNone
+		metrics.PlannerReason = plannerPrimaryReason(decision, nextTask)
+		metrics.QueryType = queryKindTool
+		metrics.AnswerMode = answerModeToolFirst
+		a.writeCallLog(ctx, uctx, question, reply, taskTools, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	}
+
+	return false, "", nil
+}
+
+func shouldHandlePlannerPrimary(decision PlannerDecision, activeTask *ActiveTask) bool {
+	switch decision.Action {
+	case plannerActionOffTopicReject, plannerActionSocialRefuse:
+		return true
+	case plannerActionTaskMeta, plannerActionCancelTask, plannerActionContinueTask:
+		return activeTask != nil && isMigratedTaskType(activeTask.Type)
+	case plannerActionStartTask:
+		return isMigratedTaskType(decision.TaskType)
+	default:
+		return false
+	}
+}
+
+func isMigratedTaskType(taskType string) bool {
+	switch taskType {
+	case "subscribe_attendance_push", "query_subscription_status", "sign_for_user":
+		return true
+	default:
+		return false
+	}
+}
+
+func plannerConversationEvent(decision PlannerDecision, activeTask *ActiveTask) conversationEvent {
+	switch decision.Action {
+	case plannerActionContinueTask, plannerActionTaskMeta:
+		if activeTask != nil {
+			return eventTaskFollowUp
+		}
+	case plannerActionCancelTask:
+		return eventCancel
+	case plannerActionStartTask:
+		return eventNewRequest
+	}
+	return eventNewRequest
+}
+
+func plannerPrimaryPlanKind(decision PlannerDecision, nextTask *ActiveTask) PlanKind {
+	switch decision.Action {
+	case plannerActionContinueTask:
+		return planKindContinueTask
+	case plannerActionStartTask:
+		if nextTask != nil && nextTask.Status == taskStatusReady {
+			return planKindTool
+		}
+		return planKindClarify
+	default:
+		return planKindClarify
+	}
+}
+
+func plannerPrimaryReason(decision PlannerDecision, nextTask *ActiveTask) string {
+	if nextTask != nil && nextTask.Status != taskStatusReady {
+		return "missing_slots"
+	}
+	return decision.Reason
+}
+
+func (a *Agent) plannerTaskFromDecision(_ string, beforeTask *ActiveTask, question string, uctx *tools.UserContext, decision PlannerDecision) (*ActiveTask, []string) {
+	switch decision.Action {
+	case plannerActionStartTask:
+		task := buildTaskFromRequest(question, uctx)
+		return task, nil
+	case plannerActionContinueTask:
+		if beforeTask == nil {
+			return nil, nil
+		}
+		nextTask := applySlotFillToTask(beforeTask, slotFillResult{Filled: cloneTaskSlots(decision.Slots)})
+		return nextTask, plannerMatchedSlotNames(beforeTask.FilledSlots, decision.Slots)
+	default:
+		return nil, nil
+	}
+}
+
+func plannerMatchedSlotNames(before map[string]string, after map[string]string) []string {
+	if len(after) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(after))
+	for key, value := range after {
+		if before[key] == value {
+			continue
+		}
+		names = append(names, key)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (a *Agent) legacyPlannerPrimaryAction(question string, activeTask *ActiveTask, uctx *tools.UserContext) PlannerAction {
+	decision := interpretConversation(question, activeTask)
+	switch decision.Event {
+	case eventGreeting:
+		return plannerActionSocialRefuse
+	case eventCancel:
+		return plannerActionCancelTask
+	case eventTaskFollowUp:
+		return plannerActionContinueTask
+	case eventUnknown:
+		return plannerActionTaskMeta
+	}
+
+	normalized := normalizeQuery(question)
+	if hasHelpIntent(normalized) {
+		return plannerActionSocialRefuse
+	}
+	if a.domainGate != nil && a.domainGate.Hint(question) == domainHintObviousOut {
+		return plannerActionOffTopicReject
+	}
+	if candidate := buildTaskFromRequest(question, uctx); candidate != nil {
+		return plannerActionStartTask
+	}
+	return ""
 }
 
 func (a *Agent) executeReadyTask(ctx context.Context, uctx *tools.UserContext, task *ActiveTask) (string, []string, *ActiveTask, error) {
@@ -612,6 +963,8 @@ type toolErrorPayload struct {
 	ErrorCode          string   `json:"error_code"`
 	InvalidDeptNames   []string `json:"invalid_dept_names"`
 	AmbiguousDeptNames []string `json:"ambiguous_dept_names"`
+	CandidateUsers     []string `json:"candidate_users"`
+	Users              []string `json:"users"`
 }
 
 func recoverableTaskFromToolResult(task *ActiveTask, toolResult string) (*ActiveTask, string) {
@@ -721,6 +1074,14 @@ func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, quest
 		PlanKind:                string(metrics.PlanKind),
 		KnowledgeStrength:       string(metrics.KnowledgeStrength),
 		PlannerReason:           metrics.PlannerReason,
+		PlannerAction:           metrics.PlannerAction,
+		PlannerConfidence:       metrics.PlannerConfidence,
+		TaskID:                  metrics.TaskID,
+		TaskKeepOpen:            metrics.TaskKeepOpen,
+		TaskSwitch:              metrics.TaskSwitch,
+		LastErrorCode:           metrics.LastErrorCode,
+		ShadowPlannerAction:     metrics.ShadowPlannerAction,
+		ShadowPlannerMatched:    metrics.ShadowPlannerMatched,
 		AnswerMode:              string(metrics.AnswerMode),
 		Question:                question,
 		ToolsCalled:             toolsCalled,
@@ -742,6 +1103,37 @@ func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, quest
 		ErrorMsg:                errMsg,
 	}
 	go a.deps.CallLog.Write(context.Background(), log)
+}
+
+func applyShadowPlannerMetrics(metrics *callMetrics, decision PlannerDecision, activeTask *TaskInstance) {
+	if metrics == nil {
+		return
+	}
+	metrics.PlannerAction = string(decision.Action)
+	metrics.PlannerConfidence = decision.Confidence
+	metrics.TaskKeepOpen = decision.KeepTaskOpen
+	metrics.TaskSwitch = decision.SwitchTask
+	if activeTask != nil {
+		metrics.TaskID = activeTask.ID
+	}
+}
+
+func recordLegacyPlannerAction(metrics *callMetrics, action PlannerAction) {
+	if metrics == nil {
+		return
+	}
+	metrics.ShadowPlannerAction = string(action)
+	metrics.ShadowPlannerMatched = metrics.ShadowPlannerAction != "" && metrics.ShadowPlannerAction == metrics.PlannerAction
+}
+
+func legacyTaskPlannerAction(beforeTask *ActiveTask, nextTask *ActiveTask) PlannerAction {
+	if beforeTask == nil && nextTask != nil {
+		return plannerActionStartTask
+	}
+	if beforeTask != nil && nextTask != nil {
+		return plannerActionContinueTask
+	}
+	return plannerActionTaskMeta
 }
 
 func applyConversationMetrics(metrics *callMetrics, before, after *ActiveTask, matchedSlots []string) {

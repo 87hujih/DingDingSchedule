@@ -756,6 +756,18 @@ func TestAgentChatWritesConversationTaskMetricsToCallLog(t *testing.T) {
 	if firstLog.TaskStatusAfter != "waiting_slots" {
 		t.Fatalf("first TaskStatusAfter = %q, want waiting_slots", firstLog.TaskStatusAfter)
 	}
+	if firstLog.PlannerAction != "start_task" {
+		t.Fatalf("first PlannerAction = %q, want start_task", firstLog.PlannerAction)
+	}
+	if firstLog.PlannerConfidence <= 0 {
+		t.Fatalf("first PlannerConfidence = %v, want positive", firstLog.PlannerConfidence)
+	}
+	if firstLog.ShadowPlannerAction != "start_task" {
+		t.Fatalf("first ShadowPlannerAction = %q, want start_task", firstLog.ShadowPlannerAction)
+	}
+	if !firstLog.ShadowPlannerMatched {
+		t.Fatalf("first ShadowPlannerMatched = false, want true")
+	}
 
 	_, err = a.Chat(context.Background(), &dingtalk.ChatMessage{
 		CorpID:            "corp-1",
@@ -799,6 +811,21 @@ func TestAgentChatWritesConversationTaskMetricsToCallLog(t *testing.T) {
 	}
 	if len(secondLog.ToolsCalled) != 1 || secondLog.ToolsCalled[0] != "subscribe_attendance_push" {
 		t.Fatalf("second ToolsCalled = %v, want [subscribe_attendance_push]", secondLog.ToolsCalled)
+	}
+	if secondLog.PlannerAction != "continue_task" {
+		t.Fatalf("second PlannerAction = %q, want continue_task", secondLog.PlannerAction)
+	}
+	if secondLog.PlannerConfidence <= 0 {
+		t.Fatalf("second PlannerConfidence = %v, want positive", secondLog.PlannerConfidence)
+	}
+	if secondLog.TaskID == "" {
+		t.Fatalf("second TaskID = empty, want non-empty")
+	}
+	if secondLog.ShadowPlannerAction != "continue_task" {
+		t.Fatalf("second ShadowPlannerAction = %q, want continue_task", secondLog.ShadowPlannerAction)
+	}
+	if !secondLog.ShadowPlannerMatched {
+		t.Fatalf("second ShadowPlannerMatched = false, want true")
 	}
 }
 
@@ -1368,6 +1395,63 @@ func TestAgentChatAcceptsChineseNumeralDepartmentAliasDuringSubscriptionFollowUp
 	}
 }
 
+func TestAgentChatUsesPlannerPrimaryForLongSubscriptionFollowUp(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &testGroupSubPort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		GroupSub:       groupSub,
+		Dept:           testFamilyDeptPort{},
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "开启考勤订阅",
+		ConversationID:    "conv-family-long-follow-up",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("first Chat() error = %v", err)
+	}
+
+	secondReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "请帮我订阅家族7期这个部门的考勤推送",
+		ConversationID:    "conv-family-long-follow-up",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("second Chat() error = %v", err)
+	}
+	if !strings.Contains(secondReply, "家族7期") {
+		t.Fatalf("second reply = %q, want subscription success for long follow-up", secondReply)
+	}
+
+	groupSub.mu.Lock()
+	defer groupSub.mu.Unlock()
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastSubscribedIDs) != 1 || groupSub.lastSubscribedIDs[0] != 201 {
+		t.Fatalf("subscribed dept ids = %v, want [201]", groupSub.lastSubscribedIDs)
+	}
+}
+
 func TestAgentChatKeepsSubscriptionTaskAfterInvalidDepartmentAndListsDepartmentsOnFollowUp(t *testing.T) {
 	t.Parallel()
 
@@ -1457,6 +1541,83 @@ func TestAgentChatKeepsSubscriptionTaskAfterInvalidDepartmentAndListsDepartments
 	}
 }
 
+func TestAgentChatExplainsRetryableSubscriptionFailureAndKeepsTaskOpen(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &testGroupSubPort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		GroupSub:       groupSub,
+		Dept:           testFamilyDeptPort{},
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "开启考勤订阅",
+		ConversationID:    "conv-family-explain",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("first Chat() error = %v", err)
+	}
+
+	_, err = a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "家族九期",
+		ConversationID:    "conv-family-explain",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("second Chat() error = %v", err)
+	}
+
+	thirdReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "为什么失败",
+		ConversationID:    "conv-family-explain",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("third Chat() error = %v", err)
+	}
+	if !strings.Contains(thirdReply, "部门") || !strings.Contains(thirdReply, "可选部门") {
+		t.Fatalf("third reply = %q, want retry explanation with correction guidance", thirdReply)
+	}
+
+	fourthReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "家族7期",
+		ConversationID:    "conv-family-explain",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("fourth Chat() error = %v", err)
+	}
+	if !strings.Contains(fourthReply, "家族7期") {
+		t.Fatalf("fourth reply = %q, want corrected department to complete subscription", fourthReply)
+	}
+}
+
 func TestAgentChatResumesManualSignTaskAcrossMultipleReplies(t *testing.T) {
 	t.Parallel()
 
@@ -1517,6 +1678,63 @@ func TestAgentChatResumesManualSignTaskAcrossMultipleReplies(t *testing.T) {
 	}
 	if !strings.Contains(thirdReply, "张三") {
 		t.Fatalf("third reply = %q, want sign success", thirdReply)
+	}
+
+	attendance.mu.Lock()
+	defer attendance.mu.Unlock()
+	if attendance.signCalls != 1 {
+		t.Fatalf("sign calls = %d, want 1", attendance.signCalls)
+	}
+	if attendance.lastSection != 1 {
+		t.Fatalf("last section = %d, want 1", attendance.lastSection)
+	}
+	if len(attendance.lastUserIDs) != 1 || attendance.lastUserIDs[0] != 99 {
+		t.Fatalf("last user ids = %v, want [99]", attendance.lastUserIDs)
+	}
+}
+
+func TestAgentChatUsesPlannerPrimaryForLongManualSignFollowUp(t *testing.T) {
+	t.Parallel()
+
+	attendance := &testTaskAttendancePort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		Attendance:     attendance,
+		User:           testTaskUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "帮我补签",
+		ConversationID:   "conv-sign-long-follow-up",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("first Chat() error = %v", err)
+	}
+
+	secondReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "请帮我给张三补签今天第一节考勤",
+		ConversationID:   "conv-sign-long-follow-up",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("second Chat() error = %v", err)
+	}
+	if !strings.Contains(secondReply, "张三") {
+		t.Fatalf("second reply = %q, want sign success for long follow-up", secondReply)
 	}
 
 	attendance.mu.Lock()
@@ -1664,6 +1882,40 @@ func TestAgentChatRepliesPolitelyToGreetingWithoutDomainReject(t *testing.T) {
 	}
 	if !strings.Contains(reply, "你好") {
 		t.Fatalf("reply = %q, want greeting", reply)
+	}
+}
+
+func TestAgentChatPolitelyRefusesGenericSocialChatWithoutLLMFallback(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "最近怎么样",
+		ConversationID:   "conv-social",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if strings.Contains(reply, "AI 服务暂时不可用") {
+		t.Fatalf("reply = %q, want polite refusal instead of llm failure", reply)
+	}
+	if !strings.Contains(reply, "课表") || !strings.Contains(reply, "考勤") {
+		t.Fatalf("reply = %q, want polite domain-scoped refusal", reply)
 	}
 }
 

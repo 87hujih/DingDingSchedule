@@ -189,6 +189,34 @@ func TestSignForUserDoesNotRequirePreexistingRecord(t *testing.T) {
 	}
 }
 
+func TestSignForUserReturnsStructuredAmbiguousUserError(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	attendance := &testAttendancePort{}
+	RegisterAdminTools(registry, attendance, testAdminUserPortWithSearchResult{
+		users: []UserInfo{
+			{ID: 9, Name: "张三"},
+			{ID: 10, Name: "张三"},
+		},
+	}, &testGroupSubPort{}, testDeptPort{})
+
+	result, err := registry.Dispatch(context.Background(), &UserContext{
+		TenantID: 42,
+		UserID:   7,
+		UserRole: 1,
+	}, "sign_for_user", json.RawMessage(`{"user_name":"张三","date":"2026-03-25","section":1}`))
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+	if !strings.Contains(result, `"error_code":"user_name_ambiguous"`) {
+		t.Fatalf("Dispatch() result = %s, want structured ambiguous error code", result)
+	}
+	if attendance.slotSignCalls != 0 {
+		t.Fatalf("SignForUsersBySlot() call count = %d, want 0", attendance.slotSignCalls)
+	}
+}
+
 type testAdminUserPortWithSearchResult struct {
 	users []UserInfo
 }
