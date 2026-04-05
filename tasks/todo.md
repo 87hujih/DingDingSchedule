@@ -3,8 +3,13 @@
 ## 当前任务
 - [x] 复核 Agent 回复链路的实际消息通道，确认钉钉聊天回复当前走纯文本消息而非 Markdown / 富文本卡片。
 - [x] 锁定 Markdown 裸文本暴露的根因，区分是“钉钉不支持”还是“Agent 未做文本约束/渲染适配”。
-- [ ] 给出适合当前钉钉聊天场景的回复格式治理方案，对比最小止血方案和长期稳定方案。
-- [ ] 待用户确认方向后，再进入具体设计或实现。
+- [x] 给出适合当前钉钉聊天场景的回复格式治理方案，对比最小止血方案和长期稳定方案。
+- [x] 与用户确认本轮采用“发送前统一纯文本渲染 + prompt 降低 Markdown 输出”的最小风险方案。
+- [x] 与用户确认当前阶段只保留纯文本渲染器，不启用 Markdown 发送通道。
+- [x] 先补钉钉纯文本渲染器的失败回归测试，覆盖加粗、标题、列表、链接和空行降级。
+- [x] 实现统一纯文本渲染器，并接入私聊回复、群 webhook 回复和群兜底主动推送。
+- [x] 调整 Agent system prompt，默认禁止 Markdown 风格输出，减少渲染器负担。
+- [x] 运行 `pkg/dingtalk` 与 `internal/agent` 定向验证，并补充本次复盘。
 
 ## 当前任务复盘
 - 已确认 Agent 最终回复发送到钉钉聊天时走的是纯文本通道，而不是 Markdown 渲染通道：
@@ -13,6 +18,24 @@
 - 群聊兜底主动推送通过 `SendGroupRobotMessage(..., msgKey=sampleText, msgParam={content})`
 - 这意味着钉钉侧不会解析 `**粗体**`、`- 列表`、标题等 Markdown 标记；当前出现 `- **出勤次数**` 这类展示，不是钉钉异常，而是 Agent 直接把 Markdown 源文本发给了纯文本消息接口。
 - 现有 `internal/agent/agent.go` 中的 system prompt 只要求“自然语言组织回复”，没有明确禁止 Markdown，也没有在发送前做统一的文本渲染/降级处理，因此 LLM 会按通用聊天习惯输出 Markdown 样式。
+- 本轮已在 `pkg/dingtalk/reply_format.go` 新增统一纯文本渲染器 `renderPlainTextReply`，将最常见的 Markdown 样式降级为适合钉钉纯文本聊天的内容：标题去掉 `#`，加粗/斜体去掉标记，代码行内反引号去掉，链接转成“标题：URL”，列表统一保留为纯文本 `- `，并压缩多余空行。
+- 渲染器已经接入三条聊天发送出口：
+- `pkg/dingtalk/stream.go` 私聊 `SimpleReplyText`
+- `pkg/dingtalk/stream.go` 群聊 webhook `SimpleReplyText`
+- `pkg/dingtalk/client.go` 群聊主动推送 `SendGroupRobotMessage(... sampleText ...)`
+- 用户已确认当前阶段不启用任何 Markdown 发送通道；即使钉钉部分通道支持 Markdown，当前产品决策仍是统一走纯文本输出，避免多通道展示不一致。
+- `internal/agent/agent.go` 的 system prompt 已新增“默认按钉钉纯文本聊天格式输出，不要使用 Markdown 语法”，用于减少模型继续产出 Markdown 的概率；最终仍由发送层 renderer 兜底，避免格式泄漏。
+- 本轮新增回归测试：
+- `TestRenderPlainTextReplyDowngradesCommonMarkdown`
+- `TestRenderPlainTextReplyCollapsesExcessiveBlankLines`
+- `TestRenderPlainTextReplyKeepsPlainTextStable`
+- 实际验证命令：
+- `go test ./pkg/dingtalk -run TestRenderPlainTextReply -count=1`（先红，因 `renderPlainTextReply` 未定义；后绿）
+- `gofmt -w pkg/dingtalk/reply_format.go pkg/dingtalk/reply_format_test.go pkg/dingtalk/client.go pkg/dingtalk/stream.go internal/agent/agent.go`
+- `go test ./pkg/dingtalk -count=1`
+- `go test ./internal/agent -count=1`
+- `git diff --check -- pkg/dingtalk internal/agent tasks/todo.md docs/superpowers/plans/2026-04-05-agent-dingtalk-plain-text-renderer-plan.md`
+- `git diff --check` 当前只有仓库既有的 LF/CRLF warning，没有新的格式错误。
 
 ## 当前任务
 - [x] 基于当前 `internal/agent` 实现归纳“显得不够智能”的结构性问题，聚焦编排层而不是单点关键词补丁。
