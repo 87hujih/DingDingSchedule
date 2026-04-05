@@ -164,7 +164,7 @@ func (s *StreamClient) handleChatBotMessage(ctx context.Context, data *chatbot.B
 	replyCtx, replyCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer replyCancel()
 	replier := chatbot.NewChatbotReplier()
-	if err := replier.SimpleReplyText(replyCtx, data.SessionWebhook, []byte(reply)); err != nil {
+	if err := replier.SimpleReplyText(replyCtx, data.SessionWebhook, []byte(renderPlainTextReply(reply))); err != nil {
 		s.logger.Errorw("回复私聊消息失败", "senderID", data.SenderStaffId, "err", err)
 	}
 
@@ -190,7 +190,7 @@ func (s *StreamClient) newGroupChatReplyOrchestrator() *groupChatReplyOrchestrat
 		asyncReplyHandler: s.asyncReplyHandler,
 		replyText: func(ctx context.Context, webhookURL, reply string) error {
 			replier := chatbot.NewChatbotReplier()
-			return replier.SimpleReplyText(ctx, webhookURL, []byte(reply))
+			return replier.SimpleReplyText(ctx, webhookURL, []byte(renderPlainTextReply(reply)))
 		},
 		processTimeout:  groupChatProcessTimeout,
 		ackDelay:        groupChatAckDelay,

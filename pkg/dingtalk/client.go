@@ -226,6 +226,7 @@ func (c *Client) SendWorkNoticeText(ctx context.Context, agentID string, userIDs
 
 // SendGroupRobotMessage 机器人主动发文本消息到群聊
 func (c *Client) SendGroupRobotMessage(ctx context.Context, robotCode, conversationID, content string) error {
+	content = renderPlainTextReply(content)
 	msgParam, err := json.Marshal(map[string]string{"content": content})
 	if err != nil {
 		return fmt.Errorf("钉钉: 序列化 msgParam 失败: %w", err)

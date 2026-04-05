@@ -59,6 +59,42 @@
 - `go test ./internal/agent/... ./internal/app -count=1`
 - `go test ./internal/agent ./internal/agent/tools ./internal/app -count=1`
 - `git diff --check -- internal/agent internal/agent/tools internal/app internal/model tasks/todo.md`
+
+## 当前任务
+- [x] 复核 Agent 回复链路的实际消息通道，确认钉钉聊天回复当前走纯文本消息而非 Markdown / 富文本卡片。
+- [x] 锁定 Markdown 裸文本暴露的根因，区分是“钉钉不支持”还是“Agent 未做文本约束/渲染适配”。
+- [x] 给出适合当前钉钉聊天场景的回复格式治理方案，对比最小止血方案和长期稳定方案。
+- [x] 与用户确认本轮采用“发送前统一纯文本渲染 + prompt 降低 Markdown 输出”的最小风险方案。
+- [x] 与用户确认当前阶段只保留纯文本渲染器，不启用 Markdown 发送通道。
+- [x] 先补钉钉纯文本渲染器的失败回归测试，覆盖加粗、标题、列表、链接和空行降级。
+- [x] 实现统一纯文本渲染器，并接入私聊回复、群 webhook 回复和群兜底主动推送。
+- [x] 调整 Agent system prompt，默认禁止 Markdown 风格输出，减少渲染器负担。
+- [x] 运行 `pkg/dingtalk` 与 `internal/agent` 定向验证，并补充本次复盘。
+
+## 当前任务复盘
+- 已确认 Agent 最终回复发送到钉钉聊天时走的是纯文本通道，而不是 Markdown 渲染通道：
+- 私聊通过 `chatbot.NewChatbotReplier().SimpleReplyText(...)`
+- 群聊 webhook 回复同样通过 `SimpleReplyText(...)`
+- 群聊兜底主动推送通过 `SendGroupRobotMessage(..., msgKey=sampleText, msgParam={content})`
+- 这意味着钉钉侧不会解析 `**粗体**`、`- 列表`、标题等 Markdown 标记；当前出现 `- **出勤次数**` 这类展示，不是钉钉异常，而是 Agent 直接把 Markdown 源文本发给了纯文本消息接口。
+- 现有 `internal/agent/agent.go` 中的 system prompt 只要求“自然语言组织回复”，没有明确禁止 Markdown，也没有在发送前做统一的文本渲染/降级处理，因此 LLM 会按通用聊天习惯输出 Markdown 样式。
+- 本轮已在 `pkg/dingtalk/reply_format.go` 新增统一纯文本渲染器 `renderPlainTextReply`，将最常见的 Markdown 样式降级为适合钉钉纯文本聊天的内容：标题去掉 `#`，加粗/斜体去掉标记，代码行内反引号去掉，链接转成“标题：URL”，列表统一保留为纯文本 `- `，并压缩多余空行。
+- 渲染器已经接入三条聊天发送出口：
+- `pkg/dingtalk/stream.go` 私聊 `SimpleReplyText`
+- `pkg/dingtalk/stream.go` 群聊 webhook `SimpleReplyText`
+- `pkg/dingtalk/client.go` 群聊主动推送 `SendGroupRobotMessage(... sampleText ...)`
+- 用户已确认当前阶段不启用任何 Markdown 发送通道；即使钉钉部分通道支持 Markdown，当前产品决策仍是统一走纯文本输出，避免多通道展示不一致。
+- `internal/agent/agent.go` 的 system prompt 已新增“默认按钉钉纯文本聊天格式输出，不要使用 Markdown 语法”，用于减少模型继续产出 Markdown 的概率；最终仍由发送层 renderer 兜底，避免格式泄漏。
+- 本轮新增回归测试：
+- `TestRenderPlainTextReplyDowngradesCommonMarkdown`
+- `TestRenderPlainTextReplyCollapsesExcessiveBlankLines`
+- `TestRenderPlainTextReplyKeepsPlainTextStable`
+- 实际验证命令：
+- `go test ./pkg/dingtalk -run TestRenderPlainTextReply -count=1`（先红，因 `renderPlainTextReply` 未定义；后绿）
+- `gofmt -w pkg/dingtalk/reply_format.go pkg/dingtalk/reply_format_test.go pkg/dingtalk/client.go pkg/dingtalk/stream.go internal/agent/agent.go`
+- `go test ./pkg/dingtalk -count=1`
+- `go test ./internal/agent -count=1`
+- `git diff --check -- pkg/dingtalk internal/agent tasks/todo.md docs/superpowers/plans/2026-04-05-agent-dingtalk-plain-text-renderer-plan.md`
 - `git diff --check` 当前只有仓库既有的 LF/CRLF warning，没有新的格式错误。
 
 ## 当前任务
@@ -67,12 +103,15 @@
 - [x] 提出 2-3 个适合当前项目的 Agent 编排方案，对比状态管理、planner、工具执行和记忆策略的取舍。
 - [x] 给出推荐方案的分层设计、数据流、失败恢复策略和渐进式改造顺序，等待用户确认。
 - [x] 将确认后的方案写入设计文档，等待用户 review 后再进入 implementation plan 阶段。
+- [x] 将已确认 spec 拆成 implementation plan，写入 `docs/superpowers/plans/2026-04-04-agent-hybrid-planner-runtime-plan.md`。
+- [ ] 等待进入 implementation plan 执行阶段。
 
 ## 当前任务复盘
 - 已与用户确认这轮 Agent 编排重构的产品边界：目标是“自然对话 + 稳定完成任务”；上下文切换偏保守；任务内追问回答后继续保留任务；明显站外内容直接拒绝；闲聊/泛知识由 LLM 理解后委婉拒绝。
 - 已比较三条路线：继续补规则状态机、混合式 planner + 确定性 runtime、通用 ReAct agent；最终确定推荐方向是“轻 planner + 强执行器 + 富任务记忆 + 响应编排”。
 - 设计文档已写入 `docs/superpowers/specs/2026-04-04-agent-hybrid-planner-runtime-design.md`，内容覆盖目标约束、方案对比、推荐架构、planner contract、task runtime contract、任务记忆模型、失败恢复策略、与现有代码映射以及渐进式 rollout 顺序。
-- 按 skill 原流程本应执行 spec reviewer 子代理，但当前 harness 只有在用户明确要求时才允许 `spawn_agent`，因此本轮未启用子代理 review，而是由主线程完成回读校验。校验方式为读取 spec 关键段落，并执行 `git diff --check -- tasks/todo.md docs/superpowers/specs/2026-04-04-agent-hybrid-planner-runtime-design.md`；当前只有仓库既有的 LF/CRLF warning，没有新的格式错误。
+- implementation plan 已写入 `docs/superpowers/plans/2026-04-04-agent-hybrid-planner-runtime-plan.md`，按“contracts/logging -> shadow planner -> runtime bridge -> 订阅任务迁移 -> 补签任务迁移 -> response composer -> 主链路切换 -> 最终验证”拆成 8 个任务，并明确每个任务的文件边界、红绿测试命令和建议提交粒度。
+- 按 skill 原流程本应执行 spec reviewer / plan reviewer 子代理，但当前 harness 只有在用户明确要求时才允许 `spawn_agent`，因此本轮未启用子代理 review，而是由主线程完成回读校验。校验方式为读取 spec 与 plan 关键段落，并执行 `git diff --check -- tasks/todo.md docs/superpowers/specs/2026-04-04-agent-hybrid-planner-runtime-design.md docs/superpowers/plans/2026-04-04-agent-hybrid-planner-runtime-plan.md`；当前只有仓库既有的 LF/CRLF warning，没有新的格式错误。
 - 当前仓库 `.gitignore` 已忽略整个 `docs/` 目录，因此本次 spec 是本地文档，不会进入 Git 索引；后续如需把 spec 纳入版本库，需要先调整忽略策略或改用其他落盘位置。
 
 ## 当前任务
