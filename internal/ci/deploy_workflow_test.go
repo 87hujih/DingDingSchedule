@@ -22,12 +22,21 @@ func readDeployWorkflow(t *testing.T) string {
 func TestDeployWorkflowSupportsSSHKeyOrPassword(t *testing.T) {
 	workflow := readDeployWorkflow(t)
 
-	if !strings.Contains(workflow, "key: ${{ secrets.SERVER_SSH_KEY }}") {
-		t.Fatalf("deploy workflow must keep SSH key support")
+	requiredFragments := []string{
+		"SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}",
+		"SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}",
+		"if [ -z \"${SERVER_SSH_KEY}\" ] && [ -z \"${SERVER_PASSWORD}\" ]; then",
+		"if [ -n \"${SERVER_SSH_KEY}\" ]; then",
+		"Using SSH key authentication",
+		"Using password authentication fallback",
+		"printf '%s\\n' \"${SERVER_SSH_KEY}\" > \"${KEY_PATH}\"",
+		"export SSHPASS=\"${SERVER_PASSWORD}\"",
 	}
 
-	if !strings.Contains(workflow, "password: ${{ secrets.SERVER_PASSWORD }}") {
-		t.Fatalf("deploy workflow must support SERVER_PASSWORD fallback")
+	for _, fragment := range requiredFragments {
+		if !strings.Contains(workflow, fragment) {
+			t.Fatalf("deploy workflow missing SSH auth fragment: %s", fragment)
+		}
 	}
 }
 
@@ -147,10 +156,9 @@ func TestDeployWorkflowChecksHealthViaSSHOnTargetHost(t *testing.T) {
 	workflow := readDeployWorkflow(t)
 
 	requiredFragments := []string{
-		"- name: Health check",
-		"uses: appleboy/ssh-action@v1.2.0",
+		"- name: Deploy through SSH master connection",
+		"docker save \"${IMAGE_REPO}:${IMAGE_TAG}\" | \"${SSH_CMD[@]}\"",
 		"curl -fsS http://localhost:26665/health",
-		"for attempt in $(seq 1 12)",
 		"sleep 5",
 	}
 
@@ -158,6 +166,11 @@ func TestDeployWorkflowChecksHealthViaSSHOnTargetHost(t *testing.T) {
 		if !strings.Contains(workflow, fragment) {
 			t.Fatalf("deploy workflow missing remote health check fragment: %s", fragment)
 		}
+	}
+
+	healthRetryPattern := regexp.MustCompile(`for attempt in \\\$\(seq 1 12\)`)
+	if !healthRetryPattern.MatchString(workflow) {
+		t.Fatalf("deploy workflow missing remote health check retry loop")
 	}
 
 	if strings.Contains(workflow, "curl -f http://${{ env.SERVER_HOST }}:26665/health") {

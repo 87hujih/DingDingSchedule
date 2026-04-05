@@ -1,6 +1,67 @@
 # 任务清单
 
 ## 当前任务
+- [x] 复现全仓 `go test ./...` 在 `internal/ci` 的失败，并锁定 `deploy_workflow_test.go` 与当前 `deploy.yml` 的实现差异。
+- [x] 以最小改动收敛 `internal/ci/deploy_workflow_test.go` 对旧部署实现的耦合，改为校验当前工作流仍满足的 SSH 认证与远端健康检查约束。
+- [x] 运行 `internal/ci` 定向测试与全仓 `go test ./...`，确认失败已消失并补充本轮复盘。
+
+## 当前任务复盘
+- 本轮全仓测试失败并不是 Agent 重构引入的新问题，而是 `internal/ci/deploy_workflow_test.go` 仍在强依赖旧版部署工作流的实现细节：它要求出现 `key: ${{ secrets.SERVER_SSH_KEY }}`、`password: ${{ secrets.SERVER_PASSWORD }}` 以及单独的 `Health check` + `appleboy/ssh-action@v1.2.0` 步骤。
+- 当前 `.github/workflows/deploy.yml` 实际已经切到更稳的实现：通过环境变量注入 `SERVER_SSH_KEY / SERVER_PASSWORD`，在 `Deploy through SSH master connection` 步骤中按 key/password 两条路径建立 SSH 认证，并在远端部署脚本内部执行 `curl -fsS http://localhost:26665/health` 的重试检查。
+- 这次采用最小修复：不回退工作流实现，只更新 `internal/ci/deploy_workflow_test.go`，让测试校验“仍支持 SSH key/password 双认证”和“健康检查仍在目标机经 SSH 执行”这两个真实约束，而不是绑定旧的 action 形态。
+- 本轮验证命令：
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-hybrid-planner-runtime" test ./internal/ci -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-hybrid-planner-runtime" test ./... -count=1`
+
+## 当前任务
+- [x] 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-hybrid-planner-runtime` 中建立 hybrid planner/runtime 重构基线，并确认 `internal/agent` 与 `internal/app` 范围测试可作为起点。
+- [x] 完成 Task 1：新增 planner contract、task memory、runtime types，并扩展调用日志持久化字段。
+- [x] 完成 Task 2：实现 shadow planner 的最小启发式版本，并将 planner decision 以影子模式接入 `Agent.Chat` 调用日志。
+- [x] 完成 Task 3：建立 runtime registry 与 session task-memory bridge，让 `TaskInstance` 和旧 `ActiveTask` 共存。
+- [x] 完成 Task 4：将订阅任务迁移到新 runtime，并保持现有订阅多轮回归通过。
+- [x] 完成 Task 5：将补签任务迁移到新 runtime，并让 `sign_for_user` 返回结构化歧义错误。
+- [x] 完成 Task 6：引入 response composer，并将明显站外、泛闲聊和任务内 meta/retry 提示收口到统一回复层。
+- [x] 完成 Task 7：已迁移任务切到 `planner -> runtime/composer` 主裁决，旧路由降级为 fallback。
+- [x] 完成 Task 8：范围验证和任务记录同步。
+
+## 当前任务复盘
+- 本轮实现继续在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-hybrid-planner-runtime` 上进行，避免污染主工作区；当前分支为 `codex/agent-hybrid-planner-runtime`。
+- Task 1 已完成：新增 `internal/agent/planner_contract.go`、`internal/agent/task_memory.go`、`internal/agent/runtime_types.go`，并扩展 `internal/agent/tools/types.go`、`internal/model/agent_call_log.go`、`internal/app/agent_wiring.go` 以持久化 `planner_action / planner_confidence / task_id / task_keep_open / task_switch / last_error_code / shadow_planner_action / shadow_planner_matched`。
+- Task 2 已完成：新增 `internal/agent/planner_service.go` 和 `internal/agent/planner_service_test.go`，先用保守启发式覆盖 `off_topic_reject / social_refuse / continue_task / start_task / task_meta / cancel_task` 六类 planner action；当前只做 shadow mode，不改变旧的会话解释、plan kind 和执行路径。
+- Task 3 已完成：新增 `internal/agent/task_runtime.go` 和 `TaskInstance` session bridge；`sessionManager` 现在可以同时存取旧 `ActiveTask` 与新 `TaskInstance`，两者之间会互相镜像，给后续迁移任务提供兼容底座。
+- Task 4 已完成：新增订阅 runtime handler，并把 `respondForTaskState` 切到“已迁移任务优先走 runtime，其他任务继续走旧路径”的桥接模式。订阅任务现在通过 `CandidateCache` 缓存部门列表，并在部门不存在时把任务回退到可继续纠正的状态。
+- Task 5 已完成：新增补签 runtime handler，并给 `internal/agent/tools/admin.go` 的 `sign_for_user` 工具补上 `user_name_not_found / user_name_ambiguous` 结构化错误码；runtime 会在同名歧义时保留 `date/section` 槽位、缓存候选用户并等待继续澄清。
+- Task 6 已完成：新增 `internal/agent/response_composer.go` 与对应单测；当前明显站外请求走统一拒答，泛闲聊走委婉拒绝，retryable task error 与 task-meta reply 由同一层统一渲染，不再散在 `agent.go` 里拼字符串。
+- Task 7 已完成：`internal/agent/agent.go` 现在会先计算 planner decision，并对已迁移任务优先走 `planner -> runtime/composer`。这一步的直接收益是：订阅和补签都支持更长、更自然的跟进句式，例如“请帮我订阅家族7期这个部门的考勤推送”“请帮我给张三补签今天第一节考勤”，不再因为旧的短句/关键词门槛退回机械澄清。
+- 当前已切到 planner primary 的范围：
+- 明显站外拒答
+- 泛闲聊委婉拒绝
+- `subscribe_attendance_push`
+- `query_subscription_status`
+- `sign_for_user`
+- 当前仍保留 legacy fallback 的范围：
+- 未迁移任务类型
+- `query_router / conversation_interpreter / task_router / slot_filler` 仍存在，但主要作为未迁移场景和兼容路径的 fallback/helper，而不再是已迁移任务的主裁决入口
+- `internal/agent/agent.go` 现已在主流程开始处计算 shadow planner decision，并把结果写入调用日志；同时保留一份 legacy shadow action，用于观察“如果还走旧链路会怎么判”。对于长句跟进这类场景，日志现在能明确看到 planner 与 legacy 的分歧。
+- `internal/agent/agent_rag_test.go` 已补真实对话和日志断言，确保像“开启考勤订阅 -> 家族七期 / 列部门重试”以及“帮我补签 -> 张三 -> 今天第一节”这类多轮任务，在切到 runtime 后仍保持用户可见行为稳定。
+- 当前剩余的非目标工作不在本轮范围内：并没有把所有 legacy helper 删除，只是把它们降级成 fallback。后续如果要继续收缩编排复杂度，可以单独开一轮，把未迁移任务接入 runtime 并进一步瘦身 `query_router / conversation_interpreter / task_router / slot_filler`。
+- 本轮验证命令：
+- `go test ./internal/agent -run "Test(Planner(ReturnsTaskMetaForDepartmentListQuestionDuringSubscription|RejectsOffTopicCodingQuestion|ReturnsSocialRefuseForGenericSocialChat|ReturnsContinueTaskForShortSubscriptionFollowUp|ReturnsStartTaskForExplicitSubscriptionRequest|ReturnsCancelTaskForExplicitCancellation)|AgentChatWritesConversationTaskMetricsToCallLog)" -count=1`
+- `go test ./internal/agent -run "TestPlannerReturnsContinueTaskForLongSubscriptionFollowUp|TestPlannerReturnsContinueTaskForLongSubscriptionFollowUpWithoutCachedDepartments|TestPlannerReturnsContinueTaskForLongManualSignFollowUp" -count=1`
+- `go test ./internal/agent -run "Test(RuntimeDispatchFallsBackForUnmigratedTask|RuntimeDispatchResolvesRegisteredHandler|SessionManagerStoresTaskInstance|InterpretConversation)" -count=1`
+- `go test ./internal/agent -run "Test(SubscribeTaskPrepareCachesDepartmentList|SubscribeTaskKeepsTaskOpenAfterDepartmentNotFound|SubscriptionStatusTaskClosesAfterSuccess|ManualSignTaskKeepsTaskOpenWhenUserNameIsAmbiguous|ManualSignTaskClosesAfterSuccess|AgentChatResumesManualSignTaskAcrossMultipleReplies|AgentChatUsesPlannerPrimaryForLongManualSignFollowUp|AgentChatResumesSubscriptionTaskWithDepartmentOnlyReply|AgentChatUsesPlannerPrimaryForLongSubscriptionFollowUp|AgentChatAcceptsChineseNumeralDepartmentAliasDuringSubscriptionFollowUp|AgentChatKeepsSubscriptionTaskAfterInvalidDepartmentAndListsDepartmentsOnFollowUp|AgentChatExplainsRetryableSubscriptionFailureAndKeepsTaskOpen)" -count=1`
+- `go test ./internal/agent -run "Test(ResponseComposer(RejectsOffTopicCodingRequest|PolitelyRefusesSocialChat|KeepsTaskOpenForTaskMetaReply|RendersRetryableTaskError)|AgentChatPolitelyRefusesGenericSocialChatWithoutLLMFallback|AgentChatExplainsRetryableSubscriptionFailureAndKeepsTaskOpen)" -count=1`
+- `go test ./internal/agent/tools -run "Test(SignForUserReturnsStructuredAmbiguousUserError|SubscribeAttendancePushAcceptsChineseNumeralDeptAlias)" -count=1`
+- `go test ./internal/agent -run "TestAgentChat|TestPlanner|TestEvaluateCases" -count=1`
+- `go test ./internal/app -run TestCallLogAdapterPersistsDomainModeAndRetrievalDetails -count=1`
+- `gofmt -w internal/agent/planner_service.go internal/agent/agent.go internal/agent/agent_rag_test.go`
+- `gofmt -w internal/agent/task_memory.go internal/agent/task_runtime.go internal/agent/conversation_state_test.go internal/agent/task_runtime_test.go internal/agent/subscribe_task.go internal/agent/subscription_status_task.go internal/agent/subscription_runtime_test.go internal/agent/manual_sign_task.go internal/agent/manual_sign_runtime_test.go internal/agent/runtime_types.go internal/agent/response_composer.go internal/agent/response_composer_test.go internal/agent/tools/admin.go internal/agent/tools/admin_test.go internal/agent/session.go`
+- `go test ./internal/agent/... ./internal/app -count=1`
+- `go test ./internal/agent ./internal/agent/tools ./internal/app -count=1`
+- `git diff --check -- internal/agent internal/agent/tools internal/app internal/model tasks/todo.md`
+- `git diff --check` 当前只有仓库既有的 LF/CRLF warning，没有新的格式错误。
+
+## 当前任务
 - [x] 基于当前 `internal/agent` 实现归纳“显得不够智能”的结构性问题，聚焦编排层而不是单点关键词补丁。
 - [x] 与用户确认新一轮 Agent 编排重构的目标排序、容错边界和交互风格，避免方案在“自然对话”和“稳定执行”之间摇摆。
 - [x] 提出 2-3 个适合当前项目的 Agent 编排方案，对比状态管理、planner、工具执行和记忆策略的取舍。
