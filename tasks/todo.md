@@ -1,14 +1,11 @@
 # 任务清单
 
 ## 当前任务
-- [x] 探查 Agent 现有课表工具、Adapter 与 ScheduleService 的能力边界，确认“查他人课表”是否已有底层支撑。
-- [x] 与用户确认权限边界：所有已登录用户都可查询他人课表。
-- [x] 与用户确认 Agent 侧采用新增独立工具 `query_user_schedule`，而不是改造 `query_my_schedule`。
-- [x] 与用户确认重名用户时直接列出候选姓名，不做静默猜测。
-- [x] 与用户确认这轮顺手更新帮助文案/能力描述。
-- [x] 将“查询他人课表”设计写入 spec，等待用户 review 后再进入 implementation plan。
-- [x] 将“查询他人课表”设计拆成 implementation plan，等待进入执行阶段。
-- [ ] 等待进入 implementation plan 执行阶段。
+- [x] 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-query-user-schedule` 中建立“查询他人课表”实现基线，并确认全仓测试起点干净。
+- [x] 完成 Task 1：扩展 SchedulePort 与 scheduleAdapter，支持按目标用户查询周课表。
+- [x] 完成 Task 2：新增 `query_user_schedule` 工具，并返回结构化重名/未命中错误。
+- [x] 完成 Task 3：把“查他人课表”接入最小工具池、帮助文案和 Agent 回归测试。
+- [x] 完成 Task 4：运行范围验证并同步本轮复盘。
 - [x] 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-unsubscribe-routing-fix` 中修复“关闭/取消群考勤订阅”被误路由的问题，并保持范围可验证。
 - [x] 补失败回归测试，覆盖“关闭考勤订阅 / 关闭本群考勤订阅 / 取消本群考勤订阅”三类说法。
 - [x] 以最小改动补齐取消订阅的业务路由、执行链和 `task_cancel` 护栏。
@@ -24,6 +21,37 @@
 - [x] 完成 Task 7：范围验证、日志核对与任务记录同步。
 
 ## 当前任务复盘
+- 当前实现将在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-query-user-schedule` 上推进，分支为 `codex/agent-query-user-schedule`，避免污染 `master` 工作区。
+- 基线验证已完成：`go test ./... -count=1` 在该 worktree 上通过，可以把后续失败明确归因到本轮改动而不是既有问题。
+- Task 1 已完成：`SchedulePort` 新增按目标用户查周课表的方法，`scheduleAdapter` 已收敛为可替换的窄接口并补上 `ListUserScheduleByWeek(...)`；定向验证已通过：
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-query-user-schedule" test ./internal/app -run TestScheduleAdapterListUserScheduleByWeekUsesViewerAndTargetIDs -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-query-user-schedule" test ./internal/agent -run TestAgentChatAllowsFollowUpToolCalls -count=1`
+- Task 2 已完成：`internal/agent/tools/schedule.go` 新增 `query_user_schedule`，并通过 `UserPort.SearchByName` 返回 `user_name_not_found / user_name_ambiguous` 结构化错误；同时保持 `query_my_schedule` 原行为不变。定向验证已通过：
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-query-user-schedule" test ./internal/agent/tools -run "Test(QueryUserSchedule|WeekdayNumberForTool|QueryFreeUsersBySlot)" -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-query-user-schedule" test ./internal/agent -run TestAgentChatAllowsFollowUpToolCalls -count=1`
+- Task 3 已完成：`tool_pool.go` 已将 `query_user_schedule` 纳入 `schedule_live/general_live`，`capabilities.go` 已把“按姓名查他人课表”写入帮助文案，并补了 live-route 回归。定向验证已通过：
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-query-user-schedule" test ./internal/agent -run "Test(ToolPoolSelectorIncludesQueryUserScheduleForScheduleQuestions|BuildHelpReplyIncludesSystemOverviewAndCurrentAvailability|AgentChatQueriesOtherUsersScheduleViaTool|AgentChatClarifiesAmbiguousUserScheduleQuery)" -count=1`
+- Task 4 已完成：本轮范围验证全部通过。改动结果是：
+- `internal/app/agent_wiring.go` 的 `scheduleAdapter` 已支持“viewer 查 target 用户周课表”
+- `internal/agent/tools/schedule.go` 新增 `query_user_schedule`
+- `internal/agent/tool_pool.go` 与 `internal/agent/capabilities.go` 已把“查他人课表”暴露给 live route 与帮助文案
+- 本轮新增回归覆盖：
+- `TestScheduleAdapterListUserScheduleByWeekUsesViewerAndTargetIDs`
+- `TestQueryUserScheduleSchemaRequiresUserName`
+- `TestQueryUserScheduleReturnsTargetUsersSchedule`
+- `TestQueryUserScheduleDefaultsToCurrentWeek`
+- `TestQueryUserScheduleReturnsUserNameNotFound`
+- `TestQueryUserScheduleReturnsAmbiguousCandidates`
+- `TestToolPoolSelectorIncludesQueryUserScheduleForScheduleQuestions`
+- `TestAgentChatQueriesOtherUsersScheduleViaTool`
+- `TestAgentChatClarifiesAmbiguousUserScheduleQuery`
+- 本轮最终验证命令：
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-query-user-schedule" test ./internal/agent/tools -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-query-user-schedule" test ./internal/agent -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-query-user-schedule" test ./internal/app -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-query-user-schedule" test ./... -count=1`
+- `git -C "G:\gofile\schedule_server\.worktrees\agent-query-user-schedule" diff --check -- internal/agent internal/agent/tools internal/app tasks/todo.md`
+- `git diff --check` 当前没有新的格式错误，只有仓库既有的 `LF/CRLF` warning。
 - 本轮 bugfix 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-unsubscribe-routing-fix` 上完成，分支为 `codex/agent-unsubscribe-routing-fix`。根因不是单纯的 LLM 语义差，而是上层编排缺少“取消群订阅”的一等业务路径：`取消/关闭` 会被混进 `subscribe_attendance_push` 或误落到会话级 `task_cancel`。
 - 已新增 `internal/agent/unsubscribe_task.go`，把 `unsubscribe_attendance_push` 接成 migrated task；`internal/agent/agent.go` 现在会在 live 路径先执行高确定性 short-circuit，显式群订阅关闭请求直接落到 `unsubscribe_attendance_push`，不再依赖 router 猜测。
 - `internal/agent/query_router.go` 新增了显式取消订阅识别，`internal/agent/task_router.go` 同步支持 legacy/off 路径直建 `unsubscribe_attendance_push` 任务；因此无论 `RouteMode=live` 还是 `off`，`关闭考勤订阅 / 关闭本群考勤订阅 / 取消本群考勤订阅` 都会直达正确业务执行。
