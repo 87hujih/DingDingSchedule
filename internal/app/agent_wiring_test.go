@@ -172,6 +172,18 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 		LastErrorCode:           "department_name_not_found",
 		ShadowPlannerAction:     "clarify",
 		ShadowPlannerMatched:    false,
+		RouteKind:               "rag_query",
+		RouteConfidence:         0.91,
+		RouteReasonCode:         "rule_query",
+		RouteSource:             "semantic_router",
+		ClarifyCode:             "ambiguous_intent",
+		SoftNoticeCode:          "task_switched",
+		ExecutorName:            "rag_executor",
+		ToolPool:                "knowledge_only",
+		RouterLatencyMs:         7,
+		ExecutorLatencyMs:       28,
+		ShadowRouteKind:         "tool_query",
+		ShadowRouteMatched:      false,
 		AnswerMode:              "knowledge-only",
 		Question:                "如果请假信息没能同步到位，会出现什么情况",
 		ToolsCalled:             []string{"get_current_time"},
@@ -237,6 +249,42 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	}
 	if row.AnswerMode != "knowledge-only" {
 		t.Fatalf("AnswerMode = %q, want knowledge-only", row.AnswerMode)
+	}
+	if row.RouteKind != "rag_query" {
+		t.Fatalf("RouteKind = %q, want rag_query", row.RouteKind)
+	}
+	if row.RouteConfidence != 0.91 {
+		t.Fatalf("RouteConfidence = %v, want 0.91", row.RouteConfidence)
+	}
+	if row.RouteReasonCode != "rule_query" {
+		t.Fatalf("RouteReasonCode = %q, want rule_query", row.RouteReasonCode)
+	}
+	if row.RouteSource != "semantic_router" {
+		t.Fatalf("RouteSource = %q, want semantic_router", row.RouteSource)
+	}
+	if row.ClarifyCode != "ambiguous_intent" {
+		t.Fatalf("ClarifyCode = %q, want ambiguous_intent", row.ClarifyCode)
+	}
+	if row.SoftNoticeCode != "task_switched" {
+		t.Fatalf("SoftNoticeCode = %q, want task_switched", row.SoftNoticeCode)
+	}
+	if row.ExecutorName != "rag_executor" {
+		t.Fatalf("ExecutorName = %q, want rag_executor", row.ExecutorName)
+	}
+	if row.ToolPool != "knowledge_only" {
+		t.Fatalf("ToolPool = %q, want knowledge_only", row.ToolPool)
+	}
+	if row.RouterLatencyMs != 7 {
+		t.Fatalf("RouterLatencyMs = %d, want 7", row.RouterLatencyMs)
+	}
+	if row.ExecutorLatencyMs != 28 {
+		t.Fatalf("ExecutorLatencyMs = %d, want 28", row.ExecutorLatencyMs)
+	}
+	if row.ShadowRouteKind != "tool_query" {
+		t.Fatalf("ShadowRouteKind = %q, want tool_query", row.ShadowRouteKind)
+	}
+	if row.ShadowRouteMatched {
+		t.Fatalf("ShadowRouteMatched = true, want false")
 	}
 	if row.ConversationEvent != "task_follow_up" {
 		t.Fatalf("ConversationEvent = %q, want task_follow_up", row.ConversationEvent)

@@ -138,3 +138,34 @@ func TestAgentChatAllowsFollowUpToolCalls(t *testing.T) {
 		t.Fatalf("LLM request count = %d, want 3", requestCount)
 	}
 }
+
+func TestNewAgentUsesDedicatedRouterModelWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:       "http://main-llm",
+		LLMAPIKey:        "main-key",
+		LLMModel:         "main-model",
+		RouterLLMBaseURL: "http://router-llm",
+		RouterLLMAPIKey:  "router-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        "shadow",
+		User:             testUserPort{},
+		Tenant:           testTenantPort{},
+		Logger:           zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	if a.routerClient == nil {
+		t.Fatalf("routerClient = nil, want dedicated client")
+	}
+	if a.routerClient == a.llmClient {
+		t.Fatalf("routerClient and llmClient share the same pointer, want dedicated client")
+	}
+	if a.routerClient.model != "router-model" {
+		t.Fatalf("routerClient.model = %q, want router-model", a.routerClient.model)
+	}
+	if a.routeMode != "shadow" {
+		t.Fatalf("routeMode = %q, want shadow", a.routeMode)
+	}
+}

@@ -102,6 +102,21 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 			{Text: "混合", Value: "mixed"},
 			{Text: "拒答", Value: "reject"},
 		})
+	info.AddField("路由结果", "route_kind", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("路由来源", "route_source", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("执行器", "executor_name", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("澄清码", "clarify_code", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("轻提示码", "soft_notice_code", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("工具池", "tool_pool", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("路由耗时(ms)", "router_latency_ms", db.Int).FieldSortable()
+	info.AddField("执行耗时(ms)", "executor_latency_ms", db.Int).FieldSortable()
+	info.AddField("影子路由", "shadow_route_kind", db.Varchar)
 	info.AddField("提问", "question", db.Text).
 		FieldDisplay(func(m types.FieldModel) interface{} {
 			runes := []rune(m.Value)

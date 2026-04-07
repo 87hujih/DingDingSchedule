@@ -27,6 +27,13 @@ type runtimeTaskHandler interface {
 	BuildClarifyReply(task *TaskInstance) string
 }
 
+type routeTaskHandler interface {
+	runtimeTaskHandler
+	CreateTask(message string, uctx *tools.UserContext) (*TaskInstance, TaskApplyResult)
+	ApplyTurn(task *TaskInstance, message string, uctx *tools.UserContext) (TaskApplyResult, error)
+	BuildMetaReply(task *TaskInstance) string
+}
+
 func newTaskRuntime(handlers []TaskHandler) *taskRuntime {
 	registry := make(map[string]TaskHandler, len(handlers))
 	for _, handler := range handlers {
@@ -74,4 +81,18 @@ func (rt *taskRuntime) resolveRuntimeHandler(task *TaskInstance) (runtimeTaskHan
 		return nil, result
 	}
 	return handler, result
+}
+
+func (rt *taskRuntime) resolveCatalogHandler(taskType string) (routeTaskHandler, bool) {
+	if rt == nil || taskType == "" {
+		return nil, false
+	}
+
+	handler, ok := rt.handlers[taskType]
+	if !ok {
+		return nil, false
+	}
+
+	catalogHandler, ok := handler.(routeTaskHandler)
+	return catalogHandler, ok
 }

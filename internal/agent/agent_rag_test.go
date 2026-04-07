@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -298,8 +299,8 @@ func TestAgentChatUsesKnowledgeOnlyForLeaveSyncFailureQuestion(t *testing.T) {
 	}
 }
 
-// TestAgentChatUsesMixedAnswerModeForRealtimePlusRuleQuestion 验证实时查询加规则说明会走 mixed。
-func TestAgentChatUsesMixedAnswerModeForRealtimePlusRuleQuestion(t *testing.T) {
+// TestAgentChatReturnsRealtimeResultOnlyForRealtimePlusRuleQuestion 验证实时+规则表达首轮只返回实时结果。
+func TestAgentChatReturnsRealtimeResultOnlyForRealtimePlusRuleQuestion(t *testing.T) {
 	t.Parallel()
 
 	knowledge := &testKnowledgePort{
@@ -317,6 +318,12 @@ func TestAgentChatUsesMixedAnswerModeForRealtimePlusRuleQuestion(t *testing.T) {
 			},
 		},
 	}
+
+	routerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"kind\":\"tool_query\",\"confidence\":0.98,\"reason_code\":\"live_attendance\"}"},"finish_reason":"stop"}]}`))
+	}))
+	defer routerServer.Close()
 
 	var requests []capturedChatRequest
 	var mu sync.Mutex
@@ -338,7 +345,7 @@ func TestAgentChatUsesMixedAnswerModeForRealtimePlusRuleQuestion(t *testing.T) {
 		case 1:
 			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_current_time","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`))
 		case 2:
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"今天第一节未到人员已查询；迟到规则以上课后 10 分钟为界。"},"finish_reason":"stop"}]}`))
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"今天第一节未到人员已查询。"},"finish_reason":"stop"}]}`))
 		default:
 			http.Error(w, `{"error":{"message":"unexpected extra request"}}`, http.StatusInternalServerError)
 		}
@@ -346,15 +353,19 @@ func TestAgentChatUsesMixedAnswerModeForRealtimePlusRuleQuestion(t *testing.T) {
 	defer server.Close()
 
 	a := NewAgent(Deps{
-		LLMBaseURL:     server.URL,
-		LLMAPIKey:      "test-key",
-		LLMModel:       "test-model",
-		Knowledge:      knowledge,
-		User:           testUserPort{},
-		Semester:       testSemesterPort{},
-		SchedulePeriod: testSchedulePeriodPort{},
-		Tenant:         testTenantPort{},
-		Logger:         zap.NewNop().Sugar(),
+		LLMBaseURL:       server.URL,
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
+		RouterLLMBaseURL: routerServer.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
+		Knowledge:        knowledge,
+		User:             testUserPort{},
+		Semester:         testSemesterPort{},
+		SchedulePeriod:   testSchedulePeriodPort{},
+		Tenant:           testTenantPort{},
+		Logger:           zap.NewNop().Sugar(),
 	})
 	defer a.Stop()
 
@@ -369,8 +380,8 @@ func TestAgentChatUsesMixedAnswerModeForRealtimePlusRuleQuestion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
-	if reply == "" {
-		t.Fatalf("Chat() reply should not be empty")
+	if reply != "今天第一节未到人员已查询。" {
+		t.Fatalf("Chat() reply = %q, want only realtime result", reply)
 	}
 
 	mu.Lock()
@@ -379,13 +390,16 @@ func TestAgentChatUsesMixedAnswerModeForRealtimePlusRuleQuestion(t *testing.T) {
 		t.Fatalf("request count = %d, want 2", len(requests))
 	}
 	if len(requests[0].Tools) == 0 {
-		t.Fatalf("mixed request should keep tools")
+		t.Fatalf("tool_query request should keep tools")
 	}
-	if !requestContains(requests[0], "先回答实时查询结果") {
-		t.Fatalf("mixed request missing answer-order instruction, messages = %+v", requests[0].Messages)
+	if requestContains(requests[0], "先回答实时查询结果") {
+		t.Fatalf("tool_query request should not inject mixed answer-order instruction, messages = %+v", requests[0].Messages)
 	}
-	if !requestContains(requests[0], "考勤规则#1") {
-		t.Fatalf("mixed request missing source ref, messages = %+v", requests[0].Messages)
+	if requestContains(requests[0], "考勤规则#1") {
+		t.Fatalf("tool_query request should not inject rule source ref, messages = %+v", requests[0].Messages)
+	}
+	if requestContains(requests[0], "上课开始后超过 10 分钟打卡视为迟到") {
+		t.Fatalf("tool_query request should not inject rule body, messages = %+v", requests[0].Messages)
 	}
 }
 
@@ -449,6 +463,12 @@ func TestAgentChatKeepsToolFirstForLiveQueryWithoutRuleSignal(t *testing.T) {
 		},
 	}
 
+	routerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"kind\":\"tool_query\",\"confidence\":0.97,\"reason_code\":\"live_attendance\"}"},"finish_reason":"stop"}]}`))
+	}))
+	defer routerServer.Close()
+
 	var requests []capturedChatRequest
 	var mu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -477,15 +497,19 @@ func TestAgentChatKeepsToolFirstForLiveQueryWithoutRuleSignal(t *testing.T) {
 	defer server.Close()
 
 	a := NewAgent(Deps{
-		LLMBaseURL:     server.URL,
-		LLMAPIKey:      "test-key",
-		LLMModel:       "test-model",
-		Knowledge:      knowledge,
-		User:           testUserPort{},
-		Semester:       testSemesterPort{},
-		SchedulePeriod: testSchedulePeriodPort{},
-		Tenant:         testTenantPort{},
-		Logger:         zap.NewNop().Sugar(),
+		LLMBaseURL:       server.URL,
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
+		RouterLLMBaseURL: routerServer.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
+		Knowledge:        knowledge,
+		User:             testUserPort{},
+		Semester:         testSemesterPort{},
+		SchedulePeriod:   testSchedulePeriodPort{},
+		Tenant:           testTenantPort{},
+		Logger:           zap.NewNop().Sugar(),
 	})
 	defer a.Stop()
 
@@ -514,6 +538,13 @@ func TestAgentChatKeepsToolFirstForLiveQueryWithoutRuleSignal(t *testing.T) {
 	}
 	if requestContains(requests[0], "系统总览#17") {
 		t.Fatalf("tool-first request should not inject knowledge summary, messages = %+v", requests[0].Messages)
+	}
+	names := requestToolNames(requests[0])
+	if !toolPoolContains(names, "query_attendance_status") {
+		t.Fatalf("tool-first request missing attendance tool: %v", names)
+	}
+	if toolPoolContains(names, "subscribe_attendance_push") {
+		t.Fatalf("tool-first request leaked admin subscription tool: %v", names)
 	}
 }
 
@@ -829,7 +860,7 @@ func TestAgentChatWritesConversationTaskMetricsToCallLog(t *testing.T) {
 	}
 }
 
-func TestAgentDoesNotRejectUnknownBusinessLikeMessageBeforeRetrieval(t *testing.T) {
+func TestAgentClarifiesUnknownBusinessLikeMessageViaLiveRoute(t *testing.T) {
 	t.Parallel()
 
 	a := NewAgent(Deps{
@@ -1282,17 +1313,27 @@ func TestAgentChatResumesSubscriptionTaskWithDepartmentOnlyReply(t *testing.T) {
 	t.Parallel()
 
 	groupSub := &testGroupSubPort{}
+	routerServer := newRouteDecisionServer(t,
+		RouteDecision{Kind: RouteTaskStart, TargetTaskType: "subscribe_attendance_push"},
+		RouteDecision{Kind: RouteTaskContinue},
+	)
+	defer routerServer.Close()
+
 	a := NewAgent(Deps{
-		LLMBaseURL:     "http://127.0.0.1:0",
-		LLMAPIKey:      "test-key",
-		LLMModel:       "test-model",
-		GroupSub:       groupSub,
-		Dept:           testClarifyDeptPort{},
-		User:           testUserPort{},
-		Semester:       testSemesterPort{},
-		SchedulePeriod: testSchedulePeriodPort{},
-		Tenant:         testTenantPort{},
-		Logger:         zap.NewNop().Sugar(),
+		LLMBaseURL:       "http://127.0.0.1:0",
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
+		RouterLLMBaseURL: routerServer.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
+		GroupSub:         groupSub,
+		Dept:             testClarifyDeptPort{},
+		User:             testUserPort{},
+		Semester:         testSemesterPort{},
+		SchedulePeriod:   testSchedulePeriodPort{},
+		Tenant:           testTenantPort{},
+		Logger:           zap.NewNop().Sugar(),
 	})
 	defer a.Stop()
 
@@ -1399,17 +1440,27 @@ func TestAgentChatUsesPlannerPrimaryForLongSubscriptionFollowUp(t *testing.T) {
 	t.Parallel()
 
 	groupSub := &testGroupSubPort{}
+	routerServer := newRouteDecisionServer(t,
+		RouteDecision{Kind: RouteTaskStart, TargetTaskType: "subscribe_attendance_push"},
+		RouteDecision{Kind: RouteTaskContinue},
+	)
+	defer routerServer.Close()
+
 	a := NewAgent(Deps{
-		LLMBaseURL:     "http://127.0.0.1:0",
-		LLMAPIKey:      "test-key",
-		LLMModel:       "test-model",
-		GroupSub:       groupSub,
-		Dept:           testFamilyDeptPort{},
-		User:           testUserPort{},
-		Semester:       testSemesterPort{},
-		SchedulePeriod: testSchedulePeriodPort{},
-		Tenant:         testTenantPort{},
-		Logger:         zap.NewNop().Sugar(),
+		LLMBaseURL:       "http://127.0.0.1:0",
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
+		RouterLLMBaseURL: routerServer.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
+		GroupSub:         groupSub,
+		Dept:             testFamilyDeptPort{},
+		User:             testUserPort{},
+		Semester:         testSemesterPort{},
+		SchedulePeriod:   testSchedulePeriodPort{},
+		Tenant:           testTenantPort{},
+		Logger:           zap.NewNop().Sugar(),
 	})
 	defer a.Stop()
 
@@ -1622,16 +1673,27 @@ func TestAgentChatResumesManualSignTaskAcrossMultipleReplies(t *testing.T) {
 	t.Parallel()
 
 	attendance := &testTaskAttendancePort{}
+	routerServer := newRouteDecisionServer(t,
+		RouteDecision{Kind: RouteTaskStart, TargetTaskType: "sign_for_user"},
+		RouteDecision{Kind: RouteTaskContinue},
+		RouteDecision{Kind: RouteTaskContinue},
+	)
+	defer routerServer.Close()
+
 	a := NewAgent(Deps{
-		LLMBaseURL:     "http://127.0.0.1:0",
-		LLMAPIKey:      "test-key",
-		LLMModel:       "test-model",
-		Attendance:     attendance,
-		User:           testTaskUserPort{},
-		Semester:       testSemesterPort{},
-		SchedulePeriod: testSchedulePeriodPort{},
-		Tenant:         testTenantPort{},
-		Logger:         zap.NewNop().Sugar(),
+		LLMBaseURL:       "http://127.0.0.1:0",
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
+		RouterLLMBaseURL: routerServer.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
+		Attendance:       attendance,
+		User:             testTaskUserPort{},
+		Semester:         testSemesterPort{},
+		SchedulePeriod:   testSchedulePeriodPort{},
+		Tenant:           testTenantPort{},
+		Logger:           zap.NewNop().Sugar(),
 	})
 	defer a.Stop()
 
@@ -1697,16 +1759,26 @@ func TestAgentChatUsesPlannerPrimaryForLongManualSignFollowUp(t *testing.T) {
 	t.Parallel()
 
 	attendance := &testTaskAttendancePort{}
+	routerServer := newRouteDecisionServer(t,
+		RouteDecision{Kind: RouteTaskStart, TargetTaskType: "sign_for_user"},
+		RouteDecision{Kind: RouteTaskContinue},
+	)
+	defer routerServer.Close()
+
 	a := NewAgent(Deps{
-		LLMBaseURL:     "http://127.0.0.1:0",
-		LLMAPIKey:      "test-key",
-		LLMModel:       "test-model",
-		Attendance:     attendance,
-		User:           testTaskUserPort{},
-		Semester:       testSemesterPort{},
-		SchedulePeriod: testSchedulePeriodPort{},
-		Tenant:         testTenantPort{},
-		Logger:         zap.NewNop().Sugar(),
+		LLMBaseURL:       "http://127.0.0.1:0",
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
+		RouterLLMBaseURL: routerServer.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
+		Attendance:       attendance,
+		User:             testTaskUserPort{},
+		Semester:         testSemesterPort{},
+		SchedulePeriod:   testSchedulePeriodPort{},
+		Tenant:           testTenantPort{},
+		Logger:           zap.NewNop().Sugar(),
 	})
 	defer a.Stop()
 
@@ -1753,17 +1825,27 @@ func TestAgentChatUsesPlannerPrimaryForLongManualSignFollowUp(t *testing.T) {
 func TestAgentChatCancelsActiveTaskWhenUserSaysCancel(t *testing.T) {
 	t.Parallel()
 
+	routerServer := newRouteDecisionServer(t,
+		RouteDecision{Kind: RouteTaskStart, TargetTaskType: "subscribe_attendance_push"},
+		RouteDecision{Kind: RouteTaskCancel},
+	)
+	defer routerServer.Close()
+
 	a := NewAgent(Deps{
-		LLMBaseURL:     "http://127.0.0.1:0",
-		LLMAPIKey:      "test-key",
-		LLMModel:       "test-model",
-		GroupSub:       &testGroupSubPort{},
-		Dept:           testClarifyDeptPort{},
-		User:           testUserPort{},
-		Semester:       testSemesterPort{},
-		SchedulePeriod: testSchedulePeriodPort{},
-		Tenant:         testTenantPort{},
-		Logger:         zap.NewNop().Sugar(),
+		LLMBaseURL:       "http://127.0.0.1:0",
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
+		RouterLLMBaseURL: routerServer.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
+		GroupSub:         &testGroupSubPort{},
+		Dept:             testClarifyDeptPort{},
+		User:             testUserPort{},
+		Semester:         testSemesterPort{},
+		SchedulePeriod:   testSchedulePeriodPort{},
+		Tenant:           testTenantPort{},
+		Logger:           zap.NewNop().Sugar(),
 	})
 	defer a.Stop()
 
@@ -1805,10 +1887,25 @@ func TestAgentChatCancelsActiveTaskWhenUserSaysCancel(t *testing.T) {
 func TestAgentChatSwitchesToNewRequestWhenNewBusinessQuestionArrives(t *testing.T) {
 	t.Parallel()
 
+	routerServer := newRouteDecisionServer(t,
+		RouteDecision{Kind: RouteTaskStart, TargetTaskType: "subscribe_attendance_push"},
+		RouteDecision{
+			Kind:           RouteTaskStart,
+			TargetTaskType: "query_subscription_status",
+			SwitchTask:     true,
+			SoftNoticeCode: "switched_task",
+		},
+	)
+	defer routerServer.Close()
+
 	a := NewAgent(Deps{
-		LLMBaseURL: "http://127.0.0.1:0",
-		LLMAPIKey:  "test-key",
-		LLMModel:   "test-model",
+		LLMBaseURL:       "http://127.0.0.1:0",
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
+		RouterLLMBaseURL: routerServer.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
 		GroupSub: testClarifyGroupSubPort{
 			info: &agenttools.GroupSubInfo{},
 		},
@@ -1846,8 +1943,63 @@ func TestAgentChatSwitchesToNewRequestWhenNewBusinessQuestionArrives(t *testing.
 	if err != nil {
 		t.Fatalf("switch Chat() error = %v", err)
 	}
+	if !strings.Contains(reply, "先切到") {
+		t.Fatalf("reply = %q, want soft switch notice", reply)
+	}
 	if !strings.Contains(reply, "还没有订阅") {
 		t.Fatalf("reply = %q, want subscription status response", reply)
+	}
+}
+
+func TestAgentDoesNotRejectUnknownBusinessLikeMessageBeforeRetrieval(t *testing.T) {
+	t.Parallel()
+
+	knowledge := &testKnowledgePort{}
+	routerServer := newRouteDecisionServer(t, RouteDecision{
+		Kind:        RouteClarify,
+		ClarifyCode: "ambiguous_intent",
+	})
+	defer routerServer.Close()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:       "http://127.0.0.1:0",
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
+		RouterLLMBaseURL: routerServer.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
+		Knowledge:        knowledge,
+		User:             testUserPort{},
+		Semester:         testSemesterPort{},
+		SchedulePeriod:   testSchedulePeriodPort{},
+		Tenant:           testTenantPort{},
+		Logger:           zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "这个怎么算",
+		ConversationID:   "conv-ambiguous-business",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if reply == outOfDomainReply {
+		t.Fatalf("reply = %q, should clarify instead of reject", reply)
+	}
+	if !strings.Contains(reply, "没完全理解") {
+		t.Fatalf("reply = %q, want clarify guidance", reply)
+	}
+
+	knowledge.mu.Lock()
+	defer knowledge.mu.Unlock()
+	if knowledge.calls != 0 {
+		t.Fatalf("knowledge search calls = %d, want 0", knowledge.calls)
 	}
 }
 
@@ -1927,4 +2079,48 @@ func requestContains(req capturedChatRequest, needle string) bool {
 		}
 	}
 	return false
+}
+
+func requestToolNames(req capturedChatRequest) []string {
+	names := make([]string, 0, len(req.Tools))
+	for _, raw := range req.Tools {
+		var toolDef struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		}
+		if err := json.Unmarshal(raw, &toolDef); err != nil {
+			continue
+		}
+		if strings.TrimSpace(toolDef.Function.Name) == "" {
+			continue
+		}
+		names = append(names, toolDef.Function.Name)
+	}
+	return names
+}
+
+func newRouteDecisionServer(t *testing.T, decisions ...RouteDecision) *httptest.Server {
+	t.Helper()
+
+	var mu sync.Mutex
+	index := 0
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if index >= len(decisions) {
+			http.Error(w, `{"error":{"message":"unexpected router request"}}`, http.StatusInternalServerError)
+			return
+		}
+
+		payload, err := json.Marshal(decisions[index])
+		if err != nil {
+			t.Fatalf("marshal route decision: %v", err)
+		}
+		index++
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":` + strconv.Quote(string(payload)) + `},"finish_reason":"stop"}]}`))
+	}))
 }

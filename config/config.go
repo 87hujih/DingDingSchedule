@@ -22,9 +22,13 @@ type Config struct {
 
 // LLM OpenAI-compatible API 配置
 type LLM struct {
-	BaseURL string `mapstructure:"base_url" yaml:"base_url"`
-	APIKey  string `mapstructure:"api_key" yaml:"api_key"`
-	Model   string `mapstructure:"model" yaml:"model"`
+	BaseURL       string `mapstructure:"base_url" yaml:"base_url"`
+	APIKey        string `mapstructure:"api_key" yaml:"api_key"`
+	Model         string `mapstructure:"model" yaml:"model"`
+	RouterBaseURL string `mapstructure:"router_base_url" yaml:"router_base_url"`
+	RouterAPIKey  string `mapstructure:"router_api_key" yaml:"router_api_key"`
+	RouterModel   string `mapstructure:"router_model" yaml:"router_model"`
+	RouteMode     string `mapstructure:"route_mode" yaml:"route_mode"`
 }
 
 // Server 配置

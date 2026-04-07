@@ -242,6 +242,18 @@ type CallLog struct {
 	LastErrorCode           string
 	ShadowPlannerAction     string
 	ShadowPlannerMatched    bool
+	RouteKind               string
+	RouteConfidence         float64
+	RouteReasonCode         string
+	RouteSource             string
+	ClarifyCode             string
+	SoftNoticeCode          string
+	ExecutorName            string
+	ToolPool                string
+	RouterLatencyMs         int64
+	ExecutorLatencyMs       int64
+	ShadowRouteKind         string
+	ShadowRouteMatched      bool
 	AnswerMode              string
 	Question                string
 	ToolsCalled             []string // 调用的工具名列表

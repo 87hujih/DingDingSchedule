@@ -20,6 +20,47 @@ func (h *subscribeTaskHandler) Type() string {
 	return "subscribe_attendance_push"
 }
 
+func (h *subscribeTaskHandler) CreateTask(message string, uctx *tools.UserContext) (*TaskInstance, TaskApplyResult) {
+	task := &TaskInstance{
+		Type:      h.Type(),
+		Status:    string(taskStatusWaiting),
+		Slots:     map[string]string{},
+		UpdatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(sessionTTL),
+	}
+
+	apply, _ := h.ApplyTurn(task, message, uctx)
+	return task, apply
+}
+
+func (h *subscribeTaskHandler) ApplyTurn(task *TaskInstance, message string, _ *tools.UserContext) (TaskApplyResult, error) {
+	if task == nil {
+		return TaskApplyResult{}, nil
+	}
+	if task.Slots == nil {
+		task.Slots = make(map[string]string)
+	}
+
+	normalized := normalizeQuery(message)
+	var matched []string
+	switch {
+	case containsAny(normalized, []string{"全部人员", "全部"}):
+		taskApplySlot(task, &matched, "scope", "all")
+	case containsAny(normalized, []string{"指定部门", "部分部门"}):
+		taskApplySlot(task, &matched, "scope", "department")
+	case isDepartmentListQuestion(normalized):
+		// meta follow-up; keep task state unchanged
+	default:
+		if deptNames := extractSubscriptionDeptNames(message); deptNames != "" {
+			taskApplySlot(task, &matched, "scope", "department")
+			taskApplySlot(task, &matched, "dept_names", deptNames)
+		}
+	}
+
+	reconcileSubscriptionTask(task)
+	return TaskApplyResult{MatchedSlots: matched}, nil
+}
+
 func (h *subscribeTaskHandler) Prepare(ctx context.Context, task *TaskInstance, deps Deps) ([]string, error) {
 	if task == nil || deps.Dept == nil || !needsDepartmentCache(task) {
 		return nil, nil
@@ -128,6 +169,10 @@ func (h *subscribeTaskHandler) BuildClarifyReply(task *TaskInstance) string {
 	return buildTaskClarifyReply(activeTaskFromTaskInstance(task))
 }
 
+func (h *subscribeTaskHandler) BuildMetaReply(task *TaskInstance) string {
+	return h.BuildClarifyReply(task)
+}
+
 func needsDepartmentCache(task *TaskInstance) bool {
 	if task == nil || task.Type != "subscribe_attendance_push" {
 		return false
@@ -164,4 +209,65 @@ func buildCachedDepartmentReply(task *TaskInstance) string {
 		return ""
 	}
 	return fmt.Sprintf("当前可选部门有：%s。请告诉我需要订阅哪些部门。", strings.Join(names, "、"))
+}
+
+func extractSubscriptionDeptNames(message string) string {
+	candidate := strings.TrimSpace(message)
+	if candidate == "" {
+		return ""
+	}
+
+	candidate = strings.NewReplacer(
+		"请帮我", "",
+		"帮我", "",
+		"给我", "",
+		"开启", "",
+		"开通", "",
+		"打开", "",
+		"订阅", "",
+		"这个部门的", "",
+		"该部门的", "",
+		"这个部门", "",
+		"该部门", "",
+		"部门的", "",
+		"部门", "",
+		"考勤推送", "",
+		"推送", "",
+		"考勤", "",
+	).Replace(candidate)
+	candidate = strings.Trim(candidate, " ，。！？,!.")
+	if candidate == "" {
+		return ""
+	}
+	if containsAny(normalizeQuery(candidate), []string{"全部人员", "全部", "指定", "部分"}) {
+		return ""
+	}
+	return candidate
+}
+
+func reconcileSubscriptionTask(task *TaskInstance) {
+	if task == nil {
+		return
+	}
+
+	scope := strings.TrimSpace(task.Slots["scope"])
+	deptNames := strings.TrimSpace(task.Slots["dept_names"])
+	switch scope {
+	case "all":
+		task.Status = string(taskStatusReady)
+		task.MissingSlots = nil
+	case "department":
+		if deptNames == "" {
+			task.Status = string(taskStatusWaiting)
+			task.MissingSlots = []string{"dept_names"}
+		} else {
+			task.Status = string(taskStatusReady)
+			task.MissingSlots = nil
+		}
+	default:
+		task.Status = string(taskStatusWaiting)
+		task.MissingSlots = []string{"scope"}
+	}
+	task.UpdatedAt = time.Now()
+	task.ExpiresAt = time.Now().Add(sessionTTL)
 }

@@ -49,3 +49,40 @@ func buildTaskMetaReply(task *TaskInstance) string {
 	}
 	return buildTaskClarifyReply(activeTaskFromTaskInstance(task))
 }
+
+func composeRouteReply(decision RouteDecision, task *TaskRouteState) string {
+	switch decision.Kind {
+	case RouteOffTopicReject:
+		return outOfDomainReply
+	case RouteSocialRefuse:
+		return "我主要帮助处理课表、考勤、请假、补签和订阅相关事务，其他闲聊我就不展开了。"
+	case RouteClarify:
+		if strings.TrimSpace(decision.ClarifyCode) == "ambiguous_intent" {
+			return "我还没完全理解你的意思。你可以直接说明要查哪类课表、考勤、请假、补签或订阅问题。"
+		}
+	}
+
+	if task != nil && task.Type != "" {
+		return buildTaskClarifyReply(&ActiveTask{
+			Type:          task.Type,
+			Status:        taskStatus(task.Status),
+			RequiredSlots: append([]string(nil), task.MissingSlots...),
+			FilledSlots:   map[string]string{},
+		})
+	}
+
+	return "请再具体说明你要查询或操作的内容。"
+}
+
+func composeSoftTaskNotice(code, reply string) string {
+	reply = strings.TrimSpace(reply)
+	switch strings.TrimSpace(code) {
+	case "switched_task":
+		if reply == "" {
+			return "先切到你刚刚这个新请求。"
+		}
+		return "先切到你刚刚这个新请求。\n" + reply
+	default:
+		return reply
+	}
+}

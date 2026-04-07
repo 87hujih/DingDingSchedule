@@ -59,6 +59,33 @@ func (r *Registry) ToToolDefs(userRole int) []ToolDef {
 	return defs
 }
 
+// ToToolDefsByName 根据工具名白名单和用户角色返回最小工具集合。
+func (r *Registry) ToToolDefsByName(userRole int, names []string) []ToolDef {
+	if len(names) == 0 {
+		return nil
+	}
+
+	allowed := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		allowed[name] = struct{}{}
+	}
+
+	var defs []ToolDef
+	for _, entry := range r.entries {
+		if userRole < entry.MinRole {
+			continue
+		}
+		if _, ok := allowed[entry.Def.Function.Name]; !ok {
+			continue
+		}
+		defs = append(defs, entry.Def)
+	}
+	return defs
+}
+
 // Dispatch 分发工具调用（含二次权限校验）
 func (r *Registry) Dispatch(ctx context.Context, uctx *UserContext, name string, params json.RawMessage) (string, error) {
 	entry, ok := r.byName[name]
