@@ -117,6 +117,23 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 	info.AddField("路由耗时(ms)", "router_latency_ms", db.Int).FieldSortable()
 	info.AddField("执行耗时(ms)", "executor_latency_ms", db.Int).FieldSortable()
 	info.AddField("影子路由", "shadow_route_kind", db.Varchar)
+	info.AddField("协议模式", "protocol_mode", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("协议动作", "protocol_act", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("协议域", "protocol_domain", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("协议操作", "protocol_operation", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("协议校验", "protocol_validation_code", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("前置 workflow", "workflow_id_before", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("后置 workflow", "workflow_id_after", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("回复类型", "response_kind", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("允许执行", "execution_allowed", db.Tinyint)
 	info.AddField("提问", "question", db.Text).
 		FieldDisplay(func(m types.FieldModel) interface{} {
 			runes := []rune(m.Value)

@@ -39,6 +39,15 @@ type AgentCallLog struct {
 	ExecutorLatencyMs       int64
 	ShadowRouteKind         string `gorm:"size:32"`
 	ShadowRouteMatched      bool
+	ProtocolMode            string `gorm:"size:32"`
+	ProtocolAct             string `gorm:"size:32"`
+	ProtocolDomain          string `gorm:"size:32"`
+	ProtocolOperation       string `gorm:"size:64"`
+	ProtocolValidationCode  string `gorm:"size:64"`
+	WorkflowIDBefore        string `gorm:"size:64"`
+	WorkflowIDAfter         string `gorm:"size:64"`
+	ResponseKind            string `gorm:"size:32"`
+	ExecutionAllowed        bool
 	AnswerMode              string `gorm:"size:32"`
 	Question                string `gorm:"type:text"` // 用户提问
 	ToolsCalled             string `gorm:"size:500"`  // 调用的工具，逗号分隔

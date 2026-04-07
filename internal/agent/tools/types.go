@@ -255,6 +255,15 @@ type CallLog struct {
 	ExecutorLatencyMs       int64
 	ShadowRouteKind         string
 	ShadowRouteMatched      bool
+	ProtocolMode            string
+	ProtocolAct             string
+	ProtocolDomain          string
+	ProtocolOperation       string
+	ProtocolValidationCode  string
+	WorkflowIDBefore        string
+	WorkflowIDAfter         string
+	ResponseKind            string
+	ExecutionAllowed        bool
 	AnswerMode              string
 	Question                string
 	ToolsCalled             []string // 调用的工具名列表
