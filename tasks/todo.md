@@ -1,6 +1,43 @@
 # 任务清单
 
 ## 当前任务
+- [x] 阅读 `internal/agent` 当前主链路与关键协作组件，梳理 `planner / runtime / fallback` 的边界。
+- [x] 归纳 Agent 模块的职责分层、状态流转和主要耦合点，作为设计讨论基线。
+- [x] 与用户确认本轮采用“任务感知的多分类 Router + DAG”作为 Agent 新编排方向。
+- [x] 用户确认：涉及实时数据时默认只返回实时结果，规则依据留到后续追问再展开。
+- [x] 用户确认：Router 低置信度时先澄清，不默认落到 `RAG` 或 `TOOL`。
+- [x] 用户确认：活动任务中遇到明确新请求时，直接切换到新任务。
+- [x] 用户确认：整体改造路线采用“唯一 RouteDecision + DAG 执行器”的路线 2，而不是在旧主链路外再套一层 Router。
+- [x] 与用户对齐本次要讨论的设计问题，并输出基于代码现状的分析结论。
+- [x] 将确认后的方案写入 `docs/superpowers/specs/2026-04-06-agent-semantic-router-dag-design.md`。
+- [x] 将 implementation plan 写入 `docs/superpowers/plans/2026-04-06-agent-semantic-router-dag-plan.md`。
+- [ ] 等待用户 review 本轮 semantic router + DAG 设计文档与 implementation plan。
+
+## 当前任务复盘
+- 已基于 `internal/agent/agent.go`、`planner_service.go`、`task_runtime.go`、`session.go`、`task_router.go`、`slot_filler.go` 的现状完成静态梳理，确认当前主问题不是单点关键词规则，而是顶层裁决权分裂：同一条消息会被 `planner-primary`、`conversation/task` 状态机、`plan(...)` 回答模式路由重复解释。
+- 已与用户确认本轮架构方向不是简单的 `RAG / TOOL / CHAT` 三分类，而是“任务感知的多分类 Router + DAG”，并明确采用“唯一 `RouteDecision` + DAG executors”的路线 2。
+- 已确认关键产品边界：
+- 涉及实时数据时，首轮只返回实时结果，规则依据留到后续追问。
+- Router 低置信度时统一先澄清。
+- 活动任务中遇到明确新请求时直接切换。
+- 任务切换必须带 `Soft Explicit` 轻提示，不能完全静默。
+- 允许极少量高确定性的 short-circuit，但它们不能参与业务语义路由。
+- 设计文档已写入 `docs/superpowers/specs/2026-04-06-agent-semantic-router-dag-design.md`，内容已固定以下核心设计：
+- 顶层骨架收敛为 `Ingress -> ShortCircuitGuard -> LoadSession -> BuildRouteContext -> SemanticRouter -> RouteSwitch -> BranchExecutor -> ResponseComposer -> Persist`
+- Router 成为唯一顶层裁决器，输出 `off_topic_reject / social_refuse / clarify / task_start / task_continue / task_meta / task_cancel / rag_query / tool_query`
+- 不保留用户可见的 `mixed_query` 首轮分支；“实时 + 规则”首轮仍默认走 `tool_query`
+- `rag_query` 与 `tool_query` 上下文物理隔离；task 分支独占任务状态读写权限
+- 当前 `TaskInstance` 被定义为未来唯一任务状态模型，`ActiveTask` 双写兼容仅为迁移期存在
+- 迁移顺序按 `shadow route -> 非任务分支 -> task 分支 -> tool_query -> 清理旧主路由 -> 收敛状态模型` 分阶段推进
+- 失败恢复、观测日志、shadow route 指标、回归测试与 rollout 边界已写入 spec
+- implementation plan 已写入 `docs/superpowers/plans/2026-04-06-agent-semantic-router-dag-plan.md`，按“路由契约与配置 -> shadow router -> 非任务 DAG 分支 -> tool_query 隔离 -> task 分支切换 -> 主链路收敛 -> 全量验证”拆成 7 个任务，并为每个任务给出文件边界、失败测试、验证命令与建议提交粒度。
+- 按 `writing-plans` 原流程本应 dispatch plan reviewer 子代理，但当前 harness 只有在用户显式要求时才允许 `spawn_agent`，因此本轮未启用 reviewer 子代理，只做了主线程自检与 `git diff --check`。
+- 本轮本地自检命令：
+- `git diff --check -- tasks/todo.md docs/superpowers/specs/2026-04-06-agent-semantic-router-dag-design.md`
+- `git diff --check -- tasks/todo.md docs/superpowers/plans/2026-04-06-agent-semantic-router-dag-plan.md`
+- 当前仅有仓库既有的 LF/CRLF warning，没有新的 diff 格式错误。
+
+## 当前任务
 - [x] 复现全仓 `go test ./...` 在 `internal/ci` 的失败，并锁定 `deploy_workflow_test.go` 与当前 `deploy.yml` 的实现差异。
 - [x] 以最小改动收敛 `internal/ci/deploy_workflow_test.go` 对旧部署实现的耦合，改为校验当前工作流仍满足的 SSH 认证与远端健康检查约束。
 - [x] 运行 `internal/ci` 定向测试与全仓 `go test ./...`，确认失败已消失并补充本轮复盘。
