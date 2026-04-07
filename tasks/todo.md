@@ -1,6 +1,14 @@
 # 任务清单
 
 ## 当前任务
+- [x] 探查 Agent 现有课表工具、Adapter 与 ScheduleService 的能力边界，确认“查他人课表”是否已有底层支撑。
+- [x] 与用户确认权限边界：所有已登录用户都可查询他人课表。
+- [x] 与用户确认 Agent 侧采用新增独立工具 `query_user_schedule`，而不是改造 `query_my_schedule`。
+- [x] 与用户确认重名用户时直接列出候选姓名，不做静默猜测。
+- [x] 与用户确认这轮顺手更新帮助文案/能力描述。
+- [x] 将“查询他人课表”设计写入 spec，等待用户 review 后再进入 implementation plan。
+- [x] 将“查询他人课表”设计拆成 implementation plan，等待进入执行阶段。
+- [ ] 等待进入 implementation plan 执行阶段。
 - [x] 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-unsubscribe-routing-fix` 中修复“关闭/取消群考勤订阅”被误路由的问题，并保持范围可验证。
 - [x] 补失败回归测试，覆盖“关闭考勤订阅 / 关闭本群考勤订阅 / 取消本群考勤订阅”三类说法。
 - [x] 以最小改动补齐取消订阅的业务路由、执行链和 `task_cancel` 护栏。
