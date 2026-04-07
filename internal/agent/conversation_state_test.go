@@ -137,3 +137,21 @@ func TestSessionManagerStoresTaskInstance(t *testing.T) {
 		t.Fatalf("legacy task scope = %q, want department", legacyTask.FilledSlots["scope"])
 	}
 }
+
+func TestSessionManagerBuildsRouteStateFromTaskInstance(t *testing.T) {
+	t.Parallel()
+
+	sm := newSessionManager()
+	sm.setTaskInstance("k", &TaskInstance{
+		ID:           "task-1",
+		Type:         "subscribe_attendance_push",
+		Status:       "waiting_slots",
+		MissingSlots: []string{"dept_names"},
+		ExpiresAt:    time.Now().Add(sessionTTL),
+	})
+
+	_, task := sm.getTaskState("k")
+	if task == nil || task.ID != "task-1" {
+		t.Fatalf("task = %#v, want task-1", task)
+	}
+}

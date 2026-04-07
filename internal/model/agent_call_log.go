@@ -27,6 +27,18 @@ type AgentCallLog struct {
 	LastErrorCode           string `gorm:"size:64"`
 	ShadowPlannerAction     string `gorm:"size:32"`
 	ShadowPlannerMatched    bool
+	RouteKind               string `gorm:"size:32"`
+	RouteConfidence         float64
+	RouteReasonCode         string `gorm:"size:64"`
+	RouteSource             string `gorm:"size:32"`
+	ClarifyCode             string `gorm:"size:64"`
+	SoftNoticeCode          string `gorm:"size:64"`
+	ExecutorName            string `gorm:"size:64"`
+	ToolPool                string `gorm:"size:64"`
+	RouterLatencyMs         int64
+	ExecutorLatencyMs       int64
+	ShadowRouteKind         string `gorm:"size:32"`
+	ShadowRouteMatched      bool
 	AnswerMode              string `gorm:"size:32"`
 	Question                string `gorm:"type:text"` // 用户提问
 	ToolsCalled             string `gorm:"size:500"`  // 调用的工具，逗号分隔

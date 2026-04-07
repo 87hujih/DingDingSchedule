@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"schedule_server/internal/agent/tools"
 )
@@ -15,6 +16,27 @@ func newSubscriptionStatusTaskHandler() *subscriptionStatusTaskHandler {
 
 func (h *subscriptionStatusTaskHandler) Type() string {
 	return "query_subscription_status"
+}
+
+func (h *subscriptionStatusTaskHandler) CreateTask(_ string, _ *tools.UserContext) (*TaskInstance, TaskApplyResult) {
+	return &TaskInstance{
+		Type:      h.Type(),
+		Status:    string(taskStatusReady),
+		Slots:     map[string]string{},
+		UpdatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(sessionTTL),
+	}, TaskApplyResult{}
+}
+
+func (h *subscriptionStatusTaskHandler) ApplyTurn(task *TaskInstance, _ string, _ *tools.UserContext) (TaskApplyResult, error) {
+	if task == nil {
+		return TaskApplyResult{}, nil
+	}
+	task.Status = string(taskStatusReady)
+	task.MissingSlots = nil
+	task.UpdatedAt = time.Now()
+	task.ExpiresAt = time.Now().Add(sessionTTL)
+	return TaskApplyResult{}, nil
 }
 
 func (h *subscriptionStatusTaskHandler) Prepare(context.Context, *TaskInstance, Deps) ([]string, error) {
@@ -50,4 +72,8 @@ func (h *subscriptionStatusTaskHandler) Execute(ctx context.Context, task *TaskI
 
 func (h *subscriptionStatusTaskHandler) BuildClarifyReply(task *TaskInstance) string {
 	return buildTaskClarifyReply(activeTaskFromTaskInstance(task))
+}
+
+func (h *subscriptionStatusTaskHandler) BuildMetaReply(task *TaskInstance) string {
+	return h.BuildClarifyReply(task)
 }

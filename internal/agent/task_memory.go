@@ -83,3 +83,17 @@ func cloneTaskSlots(slots map[string]string) map[string]string {
 	}
 	return cloned
 }
+
+func taskApplySlot(task *TaskInstance, matched *[]string, key, value string) {
+	if task == nil || key == "" {
+		return
+	}
+	if task.Slots == nil {
+		task.Slots = make(map[string]string)
+	}
+	if task.Slots[key] == value {
+		return
+	}
+	task.Slots[key] = value
+	recordMatchedSlot(matched, key)
+}

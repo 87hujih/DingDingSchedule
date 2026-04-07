@@ -1,6 +1,31 @@
 # 任务清单
 
 ## 当前任务
+- [x] 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-semantic-router-dag` 中执行 semantic router + DAG 计划，并保持基线可验证。
+- [x] 完成 Task 1：补路由契约、独立 router 配置与 route-oriented 调用日志字段。
+- [x] 完成 Task 2：实现 `RouteContext` 与 `SemanticRouter` 的 shadow 路径，不改用户可见行为。
+- [x] 完成 Task 3：切非任务 DAG 分支（`off_topic/social/clarify/rag_query`）。
+- [x] 完成 Task 4：切 `tool_query` 隔离执行与最小工具池。
+- [x] 完成 Task 5：切 `task_*` 分支，并把 migrated task parsing 收回 handler。
+- [x] 完成 Task 6：收敛主链路到唯一 `RouteDecision`，移除旧的顶层二次裁决。
+- [x] 完成 Task 7：范围验证、日志核对与任务记录同步。
+
+## 当前任务复盘
+- 本轮实现已在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-semantic-router-dag` 上完成，分支为 `codex/agent-semantic-router-dag`；主链路已经收敛为“`ShortCircuitGuard -> SemanticRouter -> RouteSwitch -> BranchExecutor`”，`agent.go` 不再在 `RouteMode=live` 时回落到旧的顶层 `planner / conversation / plan` 二次裁决链。
+- `internal/agent/route_contract.go`、`route_context.go`、`semantic_router.go` 和 `branch_executors.go` 已建立新的顶层裁决与 DAG 执行骨架；`rag_query`、`tool_query`、`task_*` 分支现在物理隔离，`tool_query` 只暴露最小工具池，`rag_query` 不再混入工具定义。
+- `internal/agent/task_catalog.go`、`subscribe_task.go`、`manual_sign_task.go`、`subscription_status_task.go` 已把 migrated task 的 follow-up parsing 和 task-meta 收回 handler，本轮确认“家族7期订阅”“张三今天第一节补签”等长句继续跟进都走 handler-local parsing，而不是全局 `slot_filler` 主裁决。
+- Router rollout 与可观测性已接通：调用日志现在持久化 `route_kind / route_source / clarify_code / executor_name / tool_pool / router_latency_ms / shadow_route_kind` 等字段，方便在 shadow/live 之间对照观察。
+- 本轮最终验证命令：
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-semantic-router-dag" test ./internal/agent -run "Test(SessionManagerBuildsRouteStateFromTaskInstance|AgentChatReturnsRealtimeResultOnlyForRealtimePlusRuleQuestion|AgentClarifiesUnknownBusinessLikeMessageViaLiveRoute)" -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-semantic-router-dag" test ./internal/agent -run "TestAgentChat(UsesKnowledgeOnlyForLeaveSyncFailureQuestion|KeepsToolFirstForLiveQueryWithoutRuleSignal|ResumesSubscriptionTaskWithDepartmentOnlyReply|ResumesManualSignTaskAcrossMultipleReplies|PolitelyRefusesGenericSocialChatWithoutLLMFallback|RejectsOutOfDomainBeforeRetrieval)" -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-semantic-router-dag" test ./internal/agent -run "Test(SemanticRouter|RouteContext|RejectExecutor|SocialExecutor|ClarifyExecutor|RAGExecutor|ToolPoolSelector|ToolQueryExecutor|TaskCatalog|TaskMetaExecutor|TaskStartExecutor|TaskContinueExecutor|TaskCancelExecutor)" -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-semantic-router-dag" test ./internal/agent -run "TestAgentChat" -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-semantic-router-dag" test ./internal/agent ./internal/agent/tools ./internal/app -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-semantic-router-dag" test ./... -count=1`
+- `git -C "G:\gofile\schedule_server\.worktrees\agent-semantic-router-dag" diff --check -- internal/agent internal/agent/tools internal/app internal/model internal/adminui config configs tasks/todo.md`
+- `git diff --check` 当前没有新的格式错误，仍只有仓库既有的 LF/CRLF warning。
+
+## 当前任务
 - [x] 复现全仓 `go test ./...` 在 `internal/ci` 的失败，并锁定 `deploy_workflow_test.go` 与当前 `deploy.yml` 的实现差异。
 - [x] 以最小改动收敛 `internal/ci/deploy_workflow_test.go` 对旧部署实现的耦合，改为校验当前工作流仍满足的 SSH 认证与远端健康检查约束。
 - [x] 运行 `internal/ci` 定向测试与全仓 `go test ./...`，确认失败已消失并补充本轮复盘。

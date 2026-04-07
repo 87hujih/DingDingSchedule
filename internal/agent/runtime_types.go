@@ -22,3 +22,7 @@ type ValidationResult struct {
 	Valid        bool
 	MissingSlots []string
 }
+
+type TaskApplyResult struct {
+	MatchedSlots []string
+}
