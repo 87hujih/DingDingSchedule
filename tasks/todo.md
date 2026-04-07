@@ -1,6 +1,41 @@
 # 任务清单
 
 ## 当前任务
+- [x] 明确“协议型 Agent”重构的产品边界，确认哪些类型的自然语言请求允许直接执行，哪些必须先澄清或进入状态机。
+- [x] 基于确认后的边界提出 2-3 种根治性架构方案，并收敛推荐方案。
+- [x] 输出完整设计并获得用户确认，并写入设计文档。
+
+## 当前任务
+- [x] 等待用户审核 `docs/superpowers/specs/2026-04-07-agent-protocol-first-design.md`。
+- [x] 基于已确认 spec 输出 implementation plan。
+
+## 当前任务
+- [ ] 等待用户审核 `docs/superpowers/plans/2026-04-07-agent-protocol-first-plan.md`。
+
+## 当前任务复盘
+- 已和用户确认本轮采用 `A. 严格协议优先`，核心约束是：任何写操作都不能由一句自由自然语言直接执行，必须先形成结构化协议，再由状态机确认执行。
+- 已重新审视之前的 semantic router / DAG 方向，结论是：它能缓解多套顶层裁决冲突，但不能从根上解决“自然语言既判意图、又补槽位、又触发执行”的结构性问题，因此本轮设计升级为“协议型 Agent”。
+- 设计文档已写入 `docs/superpowers/specs/2026-04-07-agent-protocol-first-design.md`，内容收敛为：`ProtocolCompiler -> PolicyValidator -> EntityResolver -> WorkflowManager -> ExecutionGate -> Executor -> ResponseRenderer -> Persist`。
+- 新设计明确拆分了 `UserAct / BusinessDomain / Operation` 三层语义，要求所有 operation 来自 allowlist，并通过准入矩阵阻断“能力咨询触发执行”“规则问答触发工具”“旧 workflow 劫持新请求”等问题。
+- 设计把实体解析提升为独立可信层，要求部门、人名、日期、节次都必须解析成 canonical value 后才能进入执行；自由文本整句吞参数、工具错误反推参数这两类旧机制在新方案中被明确禁止。
+- 设计同时把写操作统一收敛为严格 workflow 状态机，并定义了新的安全回复模型：系统即使理解不准，也只能返回 `clarify / select_options / answer / refuse / confirm` 等安全回复，而不能进入误执行。
+- implementation plan 已写入 `docs/superpowers/plans/2026-04-07-agent-protocol-first-plan.md`，实施顺序明确为：先落协议契约、回复模型和协议日志，再上 compiler / validator shadow，随后补可信实体解析和 workflow 引擎，最后迁移只读 operation、订阅 workflow、代签 workflow，并彻底切断 legacy 顶层路由。
+- 计划强调的执行原则是：先封死误执行通道，再迁移能力；`protocol_live` 下不允许 blocked request 回退到旧主链路；只有当 trusted params 构建成功时才允许生成 `OperationRequest`。
+
+## 当前任务
+- [x] 阅读 `internal/agent` 当前主链路，复现“查询一下今天第二节的考勤状态”被误导到订阅澄清的判定路径。
+- [x] 分析任务延续、订阅意图、实时查询三类规则的冲突点，定位导致其他意图误判的共性根因。
+- [x] 输出根因分析和根本性修复方案，并补充本轮复盘。
+
+## 当前任务复盘
+- 已确认你举的例子在当前默认主链路里会被稳定误判，而不是偶发的 LLM 理解波动：`internal/agent/query_router.go` 的 `hasSubscriptionActionSignal` 只要命中“查询”和“考勤”就返回真，`internal/agent/task_router.go` 会把这类句子直接构造成 `subscribe_attendance_push`，随后 `internal/agent/clarify.go` 返回“需要先确认订阅范围”。
+- 具体误判链路是：`NewAgent` 在未配置 `llm.route_mode` 时默认走 `RouteModeOff`；`planConversation` 在 legacy planner 中优先执行 `buildTaskFromRequest`；因此“查询一下今天第二节的考勤状态”这种本应走 `query_attendance_status` 的实时查询，会先被任务分类器吃成“订阅考勤推送”。
+- 进一步静态追踪发现，同类误判不止这一处：活动订阅任务存在时，`plannerFollowUpSlots` / `extractPlannerDeptHint` 会把大量非部门文本强行解释成 `dept_names`；`looksLikeSubscriptionFollowUp` 也主要靠“没出现少数排除词”来判断是否继续当前任务，导致旧任务容易劫持新请求。
+- 根因不是某条关键词不够全，而是当前 `internal/agent` 顶层意图识别把“任务意图判定”和“任务内槽位补全”混在一起，并广泛依赖黑名单式字符串启发式；这会天然放大“查询/看一下/帮我”这类高频通用动词带来的跨业务碰撞。
+- 当前评估与单测覆盖也缺关键负样本：`internal/agent/testdata/eval_cases.json` 有“今天第一节谁未到”和“订阅指定部门考勤”等正向样例，但没有“查询今天第二节考勤状态不能落到订阅任务”这类冲突样例，所以这类回归没有被守住。
+- 建议的根本治理方向是：把顶层意图收敛成互斥的业务类型（考勤查询、课表查询、请假查询、订阅开启、订阅状态、订阅取消、补签、统计、规则问答等），顶层只做“这句属于哪类业务”，任务 handler 只做该类业务的槽位补全；同时移除 `extractPlannerDeptHint` 这类基于黑名单的自由文本吞噬逻辑，只允许显式候选匹配或结构化解析，并补齐真实误判语料的负样本回归。
+
+## 当前任务
 - [x] 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-query-user-schedule` 中建立“查询他人课表”实现基线，并确认全仓测试起点干净。
 - [x] 完成 Task 1：扩展 SchedulePort 与 scheduleAdapter，支持按目标用户查询周课表。
 - [x] 完成 Task 2：新增 `query_user_schedule` 工具，并返回结构化重名/未命中错误。
