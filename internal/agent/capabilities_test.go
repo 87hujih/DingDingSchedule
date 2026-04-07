@@ -21,6 +21,9 @@ func TestBuildHelpReplyIncludesSystemOverviewAndCurrentAvailability(t *testing.T
 	if !strings.Contains(reply, "你当前在这个会话里可直接使用") {
 		t.Fatalf("reply = %q, want current availability section", reply)
 	}
+	if !strings.Contains(reply, "指定姓名用户的课表") {
+		t.Fatalf("reply = %q, want other-user schedule capability", reply)
+	}
 }
 
 func TestCapabilitiesFilterHidesAdminGroupFeaturesForNormalDMUser(t *testing.T) {

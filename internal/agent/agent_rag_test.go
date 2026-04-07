@@ -216,6 +216,50 @@ func (testTaskUserPort) SearchByName(_ context.Context, name string) ([]agenttoo
 	return nil, nil
 }
 
+type testQueryUserSchedulePort struct {
+	listUserCalls    int
+	lastViewerID     uint
+	lastViewerRole   int
+	lastTargetUserID uint
+	lastWeek         int
+	courses          []agenttools.CourseItem
+}
+
+func (p *testQueryUserSchedulePort) ListMyScheduleByWeek(context.Context, uint, int) ([]agenttools.CourseItem, error) {
+	return nil, nil
+}
+
+func (p *testQueryUserSchedulePort) ListUserScheduleByWeek(_ context.Context, viewerID uint, viewerRole int, targetUserID uint, week int) ([]agenttools.CourseItem, error) {
+	p.listUserCalls++
+	p.lastViewerID = viewerID
+	p.lastViewerRole = viewerRole
+	p.lastTargetUserID = targetUserID
+	p.lastWeek = week
+	return p.courses, nil
+}
+
+func (p *testQueryUserSchedulePort) GetFreeUsersBySlot(context.Context, int, int, int, int64) ([]agenttools.FreeSlotResult, error) {
+	return nil, nil
+}
+
+type testScheduleQueryUserPort struct {
+	searchResults []agenttools.UserInfo
+}
+
+func (p testScheduleQueryUserPort) FindByDingUserID(context.Context, string) (*agenttools.UserInfo, error) {
+	return &agenttools.UserInfo{
+		ID:         7,
+		Name:       "Alice",
+		DingUserID: "ding-user",
+		Role:       0,
+		TenantID:   42,
+	}, nil
+}
+
+func (p testScheduleQueryUserPort) SearchByName(context.Context, string) ([]agenttools.UserInfo, error) {
+	return p.searchResults, nil
+}
+
 // TestAgentChatUsesKnowledgeOnlyForLeaveSyncFailureQuestion 验证真实口语化规则问法会走 knowledge-only。
 func TestAgentChatUsesKnowledgeOnlyForLeaveSyncFailureQuestion(t *testing.T) {
 	t.Parallel()
@@ -722,6 +766,178 @@ func TestAgentChatWritesKnowledgeMetricsToCallLog(t *testing.T) {
 	}
 	if log.RetrievalDurationMs <= 0 {
 		t.Fatalf("RetrievalDurationMs = %d, want positive", log.RetrievalDurationMs)
+	}
+}
+
+func TestAgentChatQueriesOtherUsersScheduleViaTool(t *testing.T) {
+	t.Parallel()
+
+	routerServer := newRouteDecisionServer(t, RouteDecision{
+		Kind:       RouteToolQuery,
+		Confidence: 0.98,
+		ReasonCode: "schedule_query",
+	})
+	defer routerServer.Close()
+
+	schedule := &testQueryUserSchedulePort{
+		courses: []agenttools.CourseItem{{CourseName: "高等数学", DayOfWeek: 1, Section: 1}},
+	}
+
+	var requests []capturedChatRequest
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req capturedChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		requests = append(requests, req)
+		current := len(requests)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch current {
+		case 1:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"query_user_schedule","arguments":"{\"user_name\":\"张三\",\"week\":6}"}}]},"finish_reason":"tool_calls"}]}`))
+		case 2:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"张三第6周有1门课。"},"finish_reason":"stop"}]}`))
+		default:
+			http.Error(w, `{"error":{"message":"unexpected extra request"}}`, http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:       server.URL,
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
+		RouterLLMBaseURL: routerServer.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
+		Schedule:         schedule,
+		User: testScheduleQueryUserPort{
+			searchResults: []agenttools.UserInfo{{ID: 9, Name: "张三", DingUserID: "ding-zhangsan", TenantID: 42}},
+		},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "帮我看张三第6周课表",
+		ConversationID:   "conv-user-schedule",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "张三第6周有1门课") {
+		t.Fatalf("Chat() reply = %q, want schedule answer", reply)
+	}
+	if schedule.listUserCalls != 1 {
+		t.Fatalf("ListUserScheduleByWeek() call count = %d, want 1", schedule.listUserCalls)
+	}
+	if schedule.lastViewerID != 7 || schedule.lastTargetUserID != 9 || schedule.lastWeek != 6 {
+		t.Fatalf("ListUserScheduleByWeek() args = viewer:%d target:%d week:%d", schedule.lastViewerID, schedule.lastTargetUserID, schedule.lastWeek)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	names := requestToolNames(requests[0])
+	if !toolPoolContains(names, "query_user_schedule") {
+		t.Fatalf("tool-first request missing query_user_schedule: %v", names)
+	}
+}
+
+func TestAgentChatClarifiesAmbiguousUserScheduleQuery(t *testing.T) {
+	t.Parallel()
+
+	routerServer := newRouteDecisionServer(t, RouteDecision{
+		Kind:       RouteToolQuery,
+		Confidence: 0.98,
+		ReasonCode: "schedule_query",
+	})
+	defer routerServer.Close()
+
+	schedule := &testQueryUserSchedulePort{}
+	var requests []capturedChatRequest
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req capturedChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		requests = append(requests, req)
+		current := len(requests)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch current {
+		case 1:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"query_user_schedule","arguments":"{\"user_name\":\"张三\"}"}}]},"finish_reason":"tool_calls"}]}`))
+		case 2:
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"找到 2 个同名用户：张三、张三(教务处)。请直接回复更精确的姓名。"},"finish_reason":"stop"}]}`))
+		default:
+			http.Error(w, `{"error":{"message":"unexpected extra request"}}`, http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:       server.URL,
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
+		RouterLLMBaseURL: routerServer.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
+		Schedule:         schedule,
+		User: testScheduleQueryUserPort{
+			searchResults: []agenttools.UserInfo{
+				{ID: 9, Name: "张三", DingUserID: "ding-zhangsan", TenantID: 42},
+				{ID: 10, Name: "张三(教务处)", DingUserID: "ding-zhangsan-2", TenantID: 42},
+			},
+		},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "帮我看张三这周课表",
+		ConversationID:   "conv-user-schedule-ambiguous",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "张三(教务处)") {
+		t.Fatalf("Chat() reply = %q, want candidate clarification", reply)
+	}
+	if schedule.listUserCalls != 0 {
+		t.Fatalf("ListUserScheduleByWeek() call count = %d, want 0", schedule.listUserCalls)
 	}
 }
 
