@@ -31,6 +31,18 @@ func TestToolPoolSelectorRestrictsScheduleQuestionToScheduleTools(t *testing.T) 
 	}
 }
 
+func TestToolPoolSelectorIncludesUnsubscribeToolForExplicitCloseRequest(t *testing.T) {
+	t.Parallel()
+
+	pool := selectToolPool("关闭本群考勤订阅", 1)
+	if pool.Name != "admin_query" {
+		t.Fatalf("pool.Name = %q, want admin_query", pool.Name)
+	}
+	if !toolPoolContains(pool.ToolNames, "unsubscribe_attendance_push") {
+		t.Fatalf("tool pool missing unsubscribe tool: %v", pool.ToolNames)
+	}
+}
+
 func toolPoolContains(names []string, want string) bool {
 	for _, name := range names {
 		if name == want {

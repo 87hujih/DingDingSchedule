@@ -11,6 +11,17 @@ func buildTaskFromRequest(question string, uctx *tools.UserContext) *ActiveTask 
 	normalized := normalizeQuery(question)
 	expiresAt := time.Now().Add(sessionTTL)
 
+	if shouldUnsubscribeAttendancePush(normalized, uctx) {
+		return &ActiveTask{
+			Type:          "unsubscribe_attendance_push",
+			Status:        taskStatusReady,
+			RequiredSlots: nil,
+			FilledSlots:   map[string]string{},
+			ExpiresAt:     expiresAt,
+			LastPrompt:    "ready_unsubscribe_attendance_push",
+		}
+	}
+
 	if shouldQuerySubscriptionStatus(normalized, uctx) {
 		return &ActiveTask{
 			Type:          "query_subscription_status",
@@ -106,6 +117,9 @@ func applySlotFillToTask(task *ActiveTask, fill slotFillResult) *ActiveTask {
 	case "query_subscription_status":
 		next.Status = taskStatusReady
 		next.LastPrompt = "ready_query_subscription_status"
+	case "unsubscribe_attendance_push":
+		next.Status = taskStatusReady
+		next.LastPrompt = "ready_unsubscribe_attendance_push"
 	}
 
 	return next

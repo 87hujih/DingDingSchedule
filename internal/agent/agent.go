@@ -153,6 +153,7 @@ func NewAgent(deps Deps) *Agent {
 
 	handlers := []TaskHandler{
 		newSubscribeTaskHandler(),
+		newUnsubscribeTaskHandler(),
 		newSubscriptionStatusTaskHandler(),
 		newManualSignTaskHandler(),
 	}
@@ -277,10 +278,14 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	var routeDecision RouteDecision
 	if a.routeMode != string(RouteModeOff) {
 		_, routeTask := a.sessions.getTaskState(sessionKey)
-		routeContext := buildRouteContext(msg.Content, uctx, history, routeTask)
-		shadowRouteStart := time.Now()
-		routeDecision = newSemanticRouter(a.routerClient).Route(ctx, routeContext)
-		metrics.RouterLatencyMs = elapsedMs(shadowRouteStart)
+		if shortCircuit, ok := detectShortCircuitRoute(msg.Content, uctx, routeTask); ok {
+			routeDecision = shortCircuit
+		} else {
+			routeContext := buildRouteContext(msg.Content, uctx, history, routeTask)
+			shadowRouteStart := time.Now()
+			routeDecision = newSemanticRouter(a.routerClient).Route(ctx, routeContext)
+			metrics.RouterLatencyMs = elapsedMs(shadowRouteStart)
+		}
 		if a.routeMode == string(RouteModeLive) {
 			metrics.RouteKind = string(routeDecision.Kind)
 			metrics.RouteConfidence = routeDecision.Confidence
@@ -1027,6 +1032,9 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 		return true, result.Reply, nil
 	case RouteTaskCancel:
 		_, currentTask := a.sessions.getTaskState(sessionKey)
+		if currentTask == nil {
+			return false, "", nil
+		}
 		result := (taskCancelExecutor{}).Execute(currentTask)
 		a.sessions.clearTaskInstance(sessionKey)
 		applyConversationMetrics(metrics, beforeTask, nil, nil)
@@ -1057,7 +1065,7 @@ func shouldHandlePlannerPrimary(decision PlannerDecision, activeTask *ActiveTask
 
 func isMigratedTaskType(taskType string) bool {
 	switch taskType {
-	case "subscribe_attendance_push", "query_subscription_status", "sign_for_user":
+	case "subscribe_attendance_push", "unsubscribe_attendance_push", "query_subscription_status", "sign_for_user":
 		return true
 	default:
 		return false

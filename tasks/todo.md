@@ -1,6 +1,10 @@
 # 任务清单
 
 ## 当前任务
+- [x] 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-unsubscribe-routing-fix` 中修复“关闭/取消群考勤订阅”被误路由的问题，并保持范围可验证。
+- [x] 补失败回归测试，覆盖“关闭考勤订阅 / 关闭本群考勤订阅 / 取消本群考勤订阅”三类说法。
+- [x] 以最小改动补齐取消订阅的业务路由、执行链和 `task_cancel` 护栏。
+- [x] 运行定向与范围验证，并补充本轮复盘。
 - [x] 基于 `internal/agent` 当前主链路完成 semantic router + DAG 方案设计、边界确认与实现计划编写。
 - [x] 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-semantic-router-dag` 中执行 semantic router + DAG 计划，并保持基线可验证。
 - [x] 完成 Task 1：补路由契约、独立 router 配置与 route-oriented 调用日志字段。
@@ -12,6 +16,24 @@
 - [x] 完成 Task 7：范围验证、日志核对与任务记录同步。
 
 ## 当前任务复盘
+- 本轮 bugfix 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-unsubscribe-routing-fix` 上完成，分支为 `codex/agent-unsubscribe-routing-fix`。根因不是单纯的 LLM 语义差，而是上层编排缺少“取消群订阅”的一等业务路径：`取消/关闭` 会被混进 `subscribe_attendance_push` 或误落到会话级 `task_cancel`。
+- 已新增 `internal/agent/unsubscribe_task.go`，把 `unsubscribe_attendance_push` 接成 migrated task；`internal/agent/agent.go` 现在会在 live 路径先执行高确定性 short-circuit，显式群订阅关闭请求直接落到 `unsubscribe_attendance_push`，不再依赖 router 猜测。
+- `internal/agent/query_router.go` 新增了显式取消订阅识别，`internal/agent/task_router.go` 同步支持 legacy/off 路径直建 `unsubscribe_attendance_push` 任务；因此无论 `RouteMode=live` 还是 `off`，`关闭考勤订阅 / 关闭本群考勤订阅 / 取消本群考勤订阅` 都会直达正确业务执行。
+- `internal/agent/agent.go` 还补了 `RouteTaskCancel` 护栏：没有活动任务时，router 即使错误返回 `task_cancel`，也不会再回“已取消当前任务”，而是退回澄清。
+- `internal/agent/tool_pool.go` 的 `admin_query` 最小工具池已补进 `unsubscribe_attendance_push`，避免未来即使走到 `tool_query` 也拿不到取消订阅工具。
+- 本轮新增回归覆盖：
+- `TestAgentChatUnsubscribesForExplicitClosePhrasesInLiveRoute`
+- `TestAgentChatUnsubscribesForExplicitClosePhrasesInLegacyMode`
+- `TestAgentChatClarifiesTaskCancelWithoutActiveTaskInLiveRoute`
+- `TestTaskCatalogAllowsMigratedTaskTypesOnly` 增补 `unsubscribe_attendance_push`
+- `TestToolPoolSelectorIncludesUnsubscribeToolForExplicitCloseRequest`
+- 本轮验证命令：
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-unsubscribe-routing-fix" test ./internal/agent -run "Test(TaskCatalogAllowsMigratedTaskTypesOnly|ToolPoolSelectorIncludesUnsubscribeToolForExplicitCloseRequest|AgentChatUnsubscribesForExplicitClosePhrasesIn(LiveRoute|LegacyMode)|AgentChatClarifiesTaskCancelWithoutActiveTaskInLiveRoute)" -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-unsubscribe-routing-fix" test ./internal/agent -run "TestAgentChat|TestTaskCatalog|TestToolPoolSelector" -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-unsubscribe-routing-fix" test ./internal/agent/tools -run "Test(Admin|Subscribe|SignForUser|ResolveDeptFilter)" -count=1`
+- `go -C "G:\gofile\schedule_server\.worktrees\agent-unsubscribe-routing-fix" test ./... -count=1`
+- `git -C "G:\gofile\schedule_server\.worktrees\agent-unsubscribe-routing-fix" diff --check -- internal/agent internal/agent/tools tasks/todo.md`
+- `git diff --check` 当前没有新的格式错误，仍只有仓库既有的 LF/CRLF warning。
 - 已基于 `internal/agent/agent.go`、`planner_service.go`、`task_runtime.go`、`session.go`、`task_router.go`、`slot_filler.go` 的现状完成静态梳理，确认主问题不是单点关键词规则，而是顶层裁决权分裂：同一条消息会被多套顶层链路重复解释。
 - 已与用户确认本轮采用“任务感知的多分类 Router + DAG”，并固定关键产品边界：涉及实时数据时首轮只返回实时结果；Router 低置信度统一先澄清；活动任务遇到明确新请求时直接切换并带 `Soft Explicit` 轻提示；仅保留极少量高确定性的 short-circuit。
 - 设计文档已写入 `docs/superpowers/specs/2026-04-06-agent-semantic-router-dag-design.md`，implementation plan 已写入 `docs/superpowers/plans/2026-04-06-agent-semantic-router-dag-plan.md`；内容收敛为“唯一 `RouteDecision` + 物理隔离 DAG executors + `TaskInstance` 为未来唯一任务状态模型”。

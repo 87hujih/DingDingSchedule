@@ -7,6 +7,7 @@ func TestTaskCatalogAllowsMigratedTaskTypesOnly(t *testing.T) {
 
 	catalog := newTaskCatalog(newTaskRuntime([]TaskHandler{
 		newSubscribeTaskHandler(),
+		newUnsubscribeTaskHandler(),
 		newSubscriptionStatusTaskHandler(),
 		newManualSignTaskHandler(),
 	}))
@@ -16,6 +17,9 @@ func TestTaskCatalogAllowsMigratedTaskTypesOnly(t *testing.T) {
 	}
 	if !catalog.IsAllowed("query_subscription_status") {
 		t.Fatalf("query_subscription_status should be allowlisted")
+	}
+	if !catalog.IsAllowed("unsubscribe_attendance_push") {
+		t.Fatalf("unsubscribe_attendance_push should be allowlisted")
 	}
 	if !catalog.IsAllowed("sign_for_user") {
 		t.Fatalf("sign_for_user should be allowlisted")

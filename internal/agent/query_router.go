@@ -1,6 +1,10 @@
 package agent
 
-import "strings"
+import (
+	"strings"
+
+	"schedule_server/internal/agent/tools"
+)
 
 type queryKind string
 
@@ -328,6 +332,29 @@ func hasSubscriptionActionSignal(question string) bool {
 		return true
 	}
 	return false
+}
+
+func shouldUnsubscribeAttendancePush(question string, uctx *tools.UserContext) bool {
+	if uctx == nil || uctx.ConversationType != "2" {
+		return false
+	}
+	return isExplicitUnsubscribeAttendancePushText(question)
+}
+
+func isExplicitUnsubscribeAttendancePushText(question string) bool {
+	if hasExplanatoryIntent(question) {
+		return false
+	}
+	if !containsAny(question, []string{"取消", "关闭"}) {
+		return false
+	}
+	if containsAny(question, []string{"当前任务", "这个任务"}) {
+		return false
+	}
+	if containsAny(question, []string{"考勤订阅", "考勤推送"}) {
+		return true
+	}
+	return containsAny(question, []string{"订阅", "推送"}) && containsAny(question, []string{"考勤", "本群", "当前群", "此群"})
 }
 
 func hasSubscriptionScopeIntent(question string) bool {

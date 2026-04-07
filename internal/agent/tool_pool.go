@@ -16,6 +16,7 @@ func selectToolPool(question string, userRole int) toolPool {
 			Name: "admin_query",
 			ToolNames: []string{
 				"get_current_time",
+				"unsubscribe_attendance_push",
 				"query_subscription_status",
 				"list_departments",
 			},
@@ -109,6 +110,9 @@ func hasAnalyticsQuerySignal(question string) bool {
 }
 
 func hasAdminQuerySignal(question string) bool {
+	if isExplicitUnsubscribeAttendancePushText(question) {
+		return true
+	}
 	return containsAny(question, []string{
 		"订阅状态",
 		"推送状态",

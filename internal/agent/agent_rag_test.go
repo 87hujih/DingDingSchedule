@@ -71,6 +71,7 @@ func (p *testCallLogPort) Wait(timeout time.Duration) (agenttools.CallLog, bool)
 type testGroupSubPort struct {
 	mu                sync.Mutex
 	subscribeCalls    int
+	unsubscribeCalls  int
 	lastConversation  string
 	lastGroupName     string
 	lastTenantID      uint
@@ -90,7 +91,11 @@ func (p *testGroupSubPort) Subscribe(_ context.Context, tenantID uint, conversat
 	return nil
 }
 
-func (p *testGroupSubPort) Unsubscribe(context.Context, uint, string) error {
+func (p *testGroupSubPort) Unsubscribe(_ context.Context, _ uint, conversationID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.unsubscribeCalls++
+	p.lastConversation = conversationID
 	return nil
 }
 
@@ -1948,6 +1953,186 @@ func TestAgentChatSwitchesToNewRequestWhenNewBusinessQuestionArrives(t *testing.
 	}
 	if !strings.Contains(reply, "还没有订阅") {
 		t.Fatalf("reply = %q, want subscription status response", reply)
+	}
+}
+
+func TestAgentChatUnsubscribesForExplicitClosePhrasesInLiveRoute(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name           string
+		content        string
+		routerDecision RouteDecision
+	}{
+		{
+			name:           "close subscription",
+			content:        "关闭考勤订阅",
+			routerDecision: RouteDecision{Kind: RouteTaskStart, TargetTaskType: "subscribe_attendance_push"},
+		},
+		{
+			name:           "close current group subscription",
+			content:        "关闭本群考勤订阅",
+			routerDecision: RouteDecision{Kind: RouteTaskStart, TargetTaskType: "subscribe_attendance_push"},
+		},
+		{
+			name:           "cancel current group subscription",
+			content:        "取消本群考勤订阅",
+			routerDecision: RouteDecision{Kind: RouteTaskCancel},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			routerServer := newRouteDecisionServer(t, tc.routerDecision)
+			defer routerServer.Close()
+
+			groupSub := &testGroupSubPort{}
+			a := NewAgent(Deps{
+				LLMBaseURL:       "http://127.0.0.1:0",
+				LLMAPIKey:        "test-key",
+				LLMModel:         "test-model",
+				RouterLLMBaseURL: routerServer.URL,
+				RouterLLMAPIKey:  "test-key",
+				RouterLLMModel:   "router-model",
+				RouteMode:        string(RouteModeLive),
+				GroupSub:         groupSub,
+				User:             testUserPort{},
+				Semester:         testSemesterPort{},
+				SchedulePeriod:   testSchedulePeriodPort{},
+				Tenant:           testTenantPort{},
+				Logger:           zap.NewNop().Sugar(),
+			})
+			defer a.Stop()
+
+			reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+				CorpID:            "corp-1",
+				SenderID:          "ding-user",
+				SenderNick:        "Alice",
+				Content:           tc.content,
+				ConversationID:    "conv-unsubscribe-live",
+				ConversationType:  "2",
+				ConversationTitle: "测试群",
+			})
+			if err != nil {
+				t.Fatalf("Chat() error = %v", err)
+			}
+			if !strings.Contains(reply, "已取消此群的考勤自动推送") {
+				t.Fatalf("reply = %q, want unsubscribe success", reply)
+			}
+
+			groupSub.mu.Lock()
+			defer groupSub.mu.Unlock()
+			if groupSub.unsubscribeCalls != 1 {
+				t.Fatalf("Unsubscribe() call count = %d, want 1", groupSub.unsubscribeCalls)
+			}
+			if groupSub.subscribeCalls != 0 {
+				t.Fatalf("Subscribe() call count = %d, want 0", groupSub.subscribeCalls)
+			}
+		})
+	}
+}
+
+func TestAgentChatUnsubscribesForExplicitClosePhrasesInLegacyMode(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{name: "close subscription", content: "关闭考勤订阅"},
+		{name: "close current group subscription", content: "关闭本群考勤订阅"},
+		{name: "cancel current group subscription", content: "取消本群考勤订阅"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			groupSub := &testGroupSubPort{}
+			a := NewAgent(Deps{
+				LLMBaseURL:     "http://127.0.0.1:0",
+				LLMAPIKey:      "test-key",
+				LLMModel:       "test-model",
+				RouteMode:      string(RouteModeOff),
+				GroupSub:       groupSub,
+				User:           testUserPort{},
+				Semester:       testSemesterPort{},
+				SchedulePeriod: testSchedulePeriodPort{},
+				Tenant:         testTenantPort{},
+				Logger:         zap.NewNop().Sugar(),
+			})
+			defer a.Stop()
+
+			reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+				CorpID:            "corp-1",
+				SenderID:          "ding-user",
+				SenderNick:        "Alice",
+				Content:           tc.content,
+				ConversationID:    "conv-unsubscribe-legacy",
+				ConversationType:  "2",
+				ConversationTitle: "测试群",
+			})
+			if err != nil {
+				t.Fatalf("Chat() error = %v", err)
+			}
+			if !strings.Contains(reply, "已取消此群的考勤自动推送") {
+				t.Fatalf("reply = %q, want unsubscribe success", reply)
+			}
+
+			groupSub.mu.Lock()
+			defer groupSub.mu.Unlock()
+			if groupSub.unsubscribeCalls != 1 {
+				t.Fatalf("Unsubscribe() call count = %d, want 1", groupSub.unsubscribeCalls)
+			}
+			if groupSub.subscribeCalls != 0 {
+				t.Fatalf("Subscribe() call count = %d, want 0", groupSub.subscribeCalls)
+			}
+		})
+	}
+}
+
+func TestAgentChatClarifiesTaskCancelWithoutActiveTaskInLiveRoute(t *testing.T) {
+	t.Parallel()
+
+	routerServer := newRouteDecisionServer(t, RouteDecision{Kind: RouteTaskCancel})
+	defer routerServer.Close()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:       "http://127.0.0.1:0",
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
+		RouterLLMBaseURL: routerServer.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
+		User:             testUserPort{},
+		Semester:         testSemesterPort{},
+		SchedulePeriod:   testSchedulePeriodPort{},
+		Tenant:           testTenantPort{},
+		Logger:           zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "取消",
+		ConversationID:   "conv-empty-cancel",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if strings.Contains(reply, "已取消当前任务") {
+		t.Fatalf("reply = %q, should not acknowledge cancel without active task", reply)
+	}
+	if !strings.Contains(reply, "没完全理解") {
+		t.Fatalf("reply = %q, want clarify fallback", reply)
 	}
 }
 
