@@ -51,6 +51,10 @@ func (p *scheduleToolTestPort) ListMyScheduleByWeek(context.Context, uint, int) 
 	return nil, nil
 }
 
+func (p *scheduleToolTestPort) ListUserScheduleByWeek(context.Context, uint, int, uint, int) ([]CourseItem, error) {
+	return nil, nil
+}
+
 func (p *scheduleToolTestPort) GetFreeUsersBySlot(_ context.Context, week, dayStart, dayEnd int, deptID int64) ([]FreeSlotResult, error) {
 	p.calls++
 	p.lastWeek = week

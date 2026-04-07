@@ -46,6 +46,7 @@ type FunctionDef struct {
 // SchedulePort 课表能力
 type SchedulePort interface {
 	ListMyScheduleByWeek(ctx context.Context, userID uint, week int) ([]CourseItem, error)
+	ListUserScheduleByWeek(ctx context.Context, viewerID uint, viewerRole int, targetUserID uint, week int) ([]CourseItem, error)
 	GetFreeUsersBySlot(ctx context.Context, week, dayStart, dayEnd int, deptID int64) ([]FreeSlotResult, error)
 }
 

@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"schedule_server/config"
 	agenttool "schedule_server/internal/agent/tools"
 	"schedule_server/internal/dto"
 	"schedule_server/internal/model"
+	"schedule_server/internal/service"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -142,6 +144,35 @@ func TestAttendanceAdapterSignForUsersBySlotUsesDateAndSection(t *testing.T) {
 	}
 	if !slices.Equal(service.lastSignReq.TargetUserIDs, []uint{9}) {
 		t.Fatalf("TargetUserIDs = %v, want [9]", service.lastSignReq.TargetUserIDs)
+	}
+}
+
+func TestScheduleAdapterListUserScheduleByWeekUsesViewerAndTargetIDs(t *testing.T) {
+	service := &fakeScheduleService{
+		listByWeekResp: &service.WeekScheduleResult{
+			Courses: []model.Course{{CourseName: "高等数学"}},
+		},
+	}
+	adapter := &scheduleAdapter{srv: service}
+
+	courses, err := adapter.ListUserScheduleByWeek(context.Background(), 7, 0, 9, 6)
+	if err != nil {
+		t.Fatalf("ListUserScheduleByWeek() error = %v", err)
+	}
+	if service.lastViewerID != 7 {
+		t.Fatalf("lastViewerID = %d, want 7", service.lastViewerID)
+	}
+	if service.lastViewerRole != 0 {
+		t.Fatalf("lastViewerRole = %d, want 0", service.lastViewerRole)
+	}
+	if service.lastTargetUserID != 9 {
+		t.Fatalf("lastTargetUserID = %d, want 9", service.lastTargetUserID)
+	}
+	if service.lastWeek != 6 {
+		t.Fatalf("lastWeek = %d, want 6", service.lastWeek)
+	}
+	if len(courses) != 1 || courses[0].CourseName != "高等数学" {
+		t.Fatalf("courses = %+v, want converted course result", courses)
 	}
 }
 
@@ -331,6 +362,30 @@ type fakeAttendanceDetailService struct {
 	detailCalls int
 	lastReq     *dto.AttendanceDetailRequest
 	lastSignReq *dto.SignForUserRequest
+}
+
+type fakeScheduleService struct {
+	listByWeekResp   *service.WeekScheduleResult
+	listByWeekErr    error
+	lastViewerID     uint
+	lastViewerRole   int
+	lastTargetUserID uint
+	lastWeek         int
+}
+
+func (f *fakeScheduleService) ListByWeek(_ context.Context, viewerID uint, viewerRole int, targetUserID uint, week int) (*service.WeekScheduleResult, error) {
+	f.lastViewerID = viewerID
+	f.lastViewerRole = viewerRole
+	f.lastTargetUserID = targetUserID
+	f.lastWeek = week
+	if f.listByWeekErr != nil {
+		return nil, f.listByWeekErr
+	}
+	return f.listByWeekResp, nil
+}
+
+func (f *fakeScheduleService) GetFreeUsersBySlot(context.Context, int, int, int, int64, []config.Period) ([]service.FreeUserSlot, error) {
+	return nil, errors.New("unexpected call")
 }
 
 func (f *fakeAttendanceDetailService) GetAttendanceDetail(_ context.Context, req *dto.AttendanceDetailRequest) (*dto.AttendanceDetailResponse, error) {
