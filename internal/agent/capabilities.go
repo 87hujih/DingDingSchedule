@@ -20,8 +20,8 @@ func listCapabilities() []capability {
 	return []capability{
 		{
 			Title:             "课表查询",
-			Description:       "查询个人课表、空闲人员和作息时间。",
-			ToolNames:         []string{"query_my_schedule", "query_free_users_by_slot", "query_schedule_info"},
+			Description:       "查询自己的课表、指定姓名用户的课表、空闲人员和作息时间。",
+			ToolNames:         []string{"query_my_schedule", "query_user_schedule", "query_free_users_by_slot", "query_schedule_info"},
 			MinRole:           0,
 			ConversationScope: "both",
 		},

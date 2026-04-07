@@ -38,6 +38,7 @@ func selectToolPool(question string, userRole int) toolPool {
 			ToolNames: []string{
 				"get_current_time",
 				"query_my_schedule",
+				"query_user_schedule",
 				"query_free_users_by_slot",
 				"query_schedule_info",
 			},
@@ -59,6 +60,7 @@ func selectToolPool(question string, userRole int) toolPool {
 			ToolNames: []string{
 				"get_current_time",
 				"query_my_schedule",
+				"query_user_schedule",
 				"query_attendance_status",
 				"query_schedule_info",
 				"query_my_leave",

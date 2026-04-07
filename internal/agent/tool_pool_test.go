@@ -31,6 +31,15 @@ func TestToolPoolSelectorRestrictsScheduleQuestionToScheduleTools(t *testing.T) 
 	}
 }
 
+func TestToolPoolSelectorIncludesQueryUserScheduleForScheduleQuestions(t *testing.T) {
+	t.Parallel()
+
+	pool := selectToolPool("帮我看张三这周课表", 0)
+	if !toolPoolContains(pool.ToolNames, "query_user_schedule") {
+		t.Fatalf("tool pool missing query_user_schedule: %v", pool.ToolNames)
+	}
+}
+
 func TestToolPoolSelectorIncludesUnsubscribeToolForExplicitCloseRequest(t *testing.T) {
 	t.Parallel()
 

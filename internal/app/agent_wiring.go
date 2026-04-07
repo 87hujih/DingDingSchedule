@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"schedule_server/config"
 	"schedule_server/global"
 	"schedule_server/internal/agent"
 	agenttool "schedule_server/internal/agent/tools"
@@ -73,8 +74,13 @@ func BuildAgent(
 // ────────────── scheduleAdapter ──────────────
 
 type scheduleAdapter struct {
-	srv               *service.ScheduleService
+	srv               scheduleQueryService
 	schedulePeriodSrv *service.SchedulePeriodService
+}
+
+type scheduleQueryService interface {
+	ListByWeek(ctx context.Context, viewerID uint, viewerRole int, targetUserID uint, week int) (*service.WeekScheduleResult, error)
+	GetFreeUsersBySlot(ctx context.Context, week, dayStart, dayEnd int, deptID int64, periods []config.Period) ([]service.FreeUserSlot, error)
 }
 
 // ListMyScheduleByWeek 查询用户指定周次的个人课表，并转换为 Agent 可用的课程数据。
@@ -83,18 +89,16 @@ func (a *scheduleAdapter) ListMyScheduleByWeek(ctx context.Context, userID uint,
 	if err != nil {
 		return nil, err
 	}
-	items := make([]agenttool.CourseItem, 0, len(result.Courses))
-	for _, c := range result.Courses {
-		items = append(items, agenttool.CourseItem{
-			CourseName: c.CourseName,
-			DayOfWeek:  c.DayOfWeek,
-			Section:    c.Section,
-			Location:   c.Location,
-			Teacher:    c.Teacher,
-			WeekList:   c.WeekList,
-		})
+	return convertScheduleCourses(result), nil
+}
+
+// ListUserScheduleByWeek 查询目标用户指定周次的课表，并转换为 Agent 可用的课程数据。
+func (a *scheduleAdapter) ListUserScheduleByWeek(ctx context.Context, viewerID uint, viewerRole int, targetUserID uint, week int) ([]agenttool.CourseItem, error) {
+	result, err := a.srv.ListByWeek(ctx, viewerID, viewerRole, targetUserID, week)
+	if err != nil {
+		return nil, err
 	}
-	return items, nil
+	return convertScheduleCourses(result), nil
 }
 
 // GetFreeUsersBySlot 查询指定周次和节次范围内的空闲人员列表。
@@ -126,6 +130,24 @@ func (a *scheduleAdapter) GetFreeUsersBySlot(ctx context.Context, week, dayStart
 		})
 	}
 	return results, nil
+}
+
+func convertScheduleCourses(result *service.WeekScheduleResult) []agenttool.CourseItem {
+	if result == nil {
+		return nil
+	}
+	items := make([]agenttool.CourseItem, 0, len(result.Courses))
+	for _, c := range result.Courses {
+		items = append(items, agenttool.CourseItem{
+			CourseName: c.CourseName,
+			DayOfWeek:  c.DayOfWeek,
+			Section:    c.Section,
+			Location:   c.Location,
+			Teacher:    c.Teacher,
+			WeekList:   c.WeekList,
+		})
+	}
+	return items
 }
 
 // ────────────── attendanceAdapter ──────────────

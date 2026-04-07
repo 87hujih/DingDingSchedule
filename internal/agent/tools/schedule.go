@@ -8,7 +8,7 @@ import (
 )
 
 // RegisterScheduleTools 注册课表相关工具
-func RegisterScheduleTools(r *Registry, schedule SchedulePort, semester SemesterPort, period SchedulePeriodPort, dept DeptPort) {
+func RegisterScheduleTools(r *Registry, schedule SchedulePort, user UserPort, semester SemesterPort, period SchedulePeriodPort, dept DeptPort) {
 	// get_current_time
 	r.Register(ToolDef{
 		Type: "function",
@@ -76,6 +76,75 @@ func RegisterScheduleTools(r *Registry, schedule SchedulePort, semester Semester
 			"week":    week,
 			"count":   len(courses),
 			"courses": courses,
+		})
+	})
+
+	// query_user_schedule
+	r.Register(ToolDef{
+		Type: "function",
+		Function: FunctionDef{
+			Name:        "query_user_schedule",
+			Description: "查询指定用户指定周的课表",
+			Parameters: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"user_name": {"type": "string", "description": "要查询的用户姓名"},
+					"week": {"type": "integer", "description": "周次，不传则使用当前周"}
+				},
+				"required": ["user_name"]
+			}`),
+		},
+	}, 0, func(ctx context.Context, uctx *UserContext, params json.RawMessage) (string, error) {
+		var p struct {
+			UserName string `json:"user_name"`
+			Week     int    `json:"week"`
+		}
+		if err := json.Unmarshal(params, &p); err != nil {
+			return marshalJSON(map[string]interface{}{"error": "参数解析失败"})
+		}
+
+		week := p.Week
+		if week <= 0 {
+			w, _, err := semester.GetCurrentWeek(ctx)
+			if err != nil {
+				return marshalJSON(map[string]interface{}{"error": "无法获取当前周次: " + err.Error()})
+			}
+			week = w
+		}
+
+		users, err := user.SearchByName(ctx, p.UserName)
+		if err != nil {
+			return "", err
+		}
+		if len(users) == 0 {
+			return marshalJSON(map[string]interface{}{
+				"error":      fmt.Sprintf("找不到用户「%s」，请确认姓名", p.UserName),
+				"error_code": "user_name_not_found",
+			})
+		}
+		if len(users) > 1 {
+			names := make([]string, len(users))
+			for i, item := range users {
+				names[i] = item.Name
+			}
+			return marshalJSON(map[string]interface{}{
+				"error":           fmt.Sprintf("找到%d个同名用户，请从以下候选中选择", len(users)),
+				"error_code":      "user_name_ambiguous",
+				"candidate_users": names,
+			})
+		}
+
+		targetUser := users[0]
+		courses, err := schedule.ListUserScheduleByWeek(ctx, uctx.UserID, uctx.UserRole, targetUser.ID, week)
+		if err != nil {
+			return "", err
+		}
+
+		return marshalJSON(map[string]interface{}{
+			"week":      week,
+			"user_name": targetUser.Name,
+			"count":     len(courses),
+			"courses":   courses,
 		})
 	})
 
