@@ -1,6 +1,144 @@
 # 任务清单
 
 ## 当前任务
+- [x] 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-protocol-first` 中建立 protocol-first 重构基线，并记录 `internal/agent` / `internal/app` 的起点状态。
+- [x] 执行 Task 1：新增协议契约、operation allowlist 与 `ProtocolMode`，并用失败测试锁定边界。
+- [x] 执行 Task 2：新增安全回复模型与协议日志字段，切断工具原始错误直返用户。
+- [x] 执行 Task 3：接入 `ProtocolCompiler + PolicyGate` shadow，验证能力咨询/读查询/写请求的协议分类。
+- [x] 执行 Task 4：接入可信实体解析与执行门，禁止自由文本直通可信参数。
+- [x] 执行 Task 5：落 workflow 契约与状态机，确保旧 workflow 不能劫持明确新请求。
+- [x] 执行 Task 6：迁移只读 operation 到 protocol-first live 路径。
+- [x] 执行 Task 7：迁移订阅写 workflow 到 protocol-first 状态机。
+- [x] 执行 Task 8：迁移代签写 workflow，并移除自由文本参数推断。
+- [x] 执行 Task 9：切断 legacy 顶层主链路，完成范围验证并同步复盘。
+
+## 当前任务复盘
+- 本轮实现将在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-protocol-first` 上推进，分支为 `codex/agent-protocol-first`，避免污染当前 `master` 工作区里的脏改动。
+- worktree 基线验证已完成：`go test ./internal/agent -count=1` 与 `go test ./internal/app -count=1` 在该 worktree 上通过，可以把后续失败明确归因到 protocol-first 改动。
+- 当前 worktree 中尚不存在 `docs/superpowers/specs/2026-04-07-agent-protocol-first-design.md` 与 `docs/superpowers/plans/2026-04-07-agent-protocol-first-plan.md`，原因是仓库 `.gitignore` 忽略整个 `docs/` 目录；执行时需以当前会话中的已确认 spec / plan 为准。
+- Task 1 已完成：`internal/agent/protocol_contract.go` 已定义 `UserAct / BusinessDomain / ProtocolMode / ResponseKind / ProtocolDraft / OperationRequest`，`internal/agent/operation_catalog.go` 已提供 protocol-first 所需的最小 operation metadata 与写操作 allowlist。
+- `internal/agent/agent.go` 已新增 `Deps.ProtocolMode` 与 `Agent.protocolMode`，默认仍保守落到 `legacy`；`internal/app/agent_wiring.go` 现在会把 `global.AppConfig.LLM.ProtocolMode` 透传给 `agent.NewAgent(...)`，避免配置字段只停留在结构体定义里。
+- 本轮新增回归覆盖：
+- `TestNewAgentDefaultsToLegacyProtocolMode`
+- `TestProtocolModesAllowlist`
+- `TestUserActsAllowlist`
+- `TestBusinessDomainsAllowlist`
+- `TestNormalizeProtocolModeDefaultsInvalidValueToLegacy`
+- `TestOperationCatalogWriteAllowlist`
+- `TestLookupOperationCatalogMetadata`
+- `TestBuildAgentUsesConfiguredProtocolMode`
+- 本轮验证命令：
+- `go test ./internal/agent -run "Test(NewAgentDefaultsToLegacyProtocolMode|OperationCatalogWriteAllowlist|ProtocolModesAllowlist)" -count=1`
+- `go test ./internal/agent -run "Test(UserActsAllowlist|BusinessDomainsAllowlist|NormalizeProtocolModeDefaultsInvalidValueToLegacy|LookupOperationCatalogMetadata|NewAgentDefaultsToLegacyProtocolMode|OperationCatalogWriteAllowlist|ProtocolModesAllowlist)" -count=1`
+- `go test ./internal/app -run TestBuildAgentUsesConfiguredProtocolMode -count=1`
+- 仓库中的 `configs/dev.yaml` 与 `configs/prod.yaml` 属于本地忽略文件，不存在于该 worktree；当前已完成代码侧 `ProtocolMode` 接线，后续如需本地运行 protocol-first 模式，需要在各自本地 `configs/*.yaml` 中补充 `llm.protocol_mode`。
+- Task 2 已完成：`internal/agent/response_renderer.go` 已建立 `ResponseModel` 与受限回复类型，`renderProtocolResponse(...)` 现在只会渲染 `answer / clarify / select_options / confirm / result / refuse` 六类安全回复，不再把内部错误原样暴露给调用方。
+- 协议日志字段已贯通到 `internal/agent/tools/types.go`、`internal/model/agent_call_log.go`、`internal/app/agent_wiring.go` 与 `internal/adminui/tables/agent_call_log.go`，新增 `protocol_mode / protocol_act / protocol_domain / protocol_operation / protocol_validation_code / workflow_id_before / workflow_id_after / response_kind / execution_allowed`。
+- 本轮新增回归覆盖：
+- `TestResponseRendererClarifyForUnknownIntent`
+- `TestResponseRendererRefuseDoesNotEchoInternalError`
+- `TestCallLogAdapterPersistsDomainModeAndRetrievalDetails` 已扩展覆盖 protocol 字段
+- 本轮验证命令：
+- `go test ./internal/agent -run "TestResponseRenderer(ClarifyForUnknownIntent|RefuseDoesNotEchoInternalError)" -count=1`
+- `go test ./internal/app -run TestCallLogAdapterPersistsDomainModeAndRetrievalDetails -count=1`
+- `go test ./internal/adminui/... -count=1`
+- Task 3 已完成：`internal/agent/protocol_compiler.go` 与 `internal/agent/policy_gate.go` 已建立 conservative protocol-first 顶层分类与准入规则；当前覆盖的高确定性句式包括考勤读查询、代签能力咨询、订阅写请求，以及订阅 workflow 下的“现在都有哪些部门”续接场景。
+- `internal/agent/agent.go` 已在 `ProtocolMode != legacy` 时接入 shadow 编译与校验，并把 `protocol_act / protocol_domain / protocol_operation / protocol_validation_code / execution_allowed` 写入调用日志；当前仍然不改变用户可见行为，只增强可观测性。
+- 本轮新增回归覆盖：
+- `TestProtocolCompilerClassifiesAttendanceReadQuery`
+- `TestProtocolCompilerClassifiesManualSignCapabilityQuestion`
+- `TestProtocolCompilerClassifiesSubscriptionWriteRequest`
+- `TestProtocolCompilerTreatsDepartmentHelpAsWorkflowContinueOnlyWhenDeptNamesMissing`
+- `TestProtocolCompilerReturnsUnknownForAmbiguousSmallTalk`
+- `TestPolicyGateRejectsExecutionForCapabilityQuestion`
+- `TestPolicyGateAllowsReadQueryWithoutWorkflowHijack`
+- `TestPolicyGateRequiresActiveWorkflowForWorkflowContinue`
+- `TestAgentChatClassifiesManualSignCapabilityWithoutExecutionInShadow`
+- 本轮验证命令：
+- `go test ./internal/agent -run "Test(ProtocolCompiler|PolicyGate)" -count=1`
+- `go test ./internal/agent -run TestAgentChatClassifiesManualSignCapabilityWithoutExecutionInShadow -count=1`
+- `go test ./internal/agent -run "Test(ProtocolCompiler|PolicyGate|AgentChatClassifiesManualSignCapabilityWithoutExecutionInShadow|ResponseRenderer)" -count=1`
+- Task 4 已完成：`internal/agent/entity_resolver.go` 已把部门、用户、日期、节次解析收敛为 `resolved / ambiguous / not_found / invalid_shape` 四类结果；`internal/agent/execution_gate.go` 现在只会用 trusted values 生成 `OperationRequest`，缺可信参数时直接阻断。
+- 这一步已经把“整句自然语言直接落成部门名/用户名”从代码层封死。像“可以执行代签功能吗”这种能力咨询句，在 resolver 中只会得到 `invalid_shape`，不会再被当成实体参数继续向下传。
+- 本轮新增回归覆盖：
+- `TestResolveDepartmentExactMatch`
+- `TestResolveDepartmentNormalizedUniqueMatch`
+- `TestResolveDepartmentReturnsAmbiguousCandidates`
+- `TestResolveDepartmentReturnsNotFound`
+- `TestResolveDepartmentRejectsCapabilitySentenceAsInvalidShape`
+- `TestResolveUserExactMatch`
+- `TestResolveUserReturnsAmbiguousCandidates`
+- `TestResolveDateParsesExplicitDate`
+- `TestResolveSectionParsesChineseSection`
+- `TestExecutionGateBlocksManualSignWithoutTrustedUserID`
+- `TestExecutionGateBuildsAttendanceReadRequestFromTrustedValues`
+- 本轮验证命令：
+- `go test ./internal/agent -run "Test(ResolveDepartment|ResolveUser|ResolveDate|ResolveSection|ExecutionGate)" -count=1`
+- `go test ./internal/agent ./internal/app ./internal/adminui/... -count=1`
+- Task 5 已完成：`internal/agent/workflow_contract.go`、`internal/agent/workflow_engine.go` 已定义 workflow snapshot、状态枚举、决策枚举以及 `start / continue / cancel` 三个核心动作；状态机已经明确支持“新请求优先挂起旧 workflow”和“缺槽位只接受合法输入形状”。
+- `internal/agent/session.go` 已为 workflow snapshot 预留独立存取位，当前不会改变现有 `activeTask / taskMemory` 行为，但后续切 live path 时不需要再回头改会话模型。
+- 本轮新增回归覆盖：
+- `TestWorkflowEngineAdvancesSubscriptionStartToReady`
+- `TestWorkflowEngineSuspendsSubscriptionForNewReadQuery`
+- `TestWorkflowEngineRejectsInvalidContinuationShape`
+- `TestWorkflowEngineAdvancesManualSignToReady`
+- `TestWorkflowEngineCancelsActiveWorkflow`
+- 本轮验证命令：
+- `go test ./internal/agent -run TestWorkflowEngine -count=1`
+- `go test ./internal/agent ./internal/app ./internal/adminui/... -count=1`
+- Task 6 已完成：`internal/agent/agent.go` 现在会在 `ProtocolMode=protocol_live` 下优先接管两类已迁移请求：
+- `attendance.query_status`
+- `manual_sign.describe_capability`
+- 这两类请求会在进入 legacy task / planner / slot-filler 之前被 protocol-first 处理，因此“查询一下今天第二节的考勤状态”不再会被订阅任务劫持，“可以执行代签功能吗”也不再会被当成部门输入。
+- 当前 live 迁移仍然是受控 rollout：只有已完成 trusted parsing 和 deterministic reply 的 operation 才会抢主链路，其他请求继续走 legacy，避免一次性放大 blast radius。
+- 本轮新增回归覆盖：
+- `TestAgentChatProtocolLiveKeepsAttendanceQueryOutOfSubscriptionWorkflow`
+- `TestAgentChatProtocolLiveAnswersManualSignCapabilityWithoutExecution`
+- 本轮验证命令：
+- `go test ./internal/agent -run "TestAgentChatProtocolLive(KeepsAttendanceQueryOutOfSubscriptionWorkflow|AnswersManualSignCapabilityWithoutExecution)" -count=1`
+- `go test ./internal/agent ./internal/app ./internal/adminui/... -count=1`
+- Task 7 已完成：`subscription.start / subscription.list_departments / subscription.cancel` 已切到 `protocol_live` 主链路，订阅范围补槽现在由 `WorkflowSnapshot` 驱动，旧的 `activeTask` 不再参与这三条路径的主裁决。
+- `internal/agent/agent.go` 已新增 `handleProtocolSubscriptionPrimary(...)`，并配合 `protocol_compiler.go`、`workflow_engine.go` 把“开启订阅 -> 选择全部/指定部门 -> 列部门 -> 执行订阅 / 取消订阅”串成状态机。
+- 订阅写 workflow 的新增回归覆盖：
+- `TestSubscriptionWorkflowStartsAndExecutesAllScopeInProtocolLive`
+- `TestSubscriptionWorkflowListsDepartmentsAndExecutesDepartmentScopeInProtocolLive`
+- `TestSubscriptionWorkflowRejectsCapabilityQuestionDuringDeptCollection`
+- `TestSubscriptionWorkflowCancelsOnExplicitWriteRequestInProtocolLive`
+- Task 7 验证命令：
+- `go test ./internal/agent -run "TestSubscriptionWorkflow(StartsAndExecutesAllScopeInProtocolLive|ListsDepartmentsAndExecutesDepartmentScopeInProtocolLive|RejectsCapabilityQuestionDuringDeptCollection|CancelsOnExplicitWriteRequestInProtocolLive)" -count=1`
+- `go test ./internal/agent ./internal/app ./internal/adminui/... -count=1`
+- Task 8 当前进入实现：已先补 manual-sign protocol-live 失败回归 `TestManualSignWorkflowExecutesExplicitRequestInProtocolLive`、`TestManualSignWorkflowReturnsCandidateSelectionForAmbiguousUserInProtocolLive`、`TestManualSignWorkflowDoesNotTreatSentenceAsUserName`，下一步只补 live handler 直到这些测试由红转绿。
+- Task 8 已完成：`manual_sign.create` 已接入 `protocol_live` 主链路，`manual_sign.describe_capability` 和实际代签执行现在彻底分流，能力咨询不再有任何机会落到写操作。
+- `internal/agent/agent.go` 新增了 `handleProtocolManualSignPrimary(...)`、`resolveManualSignInput(...)`、`buildManualSignMissingFieldsReply(...)` 等 protocol-first helper；代签请求现在会先解析可信的 `user_id / date / section`，再经 workflow 状态机决定是继续澄清、返回候选用户，还是执行 `SignForUsersBySlot(...)`。
+- `internal/agent/protocol_compiler.go` 已修正 `compileWorkflowContinue(...)` 的结构，让 `manual_sign.create` 的 follow-up 真正能进入 `workflow_continue`；同时 `workflow_engine.go` 现在会保留已解析的 `UserName`，保证多轮补齐后仍能返回确定性的成功回执。
+- Task 8 新增/更新的回归覆盖：
+- `TestProtocolCompilerTreatsManualSignNameReplyAsWorkflowContinue`
+- `TestManualSignWorkflowExecutesExplicitRequestInProtocolLive`
+- `TestManualSignWorkflowReturnsCandidateSelectionForAmbiguousUserInProtocolLive`
+- `TestManualSignWorkflowDoesNotTreatSentenceAsUserName`
+- Task 8 验证命令：
+- `go test ./internal/agent -run "Test(ProtocolCompilerTreatsManualSignNameReplyAsWorkflowContinue|ManualSignWorkflow(ExecutesExplicitRequestInProtocolLive|ReturnsCandidateSelectionForAmbiguousUserInProtocolLive|DoesNotTreatSentenceAsUserName))" -count=1`
+- `go test ./internal/agent ./internal/app ./internal/adminui/... -count=1`
+- `go test ./... -count=1`
+- Task 9 已完成：`ProtocolMode=protocol_live` 下的主链路现在在 `tryHandleProtocolPrimary(...)` 未命中时直接进入 `handleProtocolFallback(...)`，返回 `answer / clarify / refuse` 这类安全回复，不再回落到 `route / planner / conversation / slot_filler` 的 legacy 顶层裁决。
+- `internal/agent/agent.go` 现在只会基于 `WorkflowSnapshot` 构建 protocol live 的活动上下文；legacy `ActiveTask` 只保留给 `legacy / protocol_shadow` 路径和兼容逻辑，不再参与 `protocol_live` 的主裁决。
+- 本轮新增最终保障回归：
+- `TestProtocolLiveReadQueryBeatsActiveWorkflow`
+- `TestProtocolLiveCapabilityQuestionNeverCallsBusinessTool`
+- `TestProtocolLiveBlockedRequestsReturnSafeClarifyWithoutLegacyFallback`
+- 这些测试分别锁住：
+- 活动 workflow 不会劫持新的明确读查询
+- 能力咨询不会触发任何业务工具
+- `protocol_live` 未命中时只返回安全澄清，不再掉回 legacy LLM / retrieval / planner 主链路
+- Task 9 验证命令：
+- `go test ./internal/agent -run "TestProtocolLive(ReadQueryBeatsActiveWorkflow|CapabilityQuestionNeverCallsBusinessTool|BlockedRequestsReturnSafeClarifyWithoutLegacyFallback)" -count=1`
+- `go test ./internal/agent -run "Test(ProtocolCompiler|PolicyGate|ResolveDepartment|ResolveUser|ResolveDate|ResolveSection|ExecutionGate|WorkflowEngine|ProtocolLive)" -count=1`
+- `go test ./internal/agent -run "TestAgentChat" -count=1`
+- `go test ./... -count=1`
+- `git diff --check -- internal/agent internal/agent/tools internal/app internal/model internal/adminui config tasks/todo.md`
+- `git diff --check` 当前没有新的格式错误，只有仓库既有的 `LF/CRLF` warning。
+
+## 当前任务
 - [x] 在隔离 worktree `G:\gofile\schedule_server\.worktrees\agent-query-user-schedule` 中建立“查询他人课表”实现基线，并确认全仓测试起点干净。
 - [x] 完成 Task 1：扩展 SchedulePort 与 scheduleAdapter，支持按目标用户查询周课表。
 - [x] 完成 Task 2：新增 `query_user_schedule` 工具，并返回结构化重名/未命中错误。

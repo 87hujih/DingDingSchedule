@@ -16,6 +16,7 @@ type session struct {
 	messages   []tools.Message
 	activeTask *ActiveTask
 	taskMemory *TaskInstance
+	workflow   *WorkflowSnapshot
 	updatedAt  time.Time
 }
 
@@ -86,6 +87,20 @@ func (sm *sessionManager) getTaskState(key string) ([]tools.Message, *TaskInstan
 	return msgs, cloneTaskInstance(s.taskMemory)
 }
 
+func (sm *sessionManager) getWorkflowState(key string) ([]tools.Message, *WorkflowSnapshot) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	s, ok := sm.sessions[key]
+	if !ok {
+		return nil, nil
+	}
+
+	msgs := make([]tools.Message, len(s.messages))
+	copy(msgs, s.messages)
+	return msgs, cloneWorkflowSnapshot(s.workflow)
+}
+
 // appendMessages 追加消息到 session，并裁剪超长历史
 func (sm *sessionManager) appendMessages(key string, msgs ...tools.Message) {
 	sm.mu.Lock()
@@ -142,6 +157,22 @@ func (sm *sessionManager) setTaskInstance(key string, task *TaskInstance) {
 	s.updatedAt = time.Now()
 }
 
+func (sm *sessionManager) setWorkflowState(key string, workflow *WorkflowSnapshot) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	s, ok := sm.sessions[key]
+	if !ok {
+		s = &session{
+			messages: make([]tools.Message, 0, maxHistory),
+		}
+		sm.sessions[key] = s
+	}
+
+	s.workflow = cloneWorkflowSnapshot(workflow)
+	s.updatedAt = time.Now()
+}
+
 func (sm *sessionManager) clearActiveTask(key string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -152,6 +183,7 @@ func (sm *sessionManager) clearActiveTask(key string) {
 	}
 	s.activeTask = nil
 	s.taskMemory = nil
+	s.workflow = nil
 	s.updatedAt = time.Now()
 }
 
@@ -165,6 +197,19 @@ func (sm *sessionManager) clearTaskInstance(key string) {
 	}
 	s.activeTask = nil
 	s.taskMemory = nil
+	s.workflow = nil
+	s.updatedAt = time.Now()
+}
+
+func (sm *sessionManager) clearWorkflowState(key string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	s, ok := sm.sessions[key]
+	if !ok {
+		return
+	}
+	s.workflow = nil
 	s.updatedAt = time.Now()
 }
 

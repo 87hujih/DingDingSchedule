@@ -34,6 +34,7 @@ type Deps struct {
 	RouterLLMAPIKey  string
 	RouterLLMModel   string
 	RouteMode        string
+	ProtocolMode     string
 
 	Schedule        SchedulePort
 	Attendance      AttendancePort
@@ -59,6 +60,7 @@ type Agent struct {
 	llmClient    *LLMClient
 	routerClient *LLMClient
 	routeMode    string
+	protocolMode ProtocolMode
 	registry     *tools.Registry
 	runtime      *taskRuntime
 	taskCatalog  *taskCatalog
@@ -101,6 +103,15 @@ type callMetrics struct {
 	ExecutorLatencyMs       int64
 	ShadowRouteKind         string
 	ShadowRouteMatched      bool
+	ProtocolMode            string
+	ProtocolAct             string
+	ProtocolDomain          string
+	ProtocolOperation       string
+	ProtocolValidationCode  string
+	WorkflowIDBefore        string
+	WorkflowIDAfter         string
+	ResponseKind            string
+	ExecutionAllowed        bool
 	AnswerMode              answerMode
 	LLMDurationMs           int64
 	RetrievalDurationMs     int64
@@ -120,6 +131,7 @@ func NewAgent(deps Deps) *Agent {
 	if routeMode == "" {
 		routeMode = string(RouteModeOff)
 	}
+	protocolMode := normalizeProtocolMode(strings.TrimSpace(deps.ProtocolMode))
 
 	mainClient := NewLLMClient(deps.LLMBaseURL, deps.LLMAPIKey, deps.LLMModel)
 	routerClient := mainClient
@@ -144,6 +156,7 @@ func NewAgent(deps Deps) *Agent {
 		llmClient:    mainClient,
 		routerClient: routerClient,
 		routeMode:    routeMode,
+		protocolMode: protocolMode,
 		sessions:     newSessionManager(),
 		domainGate:   newDomainGate(),
 		router:       newQueryRouter(),
@@ -271,9 +284,34 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 
 	// 6. 加载历史消息和活动任务
 	history, activeTask := a.sessions.getSessionState(sessionKey)
+	_, activeWorkflow := a.sessions.getWorkflowState(sessionKey)
 	userMsg := tools.Message{Role: "user", Content: msg.Content}
-	metrics := callMetrics{}
+	metrics := callMetrics{ProtocolMode: string(a.protocolMode)}
 	beforeTask := cloneActiveTask(activeTask)
+	protocolWorkflow := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
+	if protocolWorkflow == nil && a.protocolMode == ProtocolModeShadow {
+		protocolWorkflow = protocolWorkflowContextFromActiveTask(activeTask)
+	}
+	var protocolDraft ProtocolDraft
+	var protocolValidation ProtocolValidationResult
+	if a.protocolMode != ProtocolModeLegacy {
+		protocolDraft = compileProtocol(protocolInput{
+			Message:        msg.Content,
+			ActiveWorkflow: protocolWorkflow,
+		})
+		protocolValidation = validateProtocol(protocolDraft, protocolWorkflow)
+		applyProtocolMetrics(&metrics, protocolDraft, protocolValidation)
+		if activeWorkflow != nil {
+			metrics.WorkflowIDBefore = activeWorkflow.ID
+		}
+	}
+	if handled, reply, err := a.tryHandleProtocolPrimary(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, &metrics, activeWorkflow, protocolWorkflow); handled {
+		return reply, err
+	}
+	if a.protocolMode == ProtocolModeLive {
+		reply, err := a.handleProtocolFallback(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, &metrics, protocolDraft, protocolValidation, activeWorkflow)
+		return reply, err
+	}
 	normalized := normalizeQuery(msg.Content)
 	var routeDecision RouteDecision
 	if a.routeMode != string(RouteModeOff) {
@@ -1362,6 +1400,15 @@ func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, quest
 		ExecutorLatencyMs:       metrics.ExecutorLatencyMs,
 		ShadowRouteKind:         metrics.ShadowRouteKind,
 		ShadowRouteMatched:      metrics.ShadowRouteMatched,
+		ProtocolMode:            metrics.ProtocolMode,
+		ProtocolAct:             metrics.ProtocolAct,
+		ProtocolDomain:          metrics.ProtocolDomain,
+		ProtocolOperation:       metrics.ProtocolOperation,
+		ProtocolValidationCode:  metrics.ProtocolValidationCode,
+		WorkflowIDBefore:        metrics.WorkflowIDBefore,
+		WorkflowIDAfter:         metrics.WorkflowIDAfter,
+		ResponseKind:            metrics.ResponseKind,
+		ExecutionAllowed:        metrics.ExecutionAllowed,
 		AnswerMode:              string(metrics.AnswerMode),
 		Question:                question,
 		ToolsCalled:             toolsCalled,
@@ -1404,6 +1451,119 @@ func recordLegacyPlannerAction(metrics *callMetrics, action PlannerAction) {
 	}
 	metrics.ShadowPlannerAction = string(action)
 	metrics.ShadowPlannerMatched = metrics.ShadowPlannerAction != "" && metrics.ShadowPlannerAction == metrics.PlannerAction
+}
+
+func applyProtocolMetrics(metrics *callMetrics, draft ProtocolDraft, validation ProtocolValidationResult) {
+	if metrics == nil {
+		return
+	}
+	metrics.ProtocolAct = string(draft.Act)
+	metrics.ProtocolDomain = string(draft.Domain)
+	metrics.ProtocolOperation = draft.Operation
+	metrics.ProtocolValidationCode = validation.ValidationCode
+	metrics.ExecutionAllowed = validation.AllowExecution
+}
+
+func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, activeWorkflow *WorkflowSnapshot, workflowCtx *protocolWorkflowContext) (bool, string, error) {
+	if a.protocolMode != ProtocolModeLive {
+		return false, "", nil
+	}
+
+	draft := compileProtocol(protocolInput{
+		Message:        question,
+		ActiveWorkflow: workflowCtx,
+	})
+	validation := validateProtocol(draft, workflowCtx)
+	applyProtocolMetrics(metrics, draft, validation)
+	if activeWorkflow != nil {
+		metrics.WorkflowIDBefore = activeWorkflow.ID
+	}
+
+	switch draft.Operation {
+	case "subscription.cancel":
+		if !validation.AllowExecution || uctx == nil || uctx.ConversationType != "2" || a.deps.GroupSub == nil {
+			return false, "", nil
+		}
+		if err := a.deps.GroupSub.Unsubscribe(ctx, uctx.TenantID, uctx.ConversationID); err != nil {
+			return false, "", nil
+		}
+		reply := "已取消此群的考勤自动推送"
+		metrics.ResponseKind = string(ResponseResult)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		metrics.ExecutorName = "protocol_live_write"
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	case "subscription.start", "subscription.list_departments":
+		return a.handleProtocolSubscriptionPrimary(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, draft, activeWorkflow)
+	case "manual_sign.create":
+		return a.handleProtocolManualSignPrimary(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, draft, activeWorkflow)
+	case "manual_sign.describe_capability":
+		reply := buildManualSignCapabilityReply(uctx)
+		metrics.ResponseKind = string(ResponseAnswer)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	case "attendance.query_status":
+		if !validation.AllowExecution || a.deps.Attendance == nil || a.deps.Semester == nil {
+			return false, "", nil
+		}
+
+		trusted, ok := resolveAttendanceTrustedEntities(question)
+		if !ok {
+			reply := renderProtocolResponse(ResponseModel{
+				Kind:          ResponseClarify,
+				ClarifyReason: "missing_attendance_fields",
+			})
+			metrics.ResponseKind = string(ResponseClarify)
+			metrics.AnswerMode = answerModeToolFirst
+			metrics.QueryType = queryKindTool
+			a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+			return true, reply, nil
+		}
+
+		req, blocked := buildOperationRequest(draft, trusted)
+		if blocked {
+			reply := renderProtocolResponse(ResponseModel{
+				Kind:          ResponseClarify,
+				ClarifyReason: "missing_attendance_fields",
+			})
+			metrics.ResponseKind = string(ResponseClarify)
+			metrics.AnswerMode = answerModeToolFirst
+			metrics.QueryType = queryKindTool
+			a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+			return true, reply, nil
+		}
+
+		week, _, err := a.deps.Semester.GetCurrentWeek(ctx)
+		if err != nil {
+			return false, "", nil
+		}
+		result, err := a.deps.Attendance.GetAttendanceDetail(ctx, tools.AttendanceQuery{
+			Date:    req.TrustedParams["date"].(string),
+			Week:    week,
+			Section: req.TrustedParams["section"].(int),
+		})
+		if err != nil {
+			return false, "", nil
+		}
+
+		reply := buildAttendanceStatusReply(result)
+		metrics.ResponseKind = string(ResponseResult)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		metrics.ExecutorName = "protocol_live_read"
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	default:
+		return false, "", nil
+	}
 }
 
 func legacyTaskPlannerAction(beforeTask *ActiveTask, nextTask *ActiveTask) PlannerAction {
@@ -1462,6 +1622,550 @@ func matchedSlotNames(fill slotFillResult) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func protocolWorkflowContextFromActiveTask(task *ActiveTask) *protocolWorkflowContext {
+	if task == nil {
+		return nil
+	}
+
+	workflowType := ""
+	switch task.Type {
+	case "subscribe_attendance_push":
+		workflowType = "subscription.start"
+	case "unsubscribe_attendance_push":
+		workflowType = "subscription.cancel"
+	case "sign_for_user":
+		workflowType = "manual_sign.create"
+	default:
+		return nil
+	}
+
+	return &protocolWorkflowContext{
+		Type:          workflowType,
+		MissingFields: task.MissingSlots(),
+	}
+}
+
+func protocolWorkflowContextFromWorkflowSnapshot(workflow *WorkflowSnapshot) *protocolWorkflowContext {
+	if workflow == nil {
+		return nil
+	}
+	return &protocolWorkflowContext{
+		Type:          string(workflow.Type),
+		MissingFields: append([]string(nil), workflow.MissingSlots...),
+	}
+}
+
+func resolveAttendanceTrustedEntities(message string) (trustedEntities, bool) {
+	dateValue := resolveDateFromMessage(message)
+	sectionValue := resolveSectionFromMessage(message)
+	if dateValue == "" || sectionValue == 0 {
+		return trustedEntities{}, false
+	}
+	return trustedEntities{
+		Date:    dateValue,
+		Section: sectionValue,
+	}, true
+}
+
+func resolveDateFromMessage(message string) string {
+	dateValue := ""
+	for _, candidate := range []string{"今天", "昨天", "明天"} {
+		if !strings.Contains(message, candidate) {
+			continue
+		}
+		if resolved, ok := resolveDate(candidate); ok {
+			dateValue = resolved
+			break
+		}
+	}
+	if dateValue == "" {
+		if explicit := extractDateToken(message); explicit != "" {
+			if resolved, ok := resolveDate(explicit); ok {
+				dateValue = resolved
+			}
+		}
+	}
+	return dateValue
+}
+
+func resolveSectionFromMessage(message string) int {
+	sectionValue := 0
+	for token, value := range map[string]int{
+		"第一节": 1,
+		"第二节": 2,
+		"第三节": 3,
+		"第四节": 4,
+		"第五节": 5,
+	} {
+		if strings.Contains(message, token) {
+			sectionValue = value
+			break
+		}
+	}
+	return sectionValue
+}
+
+func extractDateToken(message string) string {
+	for i := 0; i+10 <= len(message); i++ {
+		candidate := message[i : i+10]
+		if _, err := time.Parse("2006-01-02", candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func buildAttendanceStatusReply(result *tools.AttendanceResult) string {
+	if result == nil {
+		return "未查询到相关考勤数据。"
+	}
+
+	notArrivedLabel := "未到"
+	if result.ViewMode == "current" {
+		notArrivedLabel = "当前未到"
+	}
+
+	return fmt.Sprintf("%s第%d节考勤状态：应到%d人，正常%d人，迟到%d人，请假%d人，%s%d人。",
+		result.Date,
+		result.Section,
+		result.ShouldAttend,
+		result.OnTimeCount,
+		result.LateCount,
+		result.LeaveCount,
+		notArrivedLabel,
+		result.AbsentCount,
+	)
+}
+
+func buildManualSignCapabilityReply(uctx *tools.UserContext) string {
+	if uctx != nil && uctx.UserRole >= 1 {
+		return "可以。你当前可以为指定用户代签某节次考勤，我需要明确的姓名、日期和节次。"
+	}
+	return "代签属于管理员能力，只有管理员可以为指定用户代签某节次考勤。"
+}
+
+func (a *Agent) handleProtocolFallback(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, draft ProtocolDraft, validation ProtocolValidationResult, activeWorkflow *WorkflowSnapshot) (string, error) {
+	model := ResponseModel{
+		Kind:          ResponseClarify,
+		ClarifyReason: "unknown_intent",
+	}
+	answerMode := answerModeReject
+
+	switch draft.Act {
+	case ActCapabilityQuestion:
+		model = ResponseModel{
+			Kind:   ResponseAnswer,
+			Answer: buildProtocolCapabilityReply(draft.Domain, uctx),
+		}
+		answerMode = answerModeToolFirst
+	case ActHelp:
+		model = ResponseModel{
+			Kind:   ResponseAnswer,
+			Answer: buildHelpReply(uctx),
+		}
+		answerMode = answerModeToolFirst
+	case ActUnknown:
+		if strings.TrimSpace(draft.ClarifyReason) != "" {
+			model.ClarifyReason = draft.ClarifyReason
+		}
+	default:
+		switch validation.ValidationCode {
+		case "operation_not_allowed", "act_operation_mismatch", "read_query_cannot_write", "unsupported_act":
+			model = ResponseModel{
+				Kind:          ResponseRefuse,
+				RefusalReason: "抱歉，我当前不能直接执行这个请求。",
+			}
+		}
+	}
+
+	reply := renderProtocolResponse(model)
+	if activeWorkflow != nil {
+		metrics.WorkflowIDAfter = activeWorkflow.ID
+	}
+	metrics.ResponseKind = string(model.Kind)
+	metrics.AnswerMode = answerMode
+	metrics.QueryType = queryKindTool
+	metrics.ExecutorName = "protocol_live_guardrail"
+	a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+	a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+	return reply, nil
+}
+
+func buildProtocolCapabilityReply(domain BusinessDomain, uctx *tools.UserContext) string {
+	switch domain {
+	case DomainManualSign:
+		return buildManualSignCapabilityReply(uctx)
+	case DomainSubscription:
+		return "我可以帮助开启、取消或查询当前群的考勤订阅。"
+	case DomainAttendance:
+		return "我可以帮助查询指定日期和节次的考勤状态。"
+	case DomainSchedule:
+		return "我可以帮助查询课表、空闲人员和节次时间。"
+	case DomainLeave:
+		return "我可以帮助查询请假信息。"
+	case DomainAnalytics:
+		return "我可以帮助查询考勤统计分析。"
+	default:
+		return buildHelpReply(uctx)
+	}
+}
+
+type manualSignResolution struct {
+	Trusted        trustedEntities
+	UserInput      string
+	UserResolution entityResolution
+}
+
+func (a *Agent) handleProtocolManualSignPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot) (bool, string, error) {
+	if uctx == nil || a.deps.Attendance == nil || a.deps.User == nil {
+		return false, "", nil
+	}
+	if uctx.UserRole < 1 {
+		reply := buildManualSignCapabilityReply(uctx)
+		metrics.ResponseKind = string(ResponseRefuse)
+		metrics.AnswerMode = answerModeReject
+		metrics.QueryType = queryKindTool
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	}
+
+	workflow := cloneWorkflowSnapshot(activeWorkflow)
+	if workflow == nil {
+		if draft.Act != ActWriteRequest {
+			return false, "", nil
+		}
+		started, ok := startWorkflow(draft)
+		if !ok {
+			return false, "", nil
+		}
+		workflow = &started
+	}
+	if workflow.Type != WorkflowManualSignCreate {
+		return false, "", nil
+	}
+
+	resolution, err := a.resolveManualSignInput(ctx, question)
+	if err != nil {
+		return false, "", nil
+	}
+
+	result := continueWorkflow(*workflow, draft, resolution.Trusted)
+	if result.Workflow == nil {
+		result.Workflow = workflow
+	}
+
+	switch resolution.UserResolution.Status {
+	case ResolveAmbiguous:
+		a.sessions.setWorkflowState(sessionKey, result.Workflow)
+		metrics.WorkflowIDAfter = result.Workflow.ID
+		metrics.ResponseKind = string(ResponseSelectOptions)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		reply := renderProtocolResponse(ResponseModel{
+			Kind:    ResponseSelectOptions,
+			Options: buildResponseOptions(resolution.UserResolution.Candidates),
+		})
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	case ResolveNotFound:
+		if resolution.UserInput != "" {
+			a.sessions.setWorkflowState(sessionKey, result.Workflow)
+			metrics.WorkflowIDAfter = result.Workflow.ID
+			metrics.ResponseKind = string(ResponseClarify)
+			metrics.AnswerMode = answerModeToolFirst
+			metrics.QueryType = queryKindTool
+			reply := fmt.Sprintf("找不到用户「%s」，请确认姓名。", resolution.UserInput)
+			a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+			return true, reply, nil
+		}
+	}
+
+	switch result.Decision {
+	case WorkflowReadyToExecute:
+		req, blocked := buildOperationRequest(draft, result.Workflow.Trusted)
+		if blocked {
+			reply := buildManualSignMissingFieldsReply(result.Workflow.MissingSlots)
+			a.sessions.setWorkflowState(sessionKey, result.Workflow)
+			metrics.WorkflowIDAfter = result.Workflow.ID
+			metrics.ResponseKind = string(ResponseClarify)
+			metrics.AnswerMode = answerModeToolFirst
+			metrics.QueryType = queryKindTool
+			a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+			return true, reply, nil
+		}
+		if err := a.deps.Attendance.SignForUsersBySlot(ctx, req.TrustedParams["date"].(string), req.TrustedParams["section"].(int), []uint{req.TrustedParams["user_id"].(uint)}); err != nil {
+			return false, "", nil
+		}
+		a.sessions.clearWorkflowState(sessionKey)
+		reply := fmt.Sprintf("已为%s补签 %s 第%d节考勤", result.Workflow.Trusted.UserName, req.TrustedParams["date"].(string), req.TrustedParams["section"].(int))
+		metrics.WorkflowIDAfter = ""
+		metrics.ResponseKind = string(ResponseResult)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		metrics.ExecutorName = "protocol_live_write"
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	case WorkflowContinueDecision, WorkflowRejectInvalidShape:
+		a.sessions.setWorkflowState(sessionKey, result.Workflow)
+		metrics.WorkflowIDAfter = result.Workflow.ID
+		metrics.ResponseKind = string(ResponseClarify)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		reply := buildManualSignMissingFieldsReply(result.Workflow.MissingSlots)
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	default:
+		return false, "", nil
+	}
+}
+
+func (a *Agent) resolveManualSignInput(ctx context.Context, message string) (manualSignResolution, error) {
+	resolution := manualSignResolution{
+		Trusted: trustedEntities{
+			Date:    resolveDateFromMessage(message),
+			Section: resolveSectionFromMessage(message),
+		},
+	}
+
+	userName := extractManualSignUserName(message)
+	if userName == "" {
+		return resolution, nil
+	}
+	resolution.UserInput = userName
+
+	users, err := a.deps.User.SearchByName(ctx, userName)
+	if err != nil {
+		return manualSignResolution{}, err
+	}
+
+	resolution.UserResolution = resolveUser(entityContext{
+		Raw:   userName,
+		Users: users,
+	})
+	if resolution.UserResolution.Status == ResolveResolved && resolution.UserResolution.User != nil {
+		resolution.Trusted.UserID = resolution.UserResolution.User.ID
+		resolution.Trusted.UserName = resolution.UserResolution.User.Name
+	}
+	return resolution, nil
+}
+
+func buildManualSignMissingFieldsReply(missing []string) string {
+	if len(missing) == 0 {
+		return "请补充需要补签的姓名、日期和节次。"
+	}
+	names := make([]string, 0, len(missing))
+	for _, field := range missing {
+		switch field {
+		case "user_id":
+			names = append(names, "姓名")
+		case "date":
+			names = append(names, "日期")
+		case "section":
+			names = append(names, "节次")
+		}
+	}
+	if len(names) == 0 {
+		return "请补充需要补签的姓名、日期和节次。"
+	}
+	return fmt.Sprintf("我还缺少%s，请补充后我再帮你补签。", strings.Join(names, "和"))
+}
+
+func buildResponseOptions(candidates []string) []ResponseOption {
+	options := make([]ResponseOption, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		options = append(options, ResponseOption{
+			Label: candidate,
+			Value: candidate,
+		})
+	}
+	return options
+}
+
+func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot) (bool, string, error) {
+	if uctx == nil || uctx.ConversationType != "2" || a.deps.GroupSub == nil {
+		return false, "", nil
+	}
+
+	if activeWorkflow == nil {
+		if draft.Act != ActWriteRequest || draft.Operation != "subscription.start" {
+			return false, "", nil
+		}
+		workflow, ok := startWorkflow(draft)
+		if !ok {
+			return false, "", nil
+		}
+		a.sessions.setWorkflowState(sessionKey, &workflow)
+		metrics.WorkflowIDAfter = workflow.ID
+		metrics.ResponseKind = string(ResponseClarify)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		reply := "需要先确认订阅范围。你可以回复“全部人员”，也可以回复“指定部门”。"
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	}
+
+	if activeWorkflow.Type != WorkflowSubscriptionStart {
+		return false, "", nil
+	}
+
+	if draft.Operation == "subscription.list_departments" {
+		reply, err := a.buildProtocolDepartmentOptionsReply(ctx)
+		if err != nil {
+			return false, "", nil
+		}
+		metrics.WorkflowIDAfter = activeWorkflow.ID
+		metrics.ResponseKind = string(ResponseSelectOptions)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	}
+
+	if draft.Act != ActWorkflowContinue {
+		return false, "", nil
+	}
+
+	trusted, ok := a.resolveSubscriptionTrustedEntities(ctx, question, activeWorkflow)
+	if !ok {
+		reply := renderProtocolResponse(ResponseModel{
+			Kind:          ResponseClarify,
+			ClarifyReason: "subscription_missing_fields",
+		})
+		metrics.WorkflowIDAfter = activeWorkflow.ID
+		metrics.ResponseKind = string(ResponseClarify)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	}
+
+	result := continueWorkflow(*activeWorkflow, draft, trusted)
+	switch result.Decision {
+	case WorkflowContinueDecision:
+		if result.Workflow == nil {
+			return false, "", nil
+		}
+		a.sessions.setWorkflowState(sessionKey, result.Workflow)
+		metrics.WorkflowIDAfter = result.Workflow.ID
+		metrics.ResponseKind = string(ResponseClarify)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		reply, err := a.buildProtocolDepartmentOptionsReply(ctx)
+		if err != nil {
+			reply = "请告诉我需要订阅哪些部门。"
+		}
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	case WorkflowReadyToExecute:
+		if result.Workflow == nil {
+			return false, "", nil
+		}
+		deptIDs := []int64(nil)
+		if result.Workflow.Trusted.Scope == "department" && result.Workflow.Trusted.DepartmentID != 0 {
+			deptIDs = []int64{result.Workflow.Trusted.DepartmentID}
+		}
+		if err := a.deps.GroupSub.Subscribe(ctx, uctx.TenantID, uctx.ConversationID, uctx.ConversationTitle, uctx.UserID, deptIDs); err != nil {
+			return false, "", nil
+		}
+		a.sessions.clearWorkflowState(sessionKey)
+		reply := "已为此群开启考勤推送"
+		metrics.WorkflowIDAfter = ""
+		metrics.ResponseKind = string(ResponseResult)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	default:
+		reply := renderProtocolResponse(ResponseModel{
+			Kind:          ResponseClarify,
+			ClarifyReason: "subscription_invalid_shape",
+		})
+		metrics.WorkflowIDAfter = activeWorkflow.ID
+		metrics.ResponseKind = string(ResponseClarify)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	}
+}
+
+func (a *Agent) buildProtocolDepartmentOptionsReply(ctx context.Context) (string, error) {
+	if a.deps.Dept == nil {
+		return "请告诉我需要订阅哪些部门。", nil
+	}
+	depts, err := a.deps.Dept.ListDepts(ctx)
+	if err != nil {
+		return "", err
+	}
+	names := make([]string, 0, len(depts))
+	for _, dept := range depts {
+		name := strings.TrimSpace(dept.Name)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return "当前暂无可选部门。", nil
+	}
+	return fmt.Sprintf("当前可选部门有：%s。请告诉我需要订阅哪些部门。", strings.Join(names, "、")), nil
+}
+
+func (a *Agent) resolveSubscriptionTrustedEntities(ctx context.Context, message string, workflow *WorkflowSnapshot) (trustedEntities, bool) {
+	if workflow == nil {
+		return trustedEntities{}, false
+	}
+	switch workflow.State {
+	case WorkflowCollectScope:
+		normalized := normalizeQuery(message)
+		switch {
+		case containsAny(normalized, []string{"全部人员", "全部"}):
+			return trustedEntities{Scope: "all"}, true
+		case containsAny(normalized, []string{"指定部门", "部分部门"}):
+			return trustedEntities{Scope: "department"}, true
+		default:
+			return trustedEntities{}, false
+		}
+	case WorkflowCollectDepartments:
+		if a.deps.Dept == nil {
+			return trustedEntities{}, false
+		}
+		depts, err := a.deps.Dept.ListDepts(ctx)
+		if err != nil {
+			return trustedEntities{}, false
+		}
+		resolved := resolveDepartment(entityContext{
+			Raw:         message,
+			Departments: depts,
+		})
+		if resolved.Status != ResolveResolved || resolved.Department == nil {
+			return trustedEntities{}, false
+		}
+		return trustedEntities{
+			Scope:        "department",
+			DepartmentID: resolved.Department.DeptID,
+		}, true
+	default:
+		return trustedEntities{}, false
+	}
 }
 
 // buildSystemPrompt 构建系统提示词

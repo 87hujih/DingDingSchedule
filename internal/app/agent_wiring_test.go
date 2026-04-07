@@ -3,14 +3,18 @@ package app
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
 
 	"schedule_server/config"
+	"schedule_server/global"
+	agentpkg "schedule_server/internal/agent"
 	agenttool "schedule_server/internal/agent/tools"
 	"schedule_server/internal/dto"
 	"schedule_server/internal/model"
+	"schedule_server/internal/repository"
 	"schedule_server/internal/service"
 
 	"gorm.io/driver/sqlite"
@@ -176,6 +180,37 @@ func TestScheduleAdapterListUserScheduleByWeekUsesViewerAndTargetIDs(t *testing.
 	}
 }
 
+func TestBuildAgentUsesConfiguredProtocolMode(t *testing.T) {
+	t.Parallel()
+
+	prevConfig := global.AppConfig
+	prevDB := global.DB
+	t.Cleanup(func() {
+		global.AppConfig = prevConfig
+		global.DB = prevDB
+	})
+
+	global.AppConfig = config.Config{
+		LLM: config.LLM{
+			ProtocolMode: string(agentpkg.ProtocolModeLive),
+		},
+	}
+
+	a := BuildAgent(&repository.Repository{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	if a == nil {
+		t.Fatalf("BuildAgent() = nil, want agent")
+	}
+	t.Cleanup(a.Stop)
+
+	field := reflect.ValueOf(a).Elem().FieldByName("protocolMode")
+	if !field.IsValid() {
+		t.Fatalf("protocolMode field not found")
+	}
+	if got := field.String(); got != string(agentpkg.ProtocolModeLive) {
+		t.Fatalf("protocolMode = %q, want %q", got, agentpkg.ProtocolModeLive)
+	}
+}
+
 func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	db := newCallLogTestDB(t)
 	adapter := &callLogAdapter{db: db}
@@ -215,6 +250,15 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 		ExecutorLatencyMs:       28,
 		ShadowRouteKind:         "tool_query",
 		ShadowRouteMatched:      false,
+		ProtocolMode:            "protocol_shadow",
+		ProtocolAct:             "read_query",
+		ProtocolDomain:          "attendance",
+		ProtocolOperation:       "attendance.query_status",
+		ProtocolValidationCode:  "allowed_read_query",
+		WorkflowIDBefore:        "wf-before",
+		WorkflowIDAfter:         "wf-after",
+		ResponseKind:            "clarify",
+		ExecutionAllowed:        false,
 		AnswerMode:              "knowledge-only",
 		Question:                "如果请假信息没能同步到位，会出现什么情况",
 		ToolsCalled:             []string{"get_current_time"},
@@ -316,6 +360,33 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	}
 	if row.ShadowRouteMatched {
 		t.Fatalf("ShadowRouteMatched = true, want false")
+	}
+	if row.ProtocolMode != "protocol_shadow" {
+		t.Fatalf("ProtocolMode = %q, want protocol_shadow", row.ProtocolMode)
+	}
+	if row.ProtocolAct != "read_query" {
+		t.Fatalf("ProtocolAct = %q, want read_query", row.ProtocolAct)
+	}
+	if row.ProtocolDomain != "attendance" {
+		t.Fatalf("ProtocolDomain = %q, want attendance", row.ProtocolDomain)
+	}
+	if row.ProtocolOperation != "attendance.query_status" {
+		t.Fatalf("ProtocolOperation = %q, want attendance.query_status", row.ProtocolOperation)
+	}
+	if row.ProtocolValidationCode != "allowed_read_query" {
+		t.Fatalf("ProtocolValidationCode = %q, want allowed_read_query", row.ProtocolValidationCode)
+	}
+	if row.WorkflowIDBefore != "wf-before" {
+		t.Fatalf("WorkflowIDBefore = %q, want wf-before", row.WorkflowIDBefore)
+	}
+	if row.WorkflowIDAfter != "wf-after" {
+		t.Fatalf("WorkflowIDAfter = %q, want wf-after", row.WorkflowIDAfter)
+	}
+	if row.ResponseKind != "clarify" {
+		t.Fatalf("ResponseKind = %q, want clarify", row.ResponseKind)
+	}
+	if row.ExecutionAllowed {
+		t.Fatalf("ExecutionAllowed = true, want false")
 	}
 	if row.ConversationEvent != "task_follow_up" {
 		t.Fatalf("ConversationEvent = %q, want task_follow_up", row.ConversationEvent)

@@ -173,3 +173,18 @@ func TestNewAgentUsesDedicatedRouterModelWhenConfigured(t *testing.T) {
 		t.Fatalf("routeMode = %q, want shadow", a.routeMode)
 	}
 }
+
+func TestNewAgentDefaultsToLegacyProtocolMode(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(Deps{
+		User:   testUserPort{},
+		Tenant: testTenantPort{},
+		Logger: zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	if a.protocolMode != ProtocolModeLegacy {
+		t.Fatalf("protocolMode = %q, want %q", a.protocolMode, ProtocolModeLegacy)
+	}
+}

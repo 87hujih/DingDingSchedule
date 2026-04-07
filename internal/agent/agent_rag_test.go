@@ -149,6 +149,8 @@ func (p testClarifyGroupSubPort) GetSubscription(context.Context, uint, string) 
 
 type testTaskAttendancePort struct {
 	mu          sync.Mutex
+	detailCalls int
+	detailResp  *agenttools.AttendanceResult
 	signCalls   int
 	lastDate    string
 	lastSection int
@@ -156,7 +158,14 @@ type testTaskAttendancePort struct {
 }
 
 func (p *testTaskAttendancePort) GetAttendanceDetail(context.Context, agenttools.AttendanceQuery) (*agenttools.AttendanceResult, error) {
-	return nil, nil
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.detailCalls++
+	if p.detailResp == nil {
+		return &agenttools.AttendanceResult{}, nil
+	}
+	resp := *p.detailResp
+	return &resp, nil
 }
 
 func (p *testTaskAttendancePort) GetAttendanceText(context.Context, agenttools.AttendanceQuery) (string, error) {
@@ -211,6 +220,28 @@ func (testTaskUserPort) SearchByName(_ context.Context, name string) ([]agenttoo
 				Role:       0,
 				TenantID:   42,
 			},
+		}, nil
+	}
+	return nil, nil
+}
+
+type testAmbiguousManualSignUserPort struct{}
+
+func (testAmbiguousManualSignUserPort) FindByDingUserID(context.Context, string) (*agenttools.UserInfo, error) {
+	return &agenttools.UserInfo{
+		ID:         7,
+		Name:       "Alice",
+		DingUserID: "ding-user",
+		Role:       1,
+		TenantID:   42,
+	}, nil
+}
+
+func (testAmbiguousManualSignUserPort) SearchByName(_ context.Context, name string) ([]agenttools.UserInfo, error) {
+	if strings.TrimSpace(name) == "张" {
+		return []agenttools.UserInfo{
+			{ID: 99, Name: "张三", DingUserID: "ding-zhangsan", Role: 0, TenantID: 42},
+			{ID: 100, Name: "张四", DingUserID: "ding-zhangsi", Role: 0, TenantID: 42},
 		}, nil
 	}
 	return nil, nil
@@ -1081,6 +1112,61 @@ func TestAgentChatWritesConversationTaskMetricsToCallLog(t *testing.T) {
 	}
 }
 
+func TestAgentChatClassifiesManualSignCapabilityWithoutExecutionInShadow(t *testing.T) {
+	t.Parallel()
+
+	callLog := newTestCallLogPort()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeShadow),
+		CallLog:        callLog,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "可以执行代签功能吗",
+		ConversationID:   "conv-shadow-protocol",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+
+	log, ok := callLog.Wait(time.Second)
+	if !ok {
+		t.Fatalf("expected call log to be written")
+	}
+	if log.ProtocolMode != string(ProtocolModeShadow) {
+		t.Fatalf("ProtocolMode = %q, want %q", log.ProtocolMode, ProtocolModeShadow)
+	}
+	if log.ProtocolAct != string(ActCapabilityQuestion) {
+		t.Fatalf("ProtocolAct = %q, want %q", log.ProtocolAct, ActCapabilityQuestion)
+	}
+	if log.ProtocolDomain != string(DomainManualSign) {
+		t.Fatalf("ProtocolDomain = %q, want %q", log.ProtocolDomain, DomainManualSign)
+	}
+	if log.ProtocolOperation != "manual_sign.describe_capability" {
+		t.Fatalf("ProtocolOperation = %q, want manual_sign.describe_capability", log.ProtocolOperation)
+	}
+	if log.ProtocolValidationCode != "capability_non_executable" {
+		t.Fatalf("ProtocolValidationCode = %q, want capability_non_executable", log.ProtocolValidationCode)
+	}
+	if log.ExecutionAllowed {
+		t.Fatalf("ExecutionAllowed = true, want false")
+	}
+}
+
 func TestAgentClarifiesUnknownBusinessLikeMessageViaLiveRoute(t *testing.T) {
 	t.Parallel()
 
@@ -1435,6 +1521,726 @@ func TestAgentChatAnswersCapabilityQuestionWithoutKnowledgeLookup(t *testing.T) 
 	defer knowledge.mu.Unlock()
 	if knowledge.calls != 0 {
 		t.Fatalf("knowledge search calls = %d, want 0", knowledge.calls)
+	}
+}
+
+func TestAgentChatProtocolLiveKeepsAttendanceQueryOutOfSubscriptionWorkflow(t *testing.T) {
+	t.Parallel()
+
+	attendance := &testTaskAttendancePort{
+		detailResp: &agenttools.AttendanceResult{
+			Date:         "2026-04-07",
+			Week:         8,
+			Section:      2,
+			ViewMode:     "current",
+			ShouldAttend: 3,
+			OnTimeCount:  1,
+			LateCount:    1,
+			LeaveCount:   0,
+			AbsentCount:  1,
+		},
+	}
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeLive),
+		Attendance:     attendance,
+		GroupSub:       testClarifyGroupSubPort{},
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	a.sessions.setActiveTask("42:conv-protocol-live-attendance:ding-user", &ActiveTask{
+		Type:          "subscribe_attendance_push",
+		Status:        taskStatusWaiting,
+		RequiredSlots: []string{"dept_names"},
+		FilledSlots:   map[string]string{"scope": "department"},
+		ExpiresAt:     time.Now().Add(sessionTTL),
+		LastPrompt:    "clarify_dept_names",
+	})
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "查询一下今天第二节的考勤状态",
+		ConversationID:    "conv-protocol-live-attendance",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("second Chat() error = %v", err)
+	}
+	if strings.Contains(reply, "订阅范围") {
+		t.Fatalf("reply = %q, should not re-enter subscription workflow", reply)
+	}
+	if !strings.Contains(reply, "考勤状态") {
+		t.Fatalf("reply = %q, want attendance result", reply)
+	}
+
+	attendance.mu.Lock()
+	defer attendance.mu.Unlock()
+	if attendance.detailCalls != 1 {
+		t.Fatalf("GetAttendanceDetail() call count = %d, want 1", attendance.detailCalls)
+	}
+}
+
+func TestAgentChatProtocolLiveAnswersManualSignCapabilityWithoutExecution(t *testing.T) {
+	t.Parallel()
+
+	attendance := &testTaskAttendancePort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeLive),
+		Attendance:     attendance,
+		GroupSub:       testClarifyGroupSubPort{},
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	a.sessions.setActiveTask("42:conv-protocol-live-capability:ding-user", &ActiveTask{
+		Type:          "subscribe_attendance_push",
+		Status:        taskStatusWaiting,
+		RequiredSlots: []string{"dept_names"},
+		FilledSlots:   map[string]string{"scope": "department"},
+		ExpiresAt:     time.Now().Add(sessionTTL),
+		LastPrompt:    "clarify_dept_names",
+	})
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "可以执行代签功能吗",
+		ConversationID:    "conv-protocol-live-capability",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("second Chat() error = %v", err)
+	}
+	if strings.Contains(reply, "以下部门名称不存在") {
+		t.Fatalf("reply = %q, should not treat capability question as department input", reply)
+	}
+	if !strings.Contains(reply, "代签") {
+		t.Fatalf("reply = %q, want capability answer", reply)
+	}
+
+	attendance.mu.Lock()
+	defer attendance.mu.Unlock()
+	if attendance.signCalls != 0 {
+		t.Fatalf("SignForUsersBySlot() call count = %d, want 0", attendance.signCalls)
+	}
+}
+
+func TestProtocolLiveReadQueryBeatsActiveWorkflow(t *testing.T) {
+	t.Parallel()
+
+	attendance := &testTaskAttendancePort{
+		detailResp: &agenttools.AttendanceResult{
+			Date:         "2026-04-07",
+			Week:         8,
+			Section:      2,
+			ViewMode:     "current",
+			ShouldAttend: 3,
+			OnTimeCount:  2,
+			LateCount:    0,
+			LeaveCount:   0,
+			AbsentCount:  1,
+		},
+	}
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeLive),
+		Attendance:     attendance,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	a.sessions.setWorkflowState("42:conv-protocol-live-read-wins:ding-user", &WorkflowSnapshot{
+		ID:           "wf-subscription",
+		Type:         WorkflowSubscriptionStart,
+		State:        WorkflowCollectDepartments,
+		MissingSlots: []string{"dept_names"},
+		Trusted: trustedEntities{
+			Scope: "department",
+		},
+	})
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "查询一下今天第二节的考勤状态",
+		ConversationID:    "conv-protocol-live-read-wins",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "考勤状态") {
+		t.Fatalf("reply = %q, want attendance result", reply)
+	}
+
+	_, workflow := a.sessions.getWorkflowState("42:conv-protocol-live-read-wins:ding-user")
+	if workflow == nil || workflow.Type != WorkflowSubscriptionStart {
+		t.Fatalf("workflow = %+v, want subscription workflow kept open", workflow)
+	}
+
+	attendance.mu.Lock()
+	defer attendance.mu.Unlock()
+	if attendance.detailCalls != 1 {
+		t.Fatalf("GetAttendanceDetail() call count = %d, want 1", attendance.detailCalls)
+	}
+}
+
+func TestProtocolLiveCapabilityQuestionNeverCallsBusinessTool(t *testing.T) {
+	t.Parallel()
+
+	attendance := &testTaskAttendancePort{}
+	groupSub := &testGroupSubPort{}
+	callLog := newTestCallLogPort()
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeLive),
+		Attendance:     attendance,
+		GroupSub:       groupSub,
+		CallLog:        callLog,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	a.sessions.setWorkflowState("42:conv-protocol-live-capability-guard:ding-user", &WorkflowSnapshot{
+		ID:           "wf-subscription",
+		Type:         WorkflowSubscriptionStart,
+		State:        WorkflowCollectDepartments,
+		MissingSlots: []string{"dept_names"},
+		Trusted: trustedEntities{
+			Scope: "department",
+		},
+	})
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "可以执行代签功能吗",
+		ConversationID:    "conv-protocol-live-capability-guard",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "代签") {
+		t.Fatalf("reply = %q, want capability answer", reply)
+	}
+
+	log, ok := callLog.Wait(time.Second)
+	if !ok {
+		t.Fatalf("expected call log to be written")
+	}
+	if log.ResponseKind != string(ResponseAnswer) {
+		t.Fatalf("ResponseKind = %q, want %q", log.ResponseKind, ResponseAnswer)
+	}
+
+	attendance.mu.Lock()
+	defer attendance.mu.Unlock()
+	if attendance.signCalls != 0 {
+		t.Fatalf("SignForUsersBySlot() call count = %d, want 0", attendance.signCalls)
+	}
+
+	groupSub.mu.Lock()
+	defer groupSub.mu.Unlock()
+	if groupSub.subscribeCalls != 0 || groupSub.unsubscribeCalls != 0 {
+		t.Fatalf("group subscription calls = subscribe:%d unsubscribe:%d, want both 0", groupSub.subscribeCalls, groupSub.unsubscribeCalls)
+	}
+}
+
+func TestProtocolLiveBlockedRequestsReturnSafeClarifyWithoutLegacyFallback(t *testing.T) {
+	t.Parallel()
+
+	knowledge := &testKnowledgePort{}
+	callLog := newTestCallLogPort()
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeLive),
+		Knowledge:      knowledge,
+		CallLog:        callLog,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "同步失败会怎样",
+		ConversationID:   "conv-protocol-live-blocked",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "请再明确") {
+		t.Fatalf("reply = %q, want safe clarify", reply)
+	}
+	if strings.Contains(reply, "AI 服务暂时不可用") {
+		t.Fatalf("reply = %q, should not fall back to legacy llm path", reply)
+	}
+
+	log, ok := callLog.Wait(time.Second)
+	if !ok {
+		t.Fatalf("expected call log to be written")
+	}
+	if log.ResponseKind != string(ResponseClarify) {
+		t.Fatalf("ResponseKind = %q, want %q", log.ResponseKind, ResponseClarify)
+	}
+
+	knowledge.mu.Lock()
+	defer knowledge.mu.Unlock()
+	if knowledge.calls != 0 {
+		t.Fatalf("knowledge search calls = %d, want 0", knowledge.calls)
+	}
+}
+
+func TestSubscriptionWorkflowStartsAndExecutesAllScopeInProtocolLive(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &testGroupSubPort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeLive),
+		GroupSub:       groupSub,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "帮我开启本群考勤订阅",
+		ConversationID:    "conv-protocol-subscribe-all",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("first Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "订阅范围") {
+		t.Fatalf("reply = %q, want scope clarify", reply)
+	}
+	_, activeTask := a.sessions.getSessionState("42:conv-protocol-subscribe-all:ding-user")
+	if activeTask != nil {
+		t.Fatalf("activeTask = %+v, want nil when protocol workflow owns the flow", activeTask)
+	}
+	_, workflow := a.sessions.getWorkflowState("42:conv-protocol-subscribe-all:ding-user")
+	if workflow == nil || workflow.Type != WorkflowSubscriptionStart || workflow.State != WorkflowCollectScope {
+		t.Fatalf("workflow = %+v, want subscription collect_scope", workflow)
+	}
+
+	reply, err = a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "全部人员",
+		ConversationID:    "conv-protocol-subscribe-all",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("second Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "已为此群开启考勤推送") {
+		t.Fatalf("reply = %q, want subscribe success", reply)
+	}
+	_, workflow = a.sessions.getWorkflowState("42:conv-protocol-subscribe-all:ding-user")
+	if workflow != nil {
+		t.Fatalf("workflow = %+v, want cleared after success", workflow)
+	}
+
+	groupSub.mu.Lock()
+	defer groupSub.mu.Unlock()
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("Subscribe() call count = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastSubscribedIDs) != 0 {
+		t.Fatalf("deptIDs = %v, want empty for all scope", groupSub.lastSubscribedIDs)
+	}
+}
+
+func TestSubscriptionWorkflowListsDepartmentsAndExecutesDepartmentScopeInProtocolLive(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &testGroupSubPort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeLive),
+		GroupSub:       groupSub,
+		Dept:           testClarifyDeptPort{},
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "帮我开启本群考勤订阅",
+		ConversationID:    "conv-protocol-subscribe-dept",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat(start) error = %v", err)
+	}
+	if !strings.Contains(reply, "订阅范围") {
+		t.Fatalf("start reply = %q, want scope clarify", reply)
+	}
+	_, workflow := a.sessions.getWorkflowState("42:conv-protocol-subscribe-dept:ding-user")
+	if workflow == nil || workflow.State != WorkflowCollectScope {
+		t.Fatalf("workflow after start = %+v, want collect_scope", workflow)
+	}
+
+	reply, err = a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "指定部门",
+		ConversationID:    "conv-protocol-subscribe-dept",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat(scope) error = %v", err)
+	}
+	_, workflow = a.sessions.getWorkflowState("42:conv-protocol-subscribe-dept:ding-user")
+	if workflow == nil || workflow.State != WorkflowCollectDepartments {
+		t.Fatalf("workflow after scope = %+v, want collect_departments", workflow)
+	}
+
+	reply, err = a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "现在都有哪些部门",
+		ConversationID:    "conv-protocol-subscribe-dept",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat(list depts) error = %v", err)
+	}
+	if !strings.Contains(reply, "信工24级") {
+		t.Fatalf("list departments reply = %q, want department options", reply)
+	}
+
+	reply, err = a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "信工24级",
+		ConversationID:    "conv-protocol-subscribe-dept",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat(dept) error = %v", err)
+	}
+	if !strings.Contains(reply, "已为此群开启考勤推送") {
+		t.Fatalf("final reply = %q, want subscribe success", reply)
+	}
+	_, workflow = a.sessions.getWorkflowState("42:conv-protocol-subscribe-dept:ding-user")
+	if workflow != nil {
+		t.Fatalf("workflow = %+v, want cleared after success", workflow)
+	}
+
+	groupSub.mu.Lock()
+	defer groupSub.mu.Unlock()
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("Subscribe() call count = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastSubscribedIDs) != 1 || groupSub.lastSubscribedIDs[0] != 101 {
+		t.Fatalf("deptIDs = %v, want [101]", groupSub.lastSubscribedIDs)
+	}
+}
+
+func TestSubscriptionWorkflowRejectsCapabilityQuestionDuringDeptCollection(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeLive),
+		Dept:           testClarifyDeptPort{},
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	a.sessions.setWorkflowState("42:conv-protocol-subscription-capability:ding-user", &WorkflowSnapshot{
+		Type:         WorkflowSubscriptionStart,
+		State:        WorkflowCollectDepartments,
+		MissingSlots: []string{"dept_names"},
+		Trusted: trustedEntities{
+			Scope: "department",
+		},
+	})
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "可以执行代签功能吗",
+		ConversationID:    "conv-protocol-subscription-capability",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if strings.Contains(reply, "以下部门名称不存在") {
+		t.Fatalf("reply = %q, should not treat capability question as department input", reply)
+	}
+	if !strings.Contains(reply, "代签") {
+		t.Fatalf("reply = %q, want capability answer", reply)
+	}
+}
+
+func TestSubscriptionWorkflowCancelsOnExplicitWriteRequestInProtocolLive(t *testing.T) {
+	t.Parallel()
+
+	callLog := newTestCallLogPort()
+	groupSub := &testGroupSubPort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeLive),
+		CallLog:        callLog,
+		GroupSub:       groupSub,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "取消本群考勤订阅",
+		ConversationID:    "conv-protocol-unsubscribe",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "已取消此群的考勤自动推送") {
+		t.Fatalf("reply = %q, want unsubscribe success", reply)
+	}
+
+	log, ok := callLog.Wait(time.Second)
+	if !ok {
+		t.Fatalf("expected call log to be written")
+	}
+	if log.ProtocolOperation != "subscription.cancel" {
+		t.Fatalf("ProtocolOperation = %q, want subscription.cancel", log.ProtocolOperation)
+	}
+	if log.ResponseKind != string(ResponseResult) {
+		t.Fatalf("ResponseKind = %q, want %q", log.ResponseKind, ResponseResult)
+	}
+
+	groupSub.mu.Lock()
+	defer groupSub.mu.Unlock()
+	if groupSub.unsubscribeCalls != 1 {
+		t.Fatalf("Unsubscribe() call count = %d, want 1", groupSub.unsubscribeCalls)
+	}
+}
+
+func TestManualSignWorkflowExecutesExplicitRequestInProtocolLive(t *testing.T) {
+	t.Parallel()
+
+	attendance := &testTaskAttendancePort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeLive),
+		Attendance:     attendance,
+		User:           testTaskUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "帮我给张三补签今天第二节考勤",
+		ConversationID:   "conv-protocol-manual-sign",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "已为张三") {
+		t.Fatalf("reply = %q, want sign success", reply)
+	}
+
+	attendance.mu.Lock()
+	defer attendance.mu.Unlock()
+	if attendance.signCalls != 1 {
+		t.Fatalf("SignForUsersBySlot() call count = %d, want 1", attendance.signCalls)
+	}
+}
+
+func TestManualSignWorkflowReturnsCandidateSelectionForAmbiguousUserInProtocolLive(t *testing.T) {
+	t.Parallel()
+
+	attendance := &testTaskAttendancePort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeLive),
+		Attendance:     attendance,
+		User:           testAmbiguousManualSignUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "帮我给张补签今天第二节考勤",
+		ConversationID:   "conv-protocol-manual-sign-ambiguous",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if !strings.Contains(reply, "张三") || !strings.Contains(reply, "张四") {
+		t.Fatalf("reply = %q, want candidate selection", reply)
+	}
+	_, workflow := a.sessions.getWorkflowState("42:ding-user")
+	if workflow == nil || workflow.Type != WorkflowManualSignCreate {
+		t.Fatalf("workflow = %+v, want manual sign workflow kept open", workflow)
+	}
+
+	attendance.mu.Lock()
+	defer attendance.mu.Unlock()
+	if attendance.signCalls != 0 {
+		t.Fatalf("SignForUsersBySlot() call count = %d, want 0", attendance.signCalls)
+	}
+}
+
+func TestManualSignWorkflowDoesNotTreatSentenceAsUserName(t *testing.T) {
+	t.Parallel()
+
+	attendance := &testTaskAttendancePort{}
+	a := NewAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeLive),
+		Attendance:     attendance,
+		User:           testTaskUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	a.sessions.setWorkflowState("42:ding-user", &WorkflowSnapshot{
+		Type:         WorkflowManualSignCreate,
+		State:        WorkflowCollectUser,
+		MissingSlots: []string{"user_id"},
+		Trusted: trustedEntities{
+			Date:    "2026-04-07",
+			Section: 2,
+		},
+	})
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "今天第二节",
+		ConversationID:   "conv-protocol-manual-sign-shape",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if strings.Contains(reply, "已为") {
+		t.Fatalf("reply = %q, should not execute with invalid user shape", reply)
+	}
+
+	attendance.mu.Lock()
+	defer attendance.mu.Unlock()
+	if attendance.signCalls != 0 {
+		t.Fatalf("SignForUsersBySlot() call count = %d, want 0", attendance.signCalls)
 	}
 }
 

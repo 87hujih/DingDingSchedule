@@ -29,6 +29,7 @@ type LLM struct {
 	RouterAPIKey  string `mapstructure:"router_api_key" yaml:"router_api_key"`
 	RouterModel   string `mapstructure:"router_model" yaml:"router_model"`
 	RouteMode     string `mapstructure:"route_mode" yaml:"route_mode"`
+	ProtocolMode  string `mapstructure:"protocol_mode" yaml:"protocol_mode"`
 }
 
 // Server 配置
