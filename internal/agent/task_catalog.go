@@ -14,11 +14,6 @@ func newTaskCatalog(runtime *taskRuntime) *taskCatalog {
 	return &taskCatalog{runtime: runtime}
 }
 
-func (c *taskCatalog) IsAllowed(taskType string) bool {
-	_, ok := c.resolve(taskType)
-	return ok
-}
-
 func (c *taskCatalog) Start(taskType, message string, uctx *tools.UserContext) (*TaskInstance, TaskApplyResult, error) {
 	handler, ok := c.resolve(taskType)
 	if !ok {

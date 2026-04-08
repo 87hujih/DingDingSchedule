@@ -65,7 +65,6 @@ type Agent struct {
 	runtime      *taskRuntime
 	taskCatalog  *taskCatalog
 	domainGate   *domainGate
-	router       *queryRouter
 	sessions     *sessionManager
 	limiter      *rateLimiter
 	stopCleanup  chan struct{}
@@ -159,7 +158,6 @@ func NewAgent(deps Deps) *Agent {
 		protocolMode: protocolMode,
 		sessions:     newSessionManager(),
 		domainGate:   newDomainGate(),
-		router:       newQueryRouter(),
 		limiter:      newRateLimiter(),
 		stopCleanup:  make(chan struct{}),
 	}

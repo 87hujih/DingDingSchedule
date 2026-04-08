@@ -1,6 +1,17 @@
 # 任务清单
 
 ## 当前任务
+- [x] 清理 `internal/agent` 中已确认无生产引用的死代码符号，保持行为零变化。
+- [x] 运行 `internal/agent` 与受影响接线包测试，确认删除未破坏编译和现有兼容路径。
+- [x] 补充本轮复盘，记录“现在可删”和“仍需 protocol_live-only 才能删”的边界。
+
+## 当前任务复盘
+- 本轮已删除 `internal/agent` 中确认无生产引用的死代码：`Agent.router` 字段及初始化、`domainGate.Check`、`query_router.go` 顶部未使用的 intent/router 包装层，以及只验证 `taskCatalog.IsAllowed` 的测试文件；`taskCatalog.IsAllowed` 本体也一并移除。
+- 清理过程中确认了一个边界：`intentType` 枚举虽然不再参与主服务路由，但 `internal/agent/eval.go` 与 `scripts/agent_eval` 仍然依赖，因此这组常量需要保留，不能和死包装层一起删除。
+- 仍不能整删的兼容链路边界没有变化：只要仓库还保留 `legacy / protocol_shadow / route_mode`，`planner_service.go`、`conversation_interpreter.go`、`task_router.go`、`slot_filler.go`、`semantic_router.go`、`branch_executors.go`、`tool_pool.go`、`task_runtime.go` 等旧链路文件就仍然是可达代码，不能按“无用代码”处理。
+- 本轮验证命令为 `go test ./... -count=1`，结果通过；`git diff --check` 没有格式错误，只有仓库既有的 `LF/CRLF` warning。
+
+## 当前任务
 - [x] 明确“协议型 Agent”重构的产品边界，确认哪些类型的自然语言请求允许直接执行，哪些必须先澄清或进入状态机。
 - [x] 基于确认后的边界提出 2-3 种根治性架构方案，并收敛推荐方案。
 - [x] 输出完整设计并获得用户确认，并写入设计文档。

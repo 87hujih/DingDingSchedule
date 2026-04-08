@@ -70,11 +70,3 @@ func (g *domainGate) Hint(question string) DomainHint {
 	}
 	return domainHintUnknown
 }
-
-// Check 判断问题是否属于课表、考勤、请假、作息或系统说明等站内范围。
-func (g *domainGate) Check(question string) domainResult {
-	if g.Hint(question) == domainHintLikelyIn {
-		return domainIn
-	}
-	return domainOut
-}
