@@ -33,6 +33,7 @@ type RouteContext struct {
 	ActiveTask        *TaskRouteState `json:"active_task,omitempty"`
 }
 
+// buildRouteContext builds the routing context string fed into the router model.
 func buildRouteContext(message string, uctx *tools.UserContext, history []tools.Message, task *TaskInstance) RouteContext {
 	ctx := RouteContext{
 		Message:     strings.TrimSpace(message),
@@ -47,6 +48,7 @@ func buildRouteContext(message string, uctx *tools.UserContext, history []tools.
 	return ctx
 }
 
+// summarizeRecentTurns summarizes recent turns.
 func summarizeRecentTurns(history []tools.Message) []TurnDigest {
 	if len(history) == 0 {
 		return nil
@@ -70,6 +72,7 @@ func summarizeRecentTurns(history []tools.Message) []TurnDigest {
 	return turns
 }
 
+// summarizeTaskRouteState summarizes task route state.
 func summarizeTaskRouteState(task *TaskInstance) *TaskRouteState {
 	if task == nil {
 		return nil
@@ -86,6 +89,7 @@ func summarizeTaskRouteState(task *TaskInstance) *TaskRouteState {
 	}
 }
 
+// summarizeCandidateHints summarizes candidate hints.
 func summarizeCandidateHints(cache map[string]any) []string {
 	if len(cache) == 0 {
 		return nil

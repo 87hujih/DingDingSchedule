@@ -18,6 +18,7 @@ type PlannerInput struct {
 	UserContext *tools.UserContext
 }
 
+// planConversation plans the next conversation step from the current question and task state.
 func planConversation(input PlannerInput) PlannerDecision {
 	normalized := normalizeQuery(input.Message)
 	activeTask := activePlannerTask(input.ActiveTask)
@@ -123,6 +124,7 @@ func planConversation(input PlannerInput) PlannerDecision {
 	}
 }
 
+// plannerTaskFromLegacyTask handles planner task from legacy task.
 func plannerTaskFromLegacyTask(sessionKey string, task *ActiveTask) *TaskInstance {
 	if task == nil {
 		return nil
@@ -144,6 +146,7 @@ func plannerTaskFromLegacyTask(sessionKey string, task *ActiveTask) *TaskInstanc
 	}
 }
 
+// activePlannerTask returns the active planner task.
 func activePlannerTask(task *TaskInstance) *TaskInstance {
 	if task == nil {
 		return nil
@@ -154,6 +157,7 @@ func activePlannerTask(task *TaskInstance) *TaskInstance {
 	return cloneTaskInstance(task)
 }
 
+// legacyTaskFromTaskInstance handles legacy task from task instance.
 func legacyTaskFromTaskInstance(task *TaskInstance) *ActiveTask {
 	if task == nil {
 		return nil
@@ -172,6 +176,7 @@ func legacyTaskFromTaskInstance(task *TaskInstance) *ActiveTask {
 	return legacy
 }
 
+// isPlannerTaskMetaQuestion reports whether it is planner task meta question.
 func isPlannerTaskMetaQuestion(question string, task *TaskInstance) bool {
 	if task == nil {
 		return false
@@ -191,6 +196,7 @@ func isPlannerTaskMetaQuestion(question string, task *TaskInstance) bool {
 	return task.Type == "subscribe_attendance_push" && isDepartmentListQuestion(question)
 }
 
+// looksLikeSocialChat reports whether it looks like social chat.
 func looksLikeSocialChat(question string) bool {
 	return containsAny(question, []string{
 		"最近怎么样",
@@ -203,6 +209,7 @@ func looksLikeSocialChat(question string) bool {
 	})
 }
 
+// clonePlannerSlots clones planner slots.
 func clonePlannerSlots(slots map[string]string) map[string]string {
 	if len(slots) == 0 {
 		return nil
@@ -215,6 +222,7 @@ func clonePlannerSlots(slots map[string]string) map[string]string {
 	return cloned
 }
 
+// plannerFollowUpSlots handles planner follow up slots.
 func plannerFollowUpSlots(message string, task *TaskInstance) (map[string]string, []string) {
 	if task == nil {
 		return nil, nil
@@ -257,6 +265,7 @@ func plannerFollowUpSlots(message string, task *TaskInstance) (map[string]string
 	return slots, matched
 }
 
+// extractPlannerDeptNames extracts planner department names.
 func extractPlannerDeptNames(message string, task *TaskInstance) []string {
 	if task == nil || task.Type != "subscribe_attendance_push" {
 		return nil
@@ -289,6 +298,7 @@ func extractPlannerDeptNames(message string, task *TaskInstance) []string {
 	return matches
 }
 
+// mergeMatchedSlots merges matched slots.
 func mergeMatchedSlots(existing []string, incoming []string) []string {
 	merged := append([]string(nil), existing...)
 	for _, slot := range incoming {
@@ -306,6 +316,7 @@ func mergeMatchedSlots(existing []string, incoming []string) []string {
 	return merged
 }
 
+// normalizePlannerDeptName normalizes planner department name.
 func normalizePlannerDeptName(name string) string {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
@@ -330,6 +341,7 @@ func normalizePlannerDeptName(name string) string {
 	})
 }
 
+// parsePlannerChineseNumber parses planner chinese number.
 func parsePlannerChineseNumber(value string) (int, bool) {
 	if value == "" {
 		return 0, false
@@ -382,6 +394,7 @@ func parsePlannerChineseNumber(value string) (int, bool) {
 	return total + number, true
 }
 
+// extractPlannerDeptHint extracts planner department hint.
 func extractPlannerDeptHint(message string) string {
 	trimmed := strings.TrimSpace(message)
 	if trimmed == "" {
@@ -417,6 +430,7 @@ func extractPlannerDeptHint(message string) string {
 	return candidate
 }
 
+// extractPlannerUserNameHint extracts planner user name hint.
 func extractPlannerUserNameHint(message string) string {
 	trimmed := strings.TrimSpace(message)
 	if trimmed == "" {

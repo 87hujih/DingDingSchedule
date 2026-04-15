@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// resolveDeptFilter resolves department filters into a concrete department ID.
 func resolveDeptFilter(ctx context.Context, dept DeptPort, deptID int64, deptName string) (resolvedID int64, useFilter bool, payload string, err error) {
 	trimmed := strings.TrimSpace(deptName)
 	if trimmed == "" {
@@ -40,6 +41,7 @@ func resolveDeptFilter(ctx context.Context, dept DeptPort, deptID int64, deptNam
 
 var chineseNumberPattern = regexp.MustCompile(`[零〇一二两三四五六七八九十百千]+`)
 
+// findDeptMatchesByName handles find department matches by name.
 func findDeptMatchesByName(depts []DeptItem, raw string) []DeptItem {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -70,6 +72,7 @@ func findDeptMatchesByName(depts []DeptItem, raw string) []DeptItem {
 	return normalizedMatches
 }
 
+// normalizeDeptName normalizes department name.
 func normalizeDeptName(name string) string {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
@@ -94,6 +97,7 @@ func normalizeDeptName(name string) string {
 	})
 }
 
+// parseChineseNumber parses chinese number.
 func parseChineseNumber(value string) (int, bool) {
 	if value == "" {
 		return 0, false

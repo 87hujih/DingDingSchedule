@@ -12,6 +12,7 @@ type protocolWorkflowContext struct {
 	MissingFields []string
 }
 
+// compileProtocol classifies a user message into the current protocol draft.
 func compileProtocol(input protocolInput) ProtocolDraft {
 	message := strings.TrimSpace(input.Message)
 	if message == "" {
@@ -67,6 +68,7 @@ func compileProtocol(input protocolInput) ProtocolDraft {
 	}
 }
 
+// compileWorkflowContinue handles compile workflow continue.
 func compileWorkflowContinue(message string, workflow *protocolWorkflowContext) (ProtocolDraft, bool) {
 	if workflow == nil {
 		return ProtocolDraft{}, false
@@ -124,6 +126,7 @@ func compileWorkflowContinue(message string, workflow *protocolWorkflowContext) 
 	return ProtocolDraft{}, false
 }
 
+// hasMissingField reports whether it has missing field.
 func hasMissingField(fields []string, target string) bool {
 	for _, field := range fields {
 		if field == target {
@@ -133,6 +136,7 @@ func hasMissingField(fields []string, target string) bool {
 	return false
 }
 
+// looksLikeManualSignCapabilityQuestion reports whether it looks like manual sign capability question.
 func looksLikeManualSignCapabilityQuestion(message string) bool {
 	if !strings.Contains(message, "代签") {
 		return false
@@ -140,6 +144,7 @@ func looksLikeManualSignCapabilityQuestion(message string) bool {
 	return strings.Contains(message, "功能") || strings.Contains(message, "可以") || strings.Contains(message, "能否") || strings.Contains(message, "能不能")
 }
 
+// looksLikeManualSignWriteRequest reports whether it looks like manual sign write request.
 func looksLikeManualSignWriteRequest(message string) bool {
 	if !strings.Contains(message, "代签") && !strings.Contains(message, "补签") {
 		return false
@@ -147,6 +152,7 @@ func looksLikeManualSignWriteRequest(message string) bool {
 	return !looksLikeManualSignCapabilityQuestion(message)
 }
 
+// looksLikeAttendanceReadQuery reports whether it looks like attendance read query.
 func looksLikeAttendanceReadQuery(message string) bool {
 	if !strings.Contains(message, "考勤") {
 		return false
@@ -154,6 +160,7 @@ func looksLikeAttendanceReadQuery(message string) bool {
 	return strings.Contains(message, "查询") || strings.Contains(message, "状态") || strings.Contains(message, "谁未到")
 }
 
+// looksLikeSubscriptionWriteRequest reports whether it looks like subscription write request.
 func looksLikeSubscriptionWriteRequest(message string) bool {
 	if !strings.Contains(message, "订阅") {
 		return false
@@ -161,6 +168,7 @@ func looksLikeSubscriptionWriteRequest(message string) bool {
 	return strings.Contains(message, "开启") || strings.Contains(message, "开通") || strings.Contains(message, "打开") || strings.Contains(message, "帮我")
 }
 
+// looksLikeSubscriptionCancelRequest reports whether it looks like subscription cancel request.
 func looksLikeSubscriptionCancelRequest(message string) bool {
 	if !strings.Contains(message, "订阅") && !strings.Contains(message, "推送") {
 		return false
@@ -168,10 +176,12 @@ func looksLikeSubscriptionCancelRequest(message string) bool {
 	return strings.Contains(message, "取消") || strings.Contains(message, "关闭")
 }
 
+// hasDateSignal reports whether it has date signal.
 func hasDateSignal(message string) bool {
 	return strings.Contains(message, "今天") || strings.Contains(message, "昨天") || strings.Contains(message, "明天") || extractDateToken(message) != ""
 }
 
+// hasSectionSignal reports whether it has section signal.
 func hasSectionSignal(message string) bool {
 	for _, token := range []string{"第一节", "第二节", "第三节", "第四节", "第五节"} {
 		if strings.Contains(message, token) {

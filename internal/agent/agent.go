@@ -191,6 +191,7 @@ func (a *Agent) Stop() {
 	})
 }
 
+// cleanupLoop periodically purges expired session and rate-limit state.
 func (a *Agent) cleanupLoop() {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
@@ -681,6 +682,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	return "处理轮次过多，请简化您的问题后重试", nil
 }
 
+// buildGreetingReply builds greeting reply.
 func buildGreetingReply(uctx *tools.UserContext) string {
 	if uctx != nil && uctx.UserRole >= 1 {
 		return "你好，我是课表助手。你可以直接让我查课表、考勤、请假；如果需要，也可以继续处理补签、统计和群订阅。"
@@ -688,6 +690,7 @@ func buildGreetingReply(uctx *tools.UserContext) string {
 	return "你好，我是课表助手。你可以直接让我查课表、考勤或请假相关信息。"
 }
 
+// respondForTaskState handles replies while a legacy active task is still open.
 func (a *Agent) respondForTaskState(ctx context.Context, uctx *tools.UserContext, sessionKey string, task *ActiveTask) (string, []string, *ActiveTask, error) {
 	if task == nil {
 		a.sessions.clearActiveTask(sessionKey)
@@ -729,6 +732,7 @@ func (a *Agent) respondForTaskState(ctx context.Context, uctx *tools.UserContext
 	return buildTaskClarifyReply(task), nil, cloneActiveTask(task), nil
 }
 
+// respondForRuntimeTaskState handles replies while a runtime task instance is still open.
 func (a *Agent) respondForRuntimeTaskState(ctx context.Context, uctx *tools.UserContext, sessionKey string, task *ActiveTask) (string, []string, *ActiveTask, bool, error) {
 	if a.runtime == nil || task == nil {
 		return "", nil, nil, false, nil
@@ -765,6 +769,7 @@ func (a *Agent) respondForRuntimeTaskState(ctx context.Context, uctx *tools.User
 	return reply, toolsCalled, activeTaskFromTaskInstance(taskMemory), true, nil
 }
 
+// runtimeTaskMemory rebuilds a task instance from the active task stored in session.
 func (a *Agent) runtimeTaskMemory(sessionKey string, task *ActiveTask) *TaskInstance {
 	if task == nil {
 		return nil
@@ -795,6 +800,7 @@ func (a *Agent) runtimeTaskMemory(sessionKey string, task *ActiveTask) *TaskInst
 	return next
 }
 
+// tryHandlePlannerPrimary attempts to answer through the planner-primary path.
 func (a *Agent) tryHandlePlannerPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, beforeTask *ActiveTask, metrics *callMetrics, decision PlannerDecision) (bool, string, error) {
 	if !shouldHandlePlannerPrimary(decision, beforeTask) {
 		return false, "", nil
@@ -908,6 +914,7 @@ func (a *Agent) tryHandlePlannerPrimary(ctx context.Context, uctx *tools.UserCon
 	return false, "", nil
 }
 
+// tryHandleRoutePrimary attempts to answer through the route-primary path.
 func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, history []tools.Message, userMsg tools.Message, startTime time.Time, beforeTask *ActiveTask, metrics *callMetrics, decision RouteDecision) (bool, string, error) {
 	if a.routeMode != string(RouteModeLive) {
 		return false, "", nil
@@ -1086,6 +1093,7 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 	}
 }
 
+// shouldHandlePlannerPrimary reports whether planner primary handling should run for the current decision.
 func shouldHandlePlannerPrimary(decision PlannerDecision, activeTask *ActiveTask) bool {
 	switch decision.Action {
 	case plannerActionOffTopicReject, plannerActionSocialRefuse:
@@ -1099,6 +1107,7 @@ func shouldHandlePlannerPrimary(decision PlannerDecision, activeTask *ActiveTask
 	}
 }
 
+// isMigratedTaskType reports whether the task type has been migrated to the runtime path.
 func isMigratedTaskType(taskType string) bool {
 	switch taskType {
 	case "subscribe_attendance_push", "unsubscribe_attendance_push", "query_subscription_status", "sign_for_user":
@@ -1108,6 +1117,7 @@ func isMigratedTaskType(taskType string) bool {
 	}
 }
 
+// plannerConversationEvent maps a planner decision to a conversation event.
 func plannerConversationEvent(decision PlannerDecision, activeTask *ActiveTask) conversationEvent {
 	switch decision.Action {
 	case plannerActionContinueTask, plannerActionTaskMeta:
@@ -1122,6 +1132,7 @@ func plannerConversationEvent(decision PlannerDecision, activeTask *ActiveTask) 
 	return eventNewRequest
 }
 
+// plannerPrimaryPlanKind derives the plan kind used by planner primary handling.
 func plannerPrimaryPlanKind(decision PlannerDecision, nextTask *ActiveTask) PlanKind {
 	switch decision.Action {
 	case plannerActionContinueTask:
@@ -1136,6 +1147,7 @@ func plannerPrimaryPlanKind(decision PlannerDecision, nextTask *ActiveTask) Plan
 	}
 }
 
+// plannerPrimaryReason derives the reason code used by planner primary handling.
 func plannerPrimaryReason(decision PlannerDecision, nextTask *ActiveTask) string {
 	if nextTask != nil && nextTask.Status != taskStatusReady {
 		return "missing_slots"
@@ -1143,6 +1155,7 @@ func plannerPrimaryReason(decision PlannerDecision, nextTask *ActiveTask) string
 	return decision.Reason
 }
 
+// plannerTaskFromDecision builds the next active task from a planner decision.
 func (a *Agent) plannerTaskFromDecision(_ string, beforeTask *ActiveTask, question string, uctx *tools.UserContext, decision PlannerDecision) (*ActiveTask, []string) {
 	switch decision.Action {
 	case plannerActionStartTask:
@@ -1159,6 +1172,7 @@ func (a *Agent) plannerTaskFromDecision(_ string, beforeTask *ActiveTask, questi
 	}
 }
 
+// plannerMatchedSlotNames returns the slot names matched by the planner turn.
 func plannerMatchedSlotNames(before map[string]string, after map[string]string) []string {
 	if len(after) == 0 {
 		return nil
@@ -1174,6 +1188,7 @@ func plannerMatchedSlotNames(before map[string]string, after map[string]string) 
 	return names
 }
 
+// legacyPlannerPrimaryAction computes the legacy planner action for the current turn.
 func (a *Agent) legacyPlannerPrimaryAction(question string, activeTask *ActiveTask, uctx *tools.UserContext) PlannerAction {
 	decision := interpretConversation(question, activeTask)
 	switch decision.Event {
@@ -1200,6 +1215,7 @@ func (a *Agent) legacyPlannerPrimaryAction(question string, activeTask *ActiveTa
 	return ""
 }
 
+// executeReadyTask executes a ready legacy task and returns its reply.
 func (a *Agent) executeReadyTask(ctx context.Context, uctx *tools.UserContext, task *ActiveTask) (string, []string, *ActiveTask, error) {
 	if task == nil {
 		return "", nil, nil, nil
@@ -1271,6 +1287,7 @@ type toolErrorPayload struct {
 	Users              []string `json:"users"`
 }
 
+// recoverableTaskFromToolResult rebuilds a task from a retryable tool response.
 func recoverableTaskFromToolResult(task *ActiveTask, toolResult string) (*ActiveTask, string) {
 	if task == nil || task.Type != "subscribe_attendance_push" || task.FilledSlots["scope"] != "department" {
 		return nil, ""
@@ -1296,6 +1313,7 @@ func recoverableTaskFromToolResult(task *ActiveTask, toolResult string) (*Active
 	}
 }
 
+// resultingTaskOrFallback chooses the resulting task while preserving the fallback task when needed.
 func resultingTaskOrFallback(result *ActiveTask, fallback *ActiveTask) *ActiveTask {
 	if result != nil {
 		return result
@@ -1303,6 +1321,7 @@ func resultingTaskOrFallback(result *ActiveTask, fallback *ActiveTask) *ActiveTa
 	return fallback
 }
 
+// renderToolMessage renders a tool payload into user-facing text.
 func renderToolMessage(toolResult string) (string, error) {
 	if toolErr := extractToolError(toolResult); toolErr != "" {
 		return toolErr, nil
@@ -1323,6 +1342,7 @@ func renderToolMessage(toolResult string) (string, error) {
 	return toolResult, nil
 }
 
+// materializeTaskDate materializes a task date token into a concrete date string.
 func materializeTaskDate(value string) string {
 	switch value {
 	case "today":
@@ -1336,6 +1356,7 @@ func materializeTaskDate(value string) string {
 	}
 }
 
+// splitTaskValues splits a comma-like task value list into normalized items.
 func splitTaskValues(value string) []string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -1430,6 +1451,7 @@ func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, quest
 	go a.deps.CallLog.Write(context.Background(), log)
 }
 
+// applyShadowPlannerMetrics writes shadow planner fields into call metrics.
 func applyShadowPlannerMetrics(metrics *callMetrics, decision PlannerDecision, activeTask *TaskInstance) {
 	if metrics == nil {
 		return
@@ -1443,6 +1465,7 @@ func applyShadowPlannerMetrics(metrics *callMetrics, decision PlannerDecision, a
 	}
 }
 
+// recordLegacyPlannerAction records the legacy planner action on the current metrics object.
 func recordLegacyPlannerAction(metrics *callMetrics, action PlannerAction) {
 	if metrics == nil {
 		return
@@ -1451,6 +1474,7 @@ func recordLegacyPlannerAction(metrics *callMetrics, action PlannerAction) {
 	metrics.ShadowPlannerMatched = metrics.ShadowPlannerAction != "" && metrics.ShadowPlannerAction == metrics.PlannerAction
 }
 
+// applyProtocolMetrics writes protocol draft and validation fields into call metrics.
 func applyProtocolMetrics(metrics *callMetrics, draft ProtocolDraft, validation ProtocolValidationResult) {
 	if metrics == nil {
 		return
@@ -1462,6 +1486,7 @@ func applyProtocolMetrics(metrics *callMetrics, draft ProtocolDraft, validation 
 	metrics.ExecutionAllowed = validation.AllowExecution
 }
 
+// tryHandleProtocolPrimary attempts to answer through the protocol-primary path.
 func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, activeWorkflow *WorkflowSnapshot, workflowCtx *protocolWorkflowContext) (bool, string, error) {
 	if a.protocolMode != ProtocolModeLive {
 		return false, "", nil
@@ -1564,6 +1589,7 @@ func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserCo
 	}
 }
 
+// legacyTaskPlannerAction maps legacy task transitions to a planner action label.
 func legacyTaskPlannerAction(beforeTask *ActiveTask, nextTask *ActiveTask) PlannerAction {
 	if beforeTask == nil && nextTask != nil {
 		return plannerActionStartTask
@@ -1574,6 +1600,7 @@ func legacyTaskPlannerAction(beforeTask *ActiveTask, nextTask *ActiveTask) Plann
 	return plannerActionTaskMeta
 }
 
+// applyConversationMetrics writes task transition and slot metrics for the current conversation turn.
 func applyConversationMetrics(metrics *callMetrics, before, after *ActiveTask, matchedSlots []string) {
 	if metrics == nil {
 		return
@@ -1587,6 +1614,7 @@ func applyConversationMetrics(metrics *callMetrics, before, after *ActiveTask, m
 	metrics.FollowUpMatchedSlots = append([]string(nil), matchedSlots...)
 }
 
+// taskTypeForLog returns the task type string recorded in call logs.
 func taskTypeForLog(task *ActiveTask) string {
 	if task == nil {
 		return ""
@@ -1594,6 +1622,7 @@ func taskTypeForLog(task *ActiveTask) string {
 	return task.Type
 }
 
+// taskStatusForLog returns the task status string recorded in call logs.
 func taskStatusForLog(task *ActiveTask) string {
 	if task == nil {
 		return ""
@@ -1601,6 +1630,7 @@ func taskStatusForLog(task *ActiveTask) string {
 	return string(task.Status)
 }
 
+// taskWithStatus clones a task and overwrites its status for logging.
 func taskWithStatus(task *ActiveTask, status taskStatus) *ActiveTask {
 	cloned := cloneActiveTask(task)
 	if cloned == nil {
@@ -1610,6 +1640,7 @@ func taskWithStatus(task *ActiveTask, status taskStatus) *ActiveTask {
 	return cloned
 }
 
+// matchedSlotNames returns the matched slot names from a slot fill result.
 func matchedSlotNames(fill slotFillResult) []string {
 	if len(fill.Filled) == 0 {
 		return nil
@@ -1622,6 +1653,7 @@ func matchedSlotNames(fill slotFillResult) []string {
 	return names
 }
 
+// protocolWorkflowContextFromActiveTask derives protocol workflow context from a legacy active task.
 func protocolWorkflowContextFromActiveTask(task *ActiveTask) *protocolWorkflowContext {
 	if task == nil {
 		return nil
@@ -1645,6 +1677,7 @@ func protocolWorkflowContextFromActiveTask(task *ActiveTask) *protocolWorkflowCo
 	}
 }
 
+// protocolWorkflowContextFromWorkflowSnapshot derives protocol workflow context from a workflow snapshot.
 func protocolWorkflowContextFromWorkflowSnapshot(workflow *WorkflowSnapshot) *protocolWorkflowContext {
 	if workflow == nil {
 		return nil
@@ -1655,6 +1688,7 @@ func protocolWorkflowContextFromWorkflowSnapshot(workflow *WorkflowSnapshot) *pr
 	}
 }
 
+// resolveAttendanceTrustedEntities extracts trusted attendance fields from a user message.
 func resolveAttendanceTrustedEntities(message string) (trustedEntities, bool) {
 	dateValue := resolveDateFromMessage(message)
 	sectionValue := resolveSectionFromMessage(message)
@@ -1667,6 +1701,7 @@ func resolveAttendanceTrustedEntities(message string) (trustedEntities, bool) {
 	}, true
 }
 
+// resolveDateFromMessage extracts a normalized date from a user message.
 func resolveDateFromMessage(message string) string {
 	dateValue := ""
 	for _, candidate := range []string{"今天", "昨天", "明天"} {
@@ -1688,6 +1723,7 @@ func resolveDateFromMessage(message string) string {
 	return dateValue
 }
 
+// resolveSectionFromMessage extracts a section number from a user message.
 func resolveSectionFromMessage(message string) int {
 	sectionValue := 0
 	for token, value := range map[string]int{
@@ -1705,6 +1741,7 @@ func resolveSectionFromMessage(message string) int {
 	return sectionValue
 }
 
+// extractDateToken extracts the first supported date token from a user message.
 func extractDateToken(message string) string {
 	for i := 0; i+10 <= len(message); i++ {
 		candidate := message[i : i+10]
@@ -1715,6 +1752,7 @@ func extractDateToken(message string) string {
 	return ""
 }
 
+// buildAttendanceStatusReply builds the plain-text reply for an attendance query result.
 func buildAttendanceStatusReply(result *tools.AttendanceResult) string {
 	if result == nil {
 		return "未查询到相关考勤数据。"
@@ -1737,6 +1775,7 @@ func buildAttendanceStatusReply(result *tools.AttendanceResult) string {
 	)
 }
 
+// buildManualSignCapabilityReply builds the capability-only reply for manual sign questions.
 func buildManualSignCapabilityReply(uctx *tools.UserContext) string {
 	if uctx != nil && uctx.UserRole >= 1 {
 		return "可以。你当前可以为指定用户代签某节次考勤，我需要明确的姓名、日期和节次。"
@@ -1744,6 +1783,7 @@ func buildManualSignCapabilityReply(uctx *tools.UserContext) string {
 	return "代签属于管理员能力，只有管理员可以为指定用户代签某节次考勤。"
 }
 
+// handleProtocolFallback returns a safe fallback reply when protocol primary cannot execute.
 func (a *Agent) handleProtocolFallback(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, draft ProtocolDraft, validation ProtocolValidationResult, activeWorkflow *WorkflowSnapshot) (string, error) {
 	model := ResponseModel{
 		Kind:          ResponseClarify,
@@ -1791,6 +1831,7 @@ func (a *Agent) handleProtocolFallback(ctx context.Context, uctx *tools.UserCont
 	return reply, nil
 }
 
+// buildProtocolCapabilityReply builds the capability reply for a protocol domain question.
 func buildProtocolCapabilityReply(domain BusinessDomain, uctx *tools.UserContext) string {
 	switch domain {
 	case DomainManualSign:
@@ -1816,6 +1857,7 @@ type manualSignResolution struct {
 	UserResolution entityResolution
 }
 
+// handleProtocolManualSignPrimary runs the manual-sign protocol primary flow.
 func (a *Agent) handleProtocolManualSignPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot) (bool, string, error) {
 	if uctx == nil || a.deps.Attendance == nil || a.deps.User == nil {
 		return false, "", nil
@@ -1925,6 +1967,7 @@ func (a *Agent) handleProtocolManualSignPrimary(ctx context.Context, uctx *tools
 	}
 }
 
+// resolveManualSignInput resolves trusted manual-sign input fields from the current message.
 func (a *Agent) resolveManualSignInput(ctx context.Context, message string) (manualSignResolution, error) {
 	resolution := manualSignResolution{
 		Trusted: trustedEntities{
@@ -1955,6 +1998,7 @@ func (a *Agent) resolveManualSignInput(ctx context.Context, message string) (man
 	return resolution, nil
 }
 
+// buildManualSignMissingFieldsReply builds the reply asking for missing manual-sign fields.
 func buildManualSignMissingFieldsReply(missing []string) string {
 	if len(missing) == 0 {
 		return "请补充需要补签的姓名、日期和节次。"
@@ -1976,6 +2020,7 @@ func buildManualSignMissingFieldsReply(missing []string) string {
 	return fmt.Sprintf("我还缺少%s，请补充后我再帮你补签。", strings.Join(names, "和"))
 }
 
+// buildResponseOptions builds response options from a string candidate list.
 func buildResponseOptions(candidates []string) []ResponseOption {
 	options := make([]ResponseOption, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -1991,6 +2036,7 @@ func buildResponseOptions(candidates []string) []ResponseOption {
 	return options
 }
 
+// handleProtocolSubscriptionPrimary runs the subscription protocol primary flow.
 func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot) (bool, string, error) {
 	if uctx == nil || uctx.ConversationType != "2" || a.deps.GroupSub == nil {
 		return false, "", nil
@@ -2105,6 +2151,7 @@ func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *too
 	}
 }
 
+// buildProtocolDepartmentOptionsReply builds the reply that lists selectable departments.
 func (a *Agent) buildProtocolDepartmentOptionsReply(ctx context.Context) (string, error) {
 	if a.deps.Dept == nil {
 		return "请告诉我需要订阅哪些部门。", nil
@@ -2127,6 +2174,7 @@ func (a *Agent) buildProtocolDepartmentOptionsReply(ctx context.Context) (string
 	return fmt.Sprintf("当前可选部门有：%s。请告诉我需要订阅哪些部门。", strings.Join(names, "、")), nil
 }
 
+// resolveSubscriptionTrustedEntities resolves trusted subscription fields from the current message.
 func (a *Agent) resolveSubscriptionTrustedEntities(ctx context.Context, message string, workflow *WorkflowSnapshot) (trustedEntities, bool) {
 	if workflow == nil {
 		return trustedEntities{}, false
@@ -2245,26 +2293,7 @@ func modeToQueryKind(mode answerMode) queryKind {
 	}
 }
 
-func (a *Agent) handleClarifyIntent(ctx context.Context, uctx *tools.UserContext, question string) (string, []string, error) {
-	plan := buildClarifyPlan(question, uctx)
-	if !plan.NeedsToolLookup {
-		return plan.FollowUpPrompt, nil, nil
-	}
-
-	toolArgs := plan.ToolArguments
-	if strings.TrimSpace(toolArgs) == "" {
-		toolArgs = "{}"
-	}
-
-	result, err := a.registry.Dispatch(ctx, uctx, plan.ToolName, json.RawMessage(toolArgs))
-	if err != nil {
-		return "", []string{plan.ToolName}, err
-	}
-
-	reply, err := buildClarifyReply(plan, result)
-	return reply, []string{plan.ToolName}, err
-}
-
+// buildClarifyReply builds a reply from a clarify plan and optional tool output.
 func buildClarifyReply(plan clarifyPlan, toolResult string) (string, error) {
 	if toolErr := extractToolError(toolResult); toolErr != "" {
 		return toolErr, nil
@@ -2317,10 +2346,12 @@ func buildClarifyReply(plan clarifyPlan, toolResult string) (string, error) {
 	}
 }
 
+// extractToolError extracts a structured tool error payload from a tool result.
 func extractToolError(toolResult string) string {
 	return strings.TrimSpace(parseToolErrorPayload(toolResult).Error)
 }
 
+// parseToolErrorPayload parses a tool error payload from raw tool output.
 func parseToolErrorPayload(toolResult string) toolErrorPayload {
 	var payload toolErrorPayload
 	if err := json.Unmarshal([]byte(toolResult), &payload); err != nil {

@@ -25,18 +25,14 @@ type sessionManager struct {
 	sessions map[string]*session
 }
 
+// newSessionManager creates the in-memory session manager.
 func newSessionManager() *sessionManager {
 	return &sessionManager{
 		sessions: make(map[string]*session),
 	}
 }
 
-// getMessages 获取 session 的历史消息（不包含 system prompt）
-func (sm *sessionManager) getMessages(key string) []tools.Message {
-	msgs, _ := sm.getSessionState(key)
-	return msgs
-}
-
+// getSessionState handles get session state.
 func (sm *sessionManager) getSessionState(key string) ([]tools.Message, *ActiveTask) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -64,6 +60,7 @@ func (sm *sessionManager) getSessionState(key string) ([]tools.Message, *ActiveT
 	return msgs, cloneActiveTask(s.activeTask)
 }
 
+// getTaskState handles get task state.
 func (sm *sessionManager) getTaskState(key string) ([]tools.Message, *TaskInstance) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -87,6 +84,7 @@ func (sm *sessionManager) getTaskState(key string) ([]tools.Message, *TaskInstan
 	return msgs, cloneTaskInstance(s.taskMemory)
 }
 
+// getWorkflowState handles get workflow state.
 func (sm *sessionManager) getWorkflowState(key string) ([]tools.Message, *WorkflowSnapshot) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -123,6 +121,7 @@ func (sm *sessionManager) appendMessages(key string, msgs ...tools.Message) {
 	}
 }
 
+// setActiveTask handles set active task.
 func (sm *sessionManager) setActiveTask(key string, task *ActiveTask) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -140,6 +139,7 @@ func (sm *sessionManager) setActiveTask(key string, task *ActiveTask) {
 	s.updatedAt = time.Now()
 }
 
+// setTaskInstance handles set task instance.
 func (sm *sessionManager) setTaskInstance(key string, task *TaskInstance) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -157,6 +157,7 @@ func (sm *sessionManager) setTaskInstance(key string, task *TaskInstance) {
 	s.updatedAt = time.Now()
 }
 
+// setWorkflowState handles set workflow state.
 func (sm *sessionManager) setWorkflowState(key string, workflow *WorkflowSnapshot) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -173,6 +174,7 @@ func (sm *sessionManager) setWorkflowState(key string, workflow *WorkflowSnapsho
 	s.updatedAt = time.Now()
 }
 
+// clearActiveTask handles clear active task.
 func (sm *sessionManager) clearActiveTask(key string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -187,6 +189,7 @@ func (sm *sessionManager) clearActiveTask(key string) {
 	s.updatedAt = time.Now()
 }
 
+// clearTaskInstance handles clear task instance.
 func (sm *sessionManager) clearTaskInstance(key string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -201,6 +204,7 @@ func (sm *sessionManager) clearTaskInstance(key string) {
 	s.updatedAt = time.Now()
 }
 
+// clearWorkflowState handles clear workflow state.
 func (sm *sessionManager) clearWorkflowState(key string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()

@@ -1,12 +1,11 @@
 package agent
 
-import "schedule_server/internal/agent/tools"
-
 type toolPool struct {
 	Name      string
 	ToolNames []string
 }
 
+// selectToolPool selects tool pool.
 func selectToolPool(question string, userRole int) toolPool {
 	normalized := normalizeQuery(question)
 
@@ -69,6 +68,7 @@ func selectToolPool(question string, userRole int) toolPool {
 	}
 }
 
+// hasScheduleQuerySignal reports whether it has schedule query signal.
 func hasScheduleQuerySignal(question string) bool {
 	return containsAny(question, []string{
 		"课表",
@@ -84,6 +84,7 @@ func hasScheduleQuerySignal(question string) bool {
 	})
 }
 
+// hasAttendanceQuerySignal reports whether it has attendance query signal.
 func hasAttendanceQuerySignal(question string) bool {
 	return containsAny(question, []string{
 		"考勤",
@@ -98,6 +99,7 @@ func hasAttendanceQuerySignal(question string) bool {
 	})
 }
 
+// hasAnalyticsQuerySignal reports whether it has analytics query signal.
 func hasAnalyticsQuerySignal(question string) bool {
 	return containsAny(question, []string{
 		"统计",
@@ -111,6 +113,7 @@ func hasAnalyticsQuerySignal(question string) bool {
 	})
 }
 
+// hasAdminQuerySignal reports whether it has admin query signal.
 func hasAdminQuerySignal(question string) bool {
 	if isExplicitUnsubscribeAttendancePushText(question) {
 		return true
@@ -122,15 +125,4 @@ func hasAdminQuerySignal(question string) bool {
 		"有哪些部门",
 		"可选部门",
 	})
-}
-
-func toolNamesFromDefs(defs []tools.ToolDef) []string {
-	names := make([]string, 0, len(defs))
-	for _, def := range defs {
-		if def.Function.Name == "" {
-			continue
-		}
-		names = append(names, def.Function.Name)
-	}
-	return names
 }

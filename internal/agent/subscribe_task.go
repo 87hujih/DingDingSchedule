@@ -12,14 +12,17 @@ import (
 
 type subscribeTaskHandler struct{}
 
+// newSubscribeTaskHandler creates subscribe task handler.
 func newSubscribeTaskHandler() *subscribeTaskHandler {
 	return &subscribeTaskHandler{}
 }
 
+// Type returns the task type handled by the current handler.
 func (h *subscribeTaskHandler) Type() string {
 	return "subscribe_attendance_push"
 }
 
+// CreateTask builds the initial task instance from the first user turn.
 func (h *subscribeTaskHandler) CreateTask(message string, uctx *tools.UserContext) (*TaskInstance, TaskApplyResult) {
 	task := &TaskInstance{
 		Type:      h.Type(),
@@ -33,6 +36,7 @@ func (h *subscribeTaskHandler) CreateTask(message string, uctx *tools.UserContex
 	return task, apply
 }
 
+// ApplyTurn applies the current user turn to the task state.
 func (h *subscribeTaskHandler) ApplyTurn(task *TaskInstance, message string, _ *tools.UserContext) (TaskApplyResult, error) {
 	if task == nil {
 		return TaskApplyResult{}, nil
@@ -61,6 +65,7 @@ func (h *subscribeTaskHandler) ApplyTurn(task *TaskInstance, message string, _ *
 	return TaskApplyResult{MatchedSlots: matched}, nil
 }
 
+// Prepare loads any context needed before the task executes or clarifies.
 func (h *subscribeTaskHandler) Prepare(ctx context.Context, task *TaskInstance, deps Deps) ([]string, error) {
 	if task == nil || deps.Dept == nil || !needsDepartmentCache(task) {
 		return nil, nil
@@ -89,6 +94,7 @@ func (h *subscribeTaskHandler) Prepare(ctx context.Context, task *TaskInstance, 
 	return []string{"list_departments"}, nil
 }
 
+// Execute runs the current logic and returns the normalized result.
 func (h *subscribeTaskHandler) Execute(ctx context.Context, task *TaskInstance, uctx *tools.UserContext, registry *tools.Registry) (TaskResult, []string, error) {
 	if task == nil {
 		return TaskResult{}, nil, nil
@@ -157,6 +163,7 @@ func (h *subscribeTaskHandler) Execute(ctx context.Context, task *TaskInstance, 
 	}, []string{"subscribe_attendance_push"}, nil
 }
 
+// BuildClarifyReply builds the clarification reply for the current task state.
 func (h *subscribeTaskHandler) BuildClarifyReply(task *TaskInstance) string {
 	if task == nil {
 		return "请再具体说明你要查询或操作的内容。"
@@ -169,10 +176,12 @@ func (h *subscribeTaskHandler) BuildClarifyReply(task *TaskInstance) string {
 	return buildTaskClarifyReply(activeTaskFromTaskInstance(task))
 }
 
+// BuildMetaReply builds the extra prompt shown for the current task state.
 func (h *subscribeTaskHandler) BuildMetaReply(task *TaskInstance) string {
 	return h.BuildClarifyReply(task)
 }
 
+// needsDepartmentCache reports whether it needs department cache.
 func needsDepartmentCache(task *TaskInstance) bool {
 	if task == nil || task.Type != "subscribe_attendance_push" {
 		return false
@@ -183,6 +192,7 @@ func needsDepartmentCache(task *TaskInstance) bool {
 	return containsTaskMissingSlot(task, "dept_names")
 }
 
+// containsTaskMissingSlot reports whether it contains task missing slot.
 func containsTaskMissingSlot(task *TaskInstance, want string) bool {
 	for _, slot := range task.MissingSlots {
 		if slot == want {
@@ -192,6 +202,7 @@ func containsTaskMissingSlot(task *TaskInstance, want string) bool {
 	return false
 }
 
+// cachedDepartmentNames handles cached department names.
 func cachedDepartmentNames(task *TaskInstance) []string {
 	if task == nil || task.CandidateCache == nil {
 		return nil
@@ -203,6 +214,7 @@ func cachedDepartmentNames(task *TaskInstance) []string {
 	return append([]string(nil), names...)
 }
 
+// buildCachedDepartmentReply builds cached department reply.
 func buildCachedDepartmentReply(task *TaskInstance) string {
 	names := cachedDepartmentNames(task)
 	if len(names) == 0 {
@@ -211,6 +223,7 @@ func buildCachedDepartmentReply(task *TaskInstance) string {
 	return fmt.Sprintf("当前可选部门有：%s。请告诉我需要订阅哪些部门。", strings.Join(names, "、"))
 }
 
+// extractSubscriptionDeptNames extracts subscription department names.
 func extractSubscriptionDeptNames(message string) string {
 	candidate := strings.TrimSpace(message)
 	if candidate == "" {
@@ -245,6 +258,7 @@ func extractSubscriptionDeptNames(message string) string {
 	return candidate
 }
 
+// reconcileSubscriptionTask handles reconcile subscription task.
 func reconcileSubscriptionTask(task *TaskInstance) {
 	if task == nil {
 		return

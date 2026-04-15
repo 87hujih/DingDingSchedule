@@ -15,6 +15,7 @@ func RegisterAnalyticsTools(r *Registry, stats AttendanceStatsPort, userCross Us
 // query_attendance_stats
 // ─────────────────────────────────────────────────────────────────────────────
 
+// registerQueryAttendanceStats registers the attendance-stats analytics tool.
 func registerQueryAttendanceStats(r *Registry, stats AttendanceStatsPort, dept DeptPort) {
 	r.Register(ToolDef{
 		Type: "function",
@@ -105,6 +106,7 @@ func registerQueryAttendanceStats(r *Registry, stats AttendanceStatsPort, dept D
 // query_user_cross
 // ─────────────────────────────────────────────────────────────────────────────
 
+// registerQueryUserCross registers the user-cross analytics tool.
 func registerQueryUserCross(r *Registry, userCross UserCrossPort, dept DeptPort) {
 	r.Register(ToolDef{
 		Type: "function",

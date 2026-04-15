@@ -12,14 +12,17 @@ import (
 
 type manualSignTaskHandler struct{}
 
+// newManualSignTaskHandler creates manual sign task handler.
 func newManualSignTaskHandler() *manualSignTaskHandler {
 	return &manualSignTaskHandler{}
 }
 
+// Type returns the task type handled by the current handler.
 func (h *manualSignTaskHandler) Type() string {
 	return "sign_for_user"
 }
 
+// CreateTask builds the initial task instance from the first user turn.
 func (h *manualSignTaskHandler) CreateTask(message string, uctx *tools.UserContext) (*TaskInstance, TaskApplyResult) {
 	task := &TaskInstance{
 		Type:      h.Type(),
@@ -33,6 +36,7 @@ func (h *manualSignTaskHandler) CreateTask(message string, uctx *tools.UserConte
 	return task, apply
 }
 
+// ApplyTurn applies the current user turn to the task state.
 func (h *manualSignTaskHandler) ApplyTurn(task *TaskInstance, message string, _ *tools.UserContext) (TaskApplyResult, error) {
 	if task == nil {
 		return TaskApplyResult{}, nil
@@ -73,10 +77,12 @@ func (h *manualSignTaskHandler) ApplyTurn(task *TaskInstance, message string, _ 
 	return TaskApplyResult{MatchedSlots: matched}, nil
 }
 
+// Prepare loads any context needed before the task executes or clarifies.
 func (h *manualSignTaskHandler) Prepare(context.Context, *TaskInstance, Deps) ([]string, error) {
 	return nil, nil
 }
 
+// Execute runs the current logic and returns the normalized result.
 func (h *manualSignTaskHandler) Execute(ctx context.Context, task *TaskInstance, uctx *tools.UserContext, registry *tools.Registry) (TaskResult, []string, error) {
 	if task == nil {
 		return TaskResult{}, nil, nil
@@ -160,6 +166,7 @@ func (h *manualSignTaskHandler) Execute(ctx context.Context, task *TaskInstance,
 	}, []string{"sign_for_user"}, nil
 }
 
+// BuildClarifyReply builds the clarification reply for the current task state.
 func (h *manualSignTaskHandler) BuildClarifyReply(task *TaskInstance) string {
 	if reply := h.BuildMetaReply(task); strings.TrimSpace(reply) != "" {
 		return reply
@@ -167,6 +174,7 @@ func (h *manualSignTaskHandler) BuildClarifyReply(task *TaskInstance) string {
 	return buildTaskClarifyReply(activeTaskFromTaskInstance(task))
 }
 
+// BuildMetaReply builds the extra prompt shown for the current task state.
 func (h *manualSignTaskHandler) BuildMetaReply(task *TaskInstance) string {
 	if task == nil || task.CandidateCache == nil {
 		return ""
@@ -178,6 +186,7 @@ func (h *manualSignTaskHandler) BuildMetaReply(task *TaskInstance) string {
 	return "我找到这些候选用户：" + strings.Join(candidates, "、") + "。请提供更精确的姓名。"
 }
 
+// extractManualSignUserName extracts manual sign user name.
 func extractManualSignUserName(message string) string {
 	trimmed := strings.TrimSpace(message)
 	if trimmed == "" {
@@ -205,6 +214,7 @@ func extractManualSignUserName(message string) string {
 	return trimmed
 }
 
+// reconcileManualSignTask handles reconcile manual sign task.
 func reconcileManualSignTask(task *TaskInstance) {
 	if task == nil {
 		return

@@ -21,6 +21,7 @@ type counter struct {
 	windowAt time.Time
 }
 
+// newRateLimiter creates rate limiter.
 func newRateLimiter() *rateLimiter {
 	return &rateLimiter{counters: make(map[string]*counter)}
 }

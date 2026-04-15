@@ -2,6 +2,7 @@ package agent
 
 import "schedule_server/internal/agent/tools"
 
+// detectShortCircuitRoute detects deterministic routes that can bypass LLM routing.
 func detectShortCircuitRoute(question string, uctx *tools.UserContext, activeTask *TaskInstance) (RouteDecision, bool) {
 	normalized := normalizeQuery(question)
 	if shouldUnsubscribeAttendancePush(normalized, uctx) {

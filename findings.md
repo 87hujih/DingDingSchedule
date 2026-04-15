@@ -127,3 +127,39 @@
 - `G:\gofile\schedule_server\deploy.sh`
 - `G:\gofile\schedule_server\.github\workflows\deploy.yml`
 - `G:\gofile\schedule_server\docs\superpowers\plans\2026-03-19-cicd-deployment-standardization-plan.md`
+
+## 2026-04-12：远程服务器定位当前项目运行位置
+
+### 需求
+- 用户要求通过 `ssh -p 22 root@106.52.42.194` 登录远程服务器。
+- 目标是确认“当前这个项目”在线上实际运行在什么地方，而不是只看仓库里的默认部署脚本。
+
+### 调研发现
+- 远程主机名为 `VM-0-3-opencloudos`，当前登录用户为 `root`。
+- `docker ps` 显示存在一个运行 4 天且状态为 `healthy` 的容器 `schedule-server`，镜像为 `ghcr.io/87hujih/schedule-server:8f160b78c8296a29b4da12eefa67a65ff46554aa`。
+- `systemctl list-units --type=service --all | grep -Ei 'schedule|attendance|dingtalk'` 没有发现本项目对应的 `systemd` 服务，说明当前主入口不是 systemd。
+- `docker inspect schedule-server` 给出明确的 Compose 元数据：
+- `com.docker.compose.project= schedule_server`
+- `com.docker.compose.project.working_dir=/opt/schedule_server`
+- `com.docker.compose.project.config_files=/opt/schedule_server/docker-compose.prod.yml`
+- `com.docker.compose.project.environment_file=/opt/schedule_server/.env.prod`
+- 容器内工作目录是 `/app`，且仅把宿主机以下目录 bind mount 到容器：
+- `/opt/schedule_server/configs -> /app/configs`（只读）
+- `/opt/schedule_server/logs -> /app/logs`
+- `/opt/schedule_server/uploads -> /app/uploads`
+- `docker port schedule-server` 显示宿主机 `0.0.0.0:26665` 映射到容器 `26665/tcp`，`ss -ltnp` 看到对应监听者是 `docker-proxy`。
+- 宿主机上的进程 `www 319204 ./schedule_server` 不是独立裸进程；`docker inspect -f '{{.State.Pid}}' schedule-server` 返回同一个 PID `319204`，`/proc/319204/cgroup` 也显示它属于 `docker-...scope`。
+- `/opt/schedule_server` 中包含一份部署快照（`go.mod`、`cmd/`、`internal/`、`pkg/` 等），但没有 `.git` 目录，说明它不是在线开发工作树，而是部署目录。
+
+### 技术决策
+| 决定 | 原因 |
+|------|------|
+| 先确认在线实例，再反推目录 | 避免把历史部署目录误判为当前运行目录 |
+| 优先读取运行时证据，如 `systemctl`、`docker ps`、进程命令行和工作目录 | 这些信息最接近真实运行状态 |
+
+### 参考资源
+- `ssh -p 22 root@106.52.42.194`
+- `G:\gofile\schedule_server\tasks\todo.md`
+- `G:\gofile\schedule_server\task_plan.md`
+- 远端 `docker inspect schedule-server`
+- 远端 `/opt/schedule_server/docker-compose.prod.yml`

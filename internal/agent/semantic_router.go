@@ -15,10 +15,12 @@ type semanticRouter struct {
 	client *LLMClient
 }
 
+// newSemanticRouter creates semantic router.
 func newSemanticRouter(client *LLMClient) *semanticRouter {
 	return &semanticRouter{client: client}
 }
 
+// Route routes the question through the semantic router model.
 func (r *semanticRouter) Route(ctx context.Context, routeCtx RouteContext) RouteDecision {
 	fallback := func(reason string) RouteDecision {
 		return RouteDecision{
@@ -69,6 +71,7 @@ func (r *semanticRouter) Route(ctx context.Context, routeCtx RouteContext) Route
 	return decision
 }
 
+// isValidRouteKind reports whether it is valid route kind.
 func isValidRouteKind(kind RouteKind) bool {
 	switch kind {
 	case RouteOffTopicReject,

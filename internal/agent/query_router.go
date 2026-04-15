@@ -82,6 +82,7 @@ func hasRuleSignal(question string) bool {
 	return containsAny(question, keywords)
 }
 
+// hasHelpIntent reports whether it has help intent.
 func hasHelpIntent(question string) bool {
 	return containsAny(question, []string{
 		"你有什么功能",
@@ -166,6 +167,7 @@ func hasLiveSignal(question string) bool {
 	return strings.Contains(question, "第") && strings.Contains(question, "节")
 }
 
+// hasActionIntent reports whether it has action intent.
 func hasActionIntent(question string) bool {
 	if hasExplanatoryIntent(question) {
 		return false
@@ -173,6 +175,7 @@ func hasActionIntent(question string) bool {
 	return hasSubscriptionActionSignal(question) || hasManualSignActionSignal(question)
 }
 
+// hasClarifyIntent reports whether it has clarify intent.
 func hasClarifyIntent(question string) bool {
 	if containsAny(question, []string{"订阅状态", "有没有订阅", "是否订阅", "有开", "开了没", "开没开"}) &&
 		containsAny(question, []string{"考勤", "推送"}) {
@@ -187,6 +190,7 @@ func hasClarifyIntent(question string) bool {
 	return false
 }
 
+// hasExplanatoryIntent reports whether it has explanatory intent.
 func hasExplanatoryIntent(question string) bool {
 	return containsAny(question, []string{
 		"为什么",
@@ -205,6 +209,7 @@ func hasExplanatoryIntent(question string) bool {
 	})
 }
 
+// hasSubscriptionActionSignal reports whether it has subscription action signal.
 func hasSubscriptionActionSignal(question string) bool {
 	if containsAny(question, []string{"订阅状态", "有没有订阅", "是否订阅"}) &&
 		containsAny(question, []string{"考勤", "推送"}) {
@@ -225,6 +230,7 @@ func hasSubscriptionActionSignal(question string) bool {
 	return false
 }
 
+// shouldUnsubscribeAttendancePush reports whether it should unsubscribe attendance push.
 func shouldUnsubscribeAttendancePush(question string, uctx *tools.UserContext) bool {
 	if uctx == nil || uctx.ConversationType != "2" {
 		return false
@@ -232,6 +238,7 @@ func shouldUnsubscribeAttendancePush(question string, uctx *tools.UserContext) b
 	return isExplicitUnsubscribeAttendancePushText(question)
 }
 
+// isExplicitUnsubscribeAttendancePushText reports whether it is explicit unsubscribe attendance push text.
 func isExplicitUnsubscribeAttendancePushText(question string) bool {
 	if hasExplanatoryIntent(question) {
 		return false
@@ -248,15 +255,18 @@ func isExplicitUnsubscribeAttendancePushText(question string) bool {
 	return containsAny(question, []string{"订阅", "推送"}) && containsAny(question, []string{"考勤", "本群", "当前群", "此群"})
 }
 
+// hasSubscriptionScopeIntent reports whether it has subscription scope intent.
 func hasSubscriptionScopeIntent(question string) bool {
 	return containsAny(question, []string{"指定部门", "部分部门", "某些部门", "几个部门"}) &&
 		containsAny(question, []string{"订阅", "推送", "考勤"})
 }
 
+// containsQuotedOrEnumeratedDeptHints reports whether it contains quoted or enumerated department hints.
 func containsQuotedOrEnumeratedDeptHints(question string) bool {
 	return containsAny(question, []string{"、", ",", "，", "和", "以及", "\"", "“", "教务处", "学工处"})
 }
 
+// hasManualSignActionSignal reports whether it has manual sign action signal.
 func hasManualSignActionSignal(question string) bool {
 	if containsAny(question, []string{"帮我", "给我", "请", "麻烦"}) &&
 		containsAny(question, []string{"补签", "代签"}) {

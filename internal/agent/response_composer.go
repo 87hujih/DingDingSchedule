@@ -2,6 +2,7 @@ package agent
 
 import "strings"
 
+// composePlannerReply composes planner reply.
 func composePlannerReply(decision PlannerDecision, task *TaskInstance, result *TaskResult) string {
 	if result != nil && result.Outcome.Retryable {
 		switch result.Outcome.ErrorCode {
@@ -38,6 +39,7 @@ func composePlannerReply(decision PlannerDecision, task *TaskInstance, result *T
 	return "请再具体说明你要查询或操作的内容。"
 }
 
+// buildTaskMetaReply builds task meta reply.
 func buildTaskMetaReply(task *TaskInstance) string {
 	if task == nil {
 		return ""
@@ -50,6 +52,7 @@ func buildTaskMetaReply(task *TaskInstance) string {
 	return buildTaskClarifyReply(activeTaskFromTaskInstance(task))
 }
 
+// composeRouteReply composes route reply.
 func composeRouteReply(decision RouteDecision, task *TaskRouteState) string {
 	switch decision.Kind {
 	case RouteOffTopicReject:
@@ -74,6 +77,7 @@ func composeRouteReply(decision RouteDecision, task *TaskRouteState) string {
 	return "请再具体说明你要查询或操作的内容。"
 }
 
+// composeSoftTaskNotice composes soft task notice.
 func composeSoftTaskNotice(code, reply string) string {
 	reply = strings.TrimSpace(reply)
 	switch strings.TrimSpace(code) {

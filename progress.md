@@ -288,3 +288,63 @@
   - `G:\gofile\schedule_server\tasks\todo.md`（已更新）
   - `G:\gofile\schedule_server\progress.md`（已更新）
 
+## 会话：2026-04-12（远程服务器定位当前项目运行位置）
+
+### 阶段 1：排查准备
+- **状态：** 已完成
+- **开始时间：** 2026-04-12 10:00:00
+- 已执行动作：
+  - 阅读了 `using-superpowers` 与 `planning-with-files` 技能说明，确认本轮按文件化方式跟踪。
+  - 检查了 `tasks/lessons.md`、`tasks/todo.md`、`task_plan.md`、`findings.md` 和 `progress.md` 的现状。
+  - 为本轮远程排查补充了任务清单、计划与发现占位。
+- 创建/修改的文件：
+  - `G:\gofile\schedule_server\tasks\todo.md`（已更新）
+  - `G:\gofile\schedule_server\task_plan.md`（已更新）
+  - `G:\gofile\schedule_server\findings.md`（已更新）
+  - `G:\gofile\schedule_server\progress.md`（已更新）
+
+### 阶段 2：远程运行实例定位
+- **状态：** 已完成
+- 已执行动作：
+  - 通过 SSH 登录 `root@106.52.42.194:22`，确认主机名为 `VM-0-3-opencloudos`。
+  - 盘点了 `docker ps`、`systemctl list-units`、`ps -ef` 和 `ss -ltnp`，发现在线实例由 Docker 容器 `schedule-server` 承载，而不是 systemd。
+  - 进一步通过 `docker inspect schedule-server`、`docker port schedule-server`、`readlink -f /proc/319204/cwd`、`cat /proc/319204/cgroup` 与 `/opt/schedule_server/docker-compose.prod.yml` 交叉核验，确认宿主机部署根目录为 `/opt/schedule_server`，容器内运行目录为 `/app`。
+- 创建/修改的文件：
+  - `G:\gofile\schedule_server\tasks\todo.md`（已更新）
+  - `G:\gofile\schedule_server\task_plan.md`（已更新）
+  - `G:\gofile\schedule_server\findings.md`（已更新）
+  - `G:\gofile\schedule_server\progress.md`（已更新）
+
+### 阶段 3：交付准备
+- **状态：** 已完成
+- 已执行动作：
+  - 收敛了“宿主机部署目录 / 容器内运行目录 / 配置挂载目录 / 对外端口”的最终结论。
+  - 记录了结论边界：当前确认的是在线实例位置与启动方式，未继续追查镜像构建时使用的源码提交内容。
+- 创建/修改的文件：
+  - `G:\gofile\schedule_server\tasks\todo.md`（已更新）
+  - `G:\gofile\schedule_server\task_plan.md`（已更新）
+  - `G:\gofile\schedule_server\findings.md`（已更新）
+  - `G:\gofile\schedule_server\progress.md`（已更新）
+
+## 会话：2026-04-12（远程重启 schedule-server）
+
+### 阶段 1：执行前准备
+- **状态：** 已完成
+- **开始时间：** 2026-04-12 10:10:00
+- 已执行动作：
+  - 复用了上一轮远程排查结论，确认当前在线实例为 `/opt/schedule_server` 下的 Docker Compose 服务 `schedule-server`。
+  - 将“重启并验活”补入 `tasks/todo.md`，确保本轮远程操作有可追溯记录。
+- 创建/修改的文件：
+  - `G:\gofile\schedule_server\tasks\todo.md`（已更新）
+  - `G:\gofile\schedule_server\progress.md`（已更新）
+
+### 阶段 2：远程重启与验活
+- **状态：** 已完成
+- 已执行动作：
+  - 通过 SSH 进入 `/opt/schedule_server`，执行 `./deploy.sh restart`，由项目自己的部署脚本触发容器重启。
+  - 看到远端返回 `Container schedule-server Restarting` 与 `Container schedule-server Started`。
+  - 重新执行 `docker ps`、`docker inspect --format "{{.State.StartedAt}} {{.State.Health.Status}}"` 和 `curl -fsS http://localhost:26665/health`，确认容器已在新的启动时间恢复为 `healthy`，且 `/health` 返回 `{"status":"ok"}`。
+- 创建/修改的文件：
+  - `G:\gofile\schedule_server\tasks\todo.md`（已更新）
+  - `G:\gofile\schedule_server\progress.md`（已更新）
+

@@ -48,6 +48,7 @@ var operationCatalogEntries = []OperationMetadata{
 	},
 }
 
+// lookupOperation looks up operation.
 func lookupOperation(name string) (OperationMetadata, bool) {
 	for _, metadata := range operationCatalogEntries {
 		if metadata.Name == name {
@@ -55,15 +56,4 @@ func lookupOperation(name string) (OperationMetadata, bool) {
 		}
 	}
 	return OperationMetadata{}, false
-}
-
-func writeOperations() []string {
-	writeOps := make([]string, 0, len(operationCatalogEntries))
-	for _, metadata := range operationCatalogEntries {
-		if !metadata.IsWrite {
-			continue
-		}
-		writeOps = append(writeOps, metadata.Name)
-	}
-	return writeOps
 }

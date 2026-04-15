@@ -284,6 +284,7 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 	return summary, results, nil
 }
 
+// evalUserContext handles eval user context.
 func evalUserContext() *tools.UserContext {
 	return &tools.UserContext{
 		TenantID:          1,
@@ -297,6 +298,7 @@ func evalUserContext() *tools.UserContext {
 	}
 }
 
+// evalDomainResultForHint returns eval domain result for hint.
 func evalDomainResultForHint(hint DomainHint) domainResult {
 	if hint == domainHintObviousOut {
 		return domainOut
@@ -304,6 +306,7 @@ func evalDomainResultForHint(hint DomainHint) domainResult {
 	return domainIn
 }
 
+// evalPlanDecision handles eval plan decision.
 func evalPlanDecision(
 	normalized string,
 	conversationDecision conversationDecision,
@@ -351,6 +354,7 @@ type evalCompatDecision struct {
 	Route      queryKind
 }
 
+// evalCompatForPlan returns eval compat for plan.
 func evalCompatForPlan(normalized string, taskCandidate *ActiveTask, decision PlanDecision) evalCompatDecision {
 	if hasHelpIntent(normalized) {
 		return evalCompatDecision{
@@ -421,6 +425,7 @@ func evalCompatForPlan(normalized string, taskCandidate *ActiveTask, decision Pl
 	}
 }
 
+// searchEvalKnowledge handles search eval knowledge.
 func searchEvalKnowledge(ctx context.Context, knowledge KnowledgePort, tenantID uint, question string) (RetrievalResult, error) {
 	if knowledge == nil || tenantID == 0 {
 		return RetrievalResult{}, nil
@@ -444,6 +449,7 @@ func searchEvalKnowledge(ctx context.Context, knowledge KnowledgePort, tenantID 
 	return result, nil
 }
 
+// defaultExpectedPlanKind handles default expected plan kind.
 func defaultExpectedPlanKind(tc EvalCase) string {
 	if planKind := strings.TrimSpace(tc.ExpectedPlanKind); planKind != "" {
 		return planKind
@@ -491,6 +497,7 @@ func defaultExpectedPlanKind(tc EvalCase) string {
 	}
 }
 
+// defaultExpectedIntent handles default expected intent.
 func defaultExpectedIntent(tc EvalCase) string {
 	if intent := strings.TrimSpace(tc.ExpectedIntent); intent != "" {
 		return intent
@@ -508,6 +515,7 @@ func defaultExpectedIntent(tc EvalCase) string {
 	}
 }
 
+// defaultExpectedExecutor handles default expected executor.
 func defaultExpectedExecutor(tc EvalCase) string {
 	if executor := strings.TrimSpace(tc.ExpectedExecutor); executor != "" {
 		return executor
@@ -529,6 +537,7 @@ func defaultExpectedExecutor(tc EvalCase) string {
 	}
 }
 
+// defaultExpectedMode handles default expected mode.
 func defaultExpectedMode(tc EvalCase) string {
 	if mode := strings.TrimSpace(tc.ExpectedMode); mode != "" {
 		return mode
@@ -548,6 +557,7 @@ func defaultExpectedMode(tc EvalCase) string {
 	}
 }
 
+// answerModeForExpectedMode returns answer mode for expected mode.
 func answerModeForExpectedMode(mode string) answerMode {
 	switch strings.TrimSpace(mode) {
 	case string(answerModeKnowledgeOnly):

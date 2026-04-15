@@ -10,6 +10,7 @@ type trustedEntities struct {
 	Scope          string
 }
 
+// buildOperationRequest builds an operation request from validated trusted entities.
 func buildOperationRequest(draft ProtocolDraft, trusted trustedEntities) (OperationRequest, bool) {
 	metadata, ok := lookupOperation(draft.Operation)
 	if !ok {

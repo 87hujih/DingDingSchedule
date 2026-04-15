@@ -34,6 +34,7 @@ type routeTaskHandler interface {
 	BuildMetaReply(task *TaskInstance) string
 }
 
+// newTaskRuntime creates the task runtime and indexes handlers by type.
 func newTaskRuntime(handlers []TaskHandler) *taskRuntime {
 	registry := make(map[string]TaskHandler, len(handlers))
 	for _, handler := range handlers {
@@ -45,6 +46,7 @@ func newTaskRuntime(handlers []TaskHandler) *taskRuntime {
 	return &taskRuntime{handlers: registry}
 }
 
+// Dispatch dispatches the task to a runtime or catalog handler.
 func (rt *taskRuntime) Dispatch(task TaskInstance) RuntimeDispatchResult {
 	if rt == nil {
 		return RuntimeDispatchResult{
@@ -65,6 +67,7 @@ func (rt *taskRuntime) Dispatch(task TaskInstance) RuntimeDispatchResult {
 	}
 }
 
+// resolveRuntimeHandler resolves runtime handler.
 func (rt *taskRuntime) resolveRuntimeHandler(task *TaskInstance) (runtimeTaskHandler, RuntimeDispatchResult) {
 	if task == nil {
 		return nil, RuntimeDispatchResult{FallbackReason: "empty_task"}
@@ -83,6 +86,7 @@ func (rt *taskRuntime) resolveRuntimeHandler(task *TaskInstance) (runtimeTaskHan
 	return handler, result
 }
 
+// resolveCatalogHandler resolves catalog handler.
 func (rt *taskRuntime) resolveCatalogHandler(taskType string) (routeTaskHandler, bool) {
 	if rt == nil || taskType == "" {
 		return nil, false

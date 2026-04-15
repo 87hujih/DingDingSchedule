@@ -6,6 +6,7 @@ type ProtocolValidationResult struct {
 	UseActiveWorkflow bool
 }
 
+// validateProtocol validates whether a protocol draft is allowed to proceed.
 func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowContext) ProtocolValidationResult {
 	if draft.Act == ActUnknown {
 		return ProtocolValidationResult{ValidationCode: "unknown_intent"}
@@ -55,6 +56,7 @@ func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowConte
 	}
 }
 
+// actAllowed handles act allowed.
 func actAllowed(act UserAct, allowed []UserAct) bool {
 	for _, candidate := range allowed {
 		if act == candidate {

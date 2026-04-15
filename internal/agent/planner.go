@@ -1,5 +1,6 @@
 package agent
 
+// plan runs the planner using the configured planner service.
 func plan(input PlanInput) PlanDecision {
 	knowledgeStrength := classifyKnowledgeStrength(input.Retrieval)
 

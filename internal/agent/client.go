@@ -109,6 +109,7 @@ func (c *LLMClient) Chat(ctx context.Context, messages []tools.Message, toolDefs
 	return tools.Message{}, fmt.Errorf("LLM 请求失败（已重试3次）: %w", lastErr)
 }
 
+// doChat sends a chat request to the configured LLM endpoint.
 func (c *LLMClient) doChat(ctx context.Context, reqBody chatRequest) (tools.Message, bool, error) {
 	// 快速失败：父 context 已超时/取消，无需发起请求
 	if ctx.Err() != nil {

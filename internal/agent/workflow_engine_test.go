@@ -92,19 +92,3 @@ func TestWorkflowEngineAdvancesManualSignToReady(t *testing.T) {
 		t.Fatalf("Workflow state = %+v, want ready", result.Workflow)
 	}
 }
-
-func TestWorkflowEngineCancelsActiveWorkflow(t *testing.T) {
-	t.Parallel()
-
-	wf := WorkflowSnapshot{
-		Type:  WorkflowSubscriptionStart,
-		State: WorkflowCollectDepartments,
-	}
-	result := cancelWorkflow(wf)
-	if result.Decision != WorkflowCanceled {
-		t.Fatalf("Decision = %q, want %q", result.Decision, WorkflowCanceled)
-	}
-	if result.Workflow != nil {
-		t.Fatalf("Workflow = %+v, want nil", result.Workflow)
-	}
-}

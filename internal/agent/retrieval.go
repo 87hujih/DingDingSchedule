@@ -47,6 +47,7 @@ func topKnowledgeScore(result RetrievalResult) int {
 	return 0
 }
 
+// classifyKnowledgeStrength classifies knowledge strength.
 func classifyKnowledgeStrength(result RetrievalResult) KnowledgeStrength {
 	if len(result.Hits) == 0 {
 		return knowledgeStrengthNone

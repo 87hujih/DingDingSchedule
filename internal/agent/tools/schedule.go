@@ -255,6 +255,7 @@ func RegisterScheduleTools(r *Registry, schedule SchedulePort, user UserPort, se
 	})
 }
 
+// weekdayNumberForTool converts Go weekdays into the tool-facing weekday number.
 func weekdayNumberForTool(day time.Weekday) int {
 	if day == time.Sunday {
 		return 7
@@ -262,6 +263,7 @@ func weekdayNumberForTool(day time.Weekday) int {
 	return int(day)
 }
 
+// marshalJSON marshals a tool payload into its JSON string form.
 func marshalJSON(v interface{}) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {

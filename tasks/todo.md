@@ -1,6 +1,73 @@
 # 任务清单
 
 ## 当前任务
+- [x] 复核考勤详情与时段请假相关查询对 `leave_approvals` 的审批状态使用方式，明确“审批中算请假、拒绝后不算请假”的影响范围。
+- [x] 给考勤详情链路补失败回归测试，锁定“审批中仍显示请假、拒绝后改为未请假”的目标行为。
+- [x] 在最小改动下调整请假查询过滤条件，并完成定向验证与本轮复盘。
+
+## 当前任务复盘
+- 已确认根因在 `internal/repository/leave_approval_repository.go` 的 `ListApprovedByUserIDs(...)`：此前只按时间重叠查请假记录，不看 `result`，导致审批被拒绝的请假单仍会被 `AttendanceRecordService` 和 `AttendanceService` 计入请假名单。
+- 已在 `internal/service/attendance_record_service_test.go` 新增 `TestGetAttendanceDetailTreatsPendingLeaveAsLeaveButRefusedLeaveAsNotLeave`，先用一条 `ApproveStatus=RUNNING` 的审批中请假和一条 `Result=refuse` 的已拒绝请假复现旧行为；旧实现下测试先红，实际报错为“expected 1 leave user, got 2”。
+- `ListApprovedByUserIDs(...)` 现已改为排除 `result in ('refuse', 'cancel')` 的记录，保留审批中、审批通过和历史 `result` 缺失记录继续计入请假；同步更新了接口注释，明确新的考勤口径。
+- 本轮验证命令：
+- `go test ./internal/service -run TestGetAttendanceDetailTreatsPendingLeaveAsLeaveButRefusedLeaveAsNotLeave -count=1`
+- `go test ./internal/service -run "Test(GetAttendanceDetailTreatsPendingLeaveAsLeaveButRefusedLeaveAsNotLeave|GetAttendanceDetailReturnsCurrentViewBeforeFinalize|GetAttendanceDetailReturnsFinalSnapshotAfterFinalize|AttendanceDetailPrioritizesRestDayAndLeaveOverHasCourse|SlotAttendanceStatusPrioritizesRestDayAndLeaveOverHasCourse)" -count=1`
+- `go test ./internal/service ./internal/repository -count=1`
+- `git diff --check -- internal/repository/leave_approval_repository.go internal/service/attendance_record_service_test.go tasks/todo.md`
+- 验证结果：相关 `service` 回归测试和 `go test ./internal/service ./internal/repository -count=1` 通过；`git diff --check` 没有新的空白格式错误，只有仓库既有的 `LF/CRLF` warning。
+
+## 当前任务
+- [x] 删除 `internal/agent` 中已经确认零引用或仅测试依赖的死代码，保持运行行为不变。
+- [x] 收缩或删除与死代码绑定的测试断言，确保测试仍只覆盖可达逻辑。
+- [x] 运行 `internal/agent` 定向验证并补充本轮复盘。
+
+## 当前任务复盘
+- 本轮实际删除的死代码包括：`internal/agent/agent.go` 中未被任何路径调用的 `handleClarifyIntent(...)`；`internal/agent/clarify.go` 中只服务该死入口的 `buildClarifyPlan(...)`、`datePattern`、`missingManualSignFields(...)`、`hasDateReference(...)`、`hasSectionReference(...)`；以及零引用或仅测试引用的 `sessionManager.getMessages(...)`、`toolNamesFromDefs(...)`、`resolveSection(...)`、`cancelWorkflow(...)`、`userActs(...)`、`businessDomains(...)`、`writeOperations(...)`。
+- 同步收缩了绑定这些死代码的测试：移除了 `clarify_test.go` 中针对 `buildClarifyPlan(...)` 的 3 条断言、`entity_resolver_test.go` 中 `resolveSection(...)` 的断言、`workflow_engine_test.go` 中 `cancelWorkflow(...)` 的断言，以及 `protocol_contract_test.go` 中只验证 `userActs(...) / businessDomains(...) / writeOperations(...)` 的断言；其余仍覆盖可达逻辑的测试保留。
+- 本轮验证命令：
+- `go test ./internal/agent -run "Test(BuildTaskClarifyReplyForSubscriptionTaskMentionsAllowedOptions|BuildTaskClarifyReplyForManualSignTaskListsMissingSlots|BuildUnknownFollowUpReplyAvoidsOutOfDomainReply|ResolveDateParsesExplicitDate|WorkflowEngine|ProtocolModesAllowlist|NormalizeProtocolModeDefaultsInvalidValueToLegacy)" -count=1`
+- `go test ./internal/agent ./internal/app -count=1`
+- `git diff --check -- internal/agent tasks/todo.md`
+- 验证结果：`go test ./internal/agent ./internal/app -count=1` 通过；`git diff --check` 没有新的空白格式错误，只有仓库既有的 `LF/CRLF` warning。
+
+## 当前任务
+- [x] 盘点 `internal/agent` 目录内的文件、类型和函数，区分主链路、兼容链路、测试辅助和疑似残留代码。
+- [x] 通过仓库级引用扫描与接线关系核对，确认哪些代码当前已无生产引用、哪些仍被配置/脚本/测试依赖。
+- [x] 输出“可直接删除 / 不能直接删除 / 需先满足前置条件才能删”的边界，并补充本轮复盘。
+
+## 当前任务复盘
+- 本轮以“仓库级 grep 引用 + `internal/app/agent_wiring.go` 运行时接线 + `scripts/agent_eval` 脚本依赖”三层做静态排查，结论以当前工作区代码为准，不假设未来会切成 `protocol_live-only`。
+- 当前可以直接删除的小块死代码主要有 3 类：`internal/agent/agent.go` 里未被任何路径调用的 `handleClarifyIntent(...)`；`internal/agent/clarify.go` 中只服务该死入口的 `buildClarifyPlan(...)` 及其 `datePattern / missingManualSignFields / hasDateReference / hasSectionReference`；以及几个零引用或仅测试引用的 helper：`sessionManager.getMessages(...)`、`toolNamesFromDefs(...)`、`resolveSection(...)`、`cancelWorkflow(...)`、`userActs(...)`、`businessDomains(...)`、`writeOperations(...)`。
+- `internal/agent/eval.go` 不能按“直接删除”处理：它虽然不参与线上接线，但仍被 `scripts/agent_eval/main.go` 使用；如果确定不要离线评测能力，可以把 `internal/agent/eval.go`、`internal/agent/testdata/eval_cases.json` 和 `scripts/agent_eval` 一起删掉。
+- 兼容链路仍然可达，不能直接整删：`internal/agent/agent.go` 当前仍会调用 `buildTaskFromRequest(...)`、`planConversation(...)`、legacy planner/runtime 等旧路径；只要 `legacy / protocol_shadow / route_mode` 还在，`planner_service.go`、`conversation_interpreter.go`、`task_router.go`、`slot_filler.go`、`semantic_router.go`、`branch_executors.go`、`tool_pool.go`、`task_runtime.go` 等文件都仍是可达代码。
+
+## 当前任务
+- [x] 将 `docs/superpowers/specs/2026-04-07-agent-protocol-first-design.md` 改写为中文版，保持设计含义不变。
+- [x] 将 `docs/superpowers/plans/2026-04-07-agent-protocol-first-plan.md` 改写为中文版，保持实施步骤和验证要求不变。
+- [x] 复核文档格式与内容一致性，并补充本轮复盘。
+
+## 当前任务复盘
+- 已将 `docs/superpowers/specs/2026-04-07-agent-protocol-first-design.md` 的标题、日期标签和阶段性章节改为中文，设计内容和约束保持不变。
+- 已将 `docs/superpowers/plans/2026-04-07-agent-protocol-first-plan.md` 整篇改写为中文，保留原有 9 个任务、文件清单、示例代码块、验证命令和提交建议，不改变执行顺序。
+- 已重新回读两份文档的开头内容，确认文件存在、内容可正常读取且没有被误删；`git diff --check -- docs/... tasks/todo.md` 没有新的格式错误，只有仓库现有的 `LF/CRLF` warning。
+- 仓库 `.gitignore` 仍忽略整个 `docs/` 目录，所以这两份中文文档当前是本地修改，不会出现在 `git status` 中；如果后续要纳入版本控制，仍需要 `git add -f` 或调整忽略规则。
+
+## 当前任务
+- [x] 盘点 `internal/agent` 非测试代码中当前缺少函数注释的位置，并确认本轮补注释范围。
+- [x] 为 `internal/agent` 中实际使用且缺失注释的函数补齐简洁的 Go 风格注释，保持行为零变化。
+- [x] 运行格式化与定向验证，并补充本轮复盘。
+
+## 当前任务复盘
+- 已补齐 `internal/agent` 及其子目录非测试代码里原先缺失的函数注释，覆盖主入口 `agent.go`、planner / protocol / workflow / session / task runtime helper，以及 `internal/agent/tools` 下的工具辅助函数；本轮改动只新增 doc comment，不改业务逻辑。
+- 为避免只补一部分后又遗漏，本轮先用 AST 扫描找出所有“函数声明但没有紧邻 doc comment”的位置，再批量补注释并重新扫描；最终复核结果为 `TOTAL=0`，说明 `internal/agent` 非测试代码当前已不存在缺失函数注释的声明。
+- 本轮验证命令：
+- `gofmt -w` 遍历 `internal/agent/**/*.go`
+- `go test ./internal/agent/... -count=1`
+- `git diff --check -- tasks/todo.md internal/agent`
+- AST 复扫 `internal/agent` 非测试代码缺注释函数，结果 `TOTAL=0`
+- 验证结果：`go test ./internal/agent/... -count=1` 通过；`git diff --check` 没有空白格式错误，仅有仓库既有的 `LF/CRLF` warning。
+
+## 当前任务
 - [x] 清理 `internal/agent` 中已确认无生产引用的死代码符号，保持行为零变化。
 - [x] 运行 `internal/agent` 与受影响接线包测试，确认删除未破坏编译和现有兼容路径。
 - [x] 补充本轮复盘，记录“现在可删”和“仍需 protocol_live-only 才能删”的边界。
@@ -1343,3 +1410,39 @@ g -n "schedule_server_deploy|docker build|docker run|GitHub Actions|GHCR|./deplo
 - `go test ./internal/service -run TestGetAttendanceDetailWithLateUsersAppliesManualOverrideToResultAndNotifyList -v`
 - `go test ./internal/service -run "Test(SignForUsersSupportsRealtimeDateSectionAndDetailShowsOverride|FinalizeAttendanceRecordKeepsManualOverrideOverLatePunch|SignForUsersWithRecordIDKeepsSnapshotAndDetailConsistent|GetAttendanceDetailReturnsCurrentViewBeforeFinalize|GetAttendanceDetailReturnsFinalSnapshotAfterFinalize)" -v`
 - `go test ./internal/service -v`
+
+## 当前任务
+- [x] 通过 `ssh -p 22 root@106.52.42.194` 登录远程服务器，确认当前在线服务的进程、容器或 systemd 入口。
+- [x] 根据运行中的服务配置、工作目录和监听信息，定位当前项目实际部署路径与启动方式。
+- [x] 将远程排查结果回填到本轮复盘，注明使用的核验命令和结论边界。
+
+## 当前任务复盘
+- 远程主机 `106.52.42.194` 上当前承载本项目的不是 `systemd` 服务，而是一个名为 `schedule-server` 的 Docker 容器；`systemctl list-units` 没有发现与 `schedule` 相关的 service。
+- 该容器镜像为 `ghcr.io/87hujih/schedule-server:8f160b78c8296a29b4da12eefa67a65ff46554aa`，已运行约 4 天且健康；`docker inspect` 显示其由 Docker Compose 项目 `schedule_server` 管理。
+- 当前生效的宿主机部署根目录是 `/opt/schedule_server`：Compose working dir、Compose 文件路径和 env 文件路径分别为 `/opt/schedule_server`、`/opt/schedule_server/docker-compose.prod.yml`、`/opt/schedule_server/.env.prod`。
+- 容器内实际运行目录是 `/app`；宿主机上看到的 `www` 用户进程 `./schedule_server`（PID `319204`）并不是独立裸进程，而是 `docker inspect -f '{{.State.Pid}}' schedule-server` 返回的容器主进程，`/proc/319204/cgroup` 也落在对应的 Docker scope 下。
+- 当前对外端口是宿主机 `0.0.0.0:26665` 映射到容器 `26665/tcp`；配置、日志和上传目录通过 bind mount 从宿主机映射到容器：
+- `/opt/schedule_server/configs -> /app/configs`
+- `/opt/schedule_server/logs -> /app/logs`
+- `/opt/schedule_server/uploads -> /app/uploads`
+- `/opt/schedule_server` 目录里确实有一份源码快照（含 `go.mod`、`cmd/`、`internal/` 等），但不是 Git 工作副本，目录下没有 `.git`；当前在线服务依赖的是镜像内二进制加上述挂载目录，而不是直接在宿主机源码目录里 `go run` 或裸执行。
+- 本轮核验命令包括：
+- `ssh -p 22 root@106.52.42.194 "hostname; docker ps; systemctl list-units ...; ps -ef ..."`
+- `docker inspect schedule-server`
+- `docker port schedule-server`
+- `readlink -f /proc/319204/cwd && readlink -f /proc/319204/exe && cat /proc/319204/cgroup`
+- `sed -n '1,220p' /opt/schedule_server/docker-compose.prod.yml`
+
+## 当前任务
+- [x] 通过远程部署目录 `/opt/schedule_server` 重启当前在线 `schedule-server` 服务。
+- [x] 核验容器重启后的状态、启动时间与健康检查结果。
+- [x] 将重启动作与核验证据补充到本轮复盘。
+
+## 当前任务复盘
+- 已通过远端部署目录 `/opt/schedule_server` 执行 `./deploy.sh restart`，沿用项目现有的 `docker-compose.prod.yml + .env.prod` 约定重启在线容器，而不是直接手工 `docker restart`。
+- 重启命令返回了 `Container schedule-server Restarting` 和 `Container schedule-server Started`，说明 Compose 已实际执行容器重启。
+- 随后重新核验在线状态：`docker ps --filter name=^/schedule-server$ --format "name={{.Names}} status={{.Status}}"` 返回 `name=schedule-server status=Up 54 seconds (healthy)`；`docker inspect schedule-server --format "{{.State.StartedAt}} {{.State.Health.Status}}"` 返回新的启动时间 `2026-04-12T07:07:55.255338518Z healthy`。
+- HTTP 健康检查 `curl -fsS http://localhost:26665/health` 返回 `{"status":"ok"}`，说明重启后服务已经恢复对外响应。
+- 本轮实际执行与核验命令：
+- `ssh -p 22 root@106.52.42.194 "cd /opt/schedule_server && chmod +x deploy.sh && ./deploy.sh restart"`
+- `ssh -p 22 root@106.52.42.194 'docker ps --filter name=^/schedule-server$ --format "name={{.Names}} status={{.Status}}"; docker inspect schedule-server --format "{{.State.StartedAt}} {{.State.Health.Status}}"; curl -fsS http://localhost:26665/health'`

@@ -10,10 +10,12 @@ type taskCatalog struct {
 	runtime *taskRuntime
 }
 
+// newTaskCatalog creates the task catalog backed by the runtime registry.
 func newTaskCatalog(runtime *taskRuntime) *taskCatalog {
 	return &taskCatalog{runtime: runtime}
 }
 
+// Start creates a task instance for the requested task type.
 func (c *taskCatalog) Start(taskType, message string, uctx *tools.UserContext) (*TaskInstance, TaskApplyResult, error) {
 	handler, ok := c.resolve(taskType)
 	if !ok {
@@ -27,6 +29,7 @@ func (c *taskCatalog) Start(taskType, message string, uctx *tools.UserContext) (
 	return task, apply, nil
 }
 
+// Continue applies the next user turn to an existing task instance.
 func (c *taskCatalog) Continue(task *TaskInstance, message string, uctx *tools.UserContext) (*TaskInstance, TaskApplyResult, error) {
 	if task == nil {
 		return nil, TaskApplyResult{}, fmt.Errorf("empty task")
@@ -49,6 +52,7 @@ func (c *taskCatalog) Continue(task *TaskInstance, message string, uctx *tools.U
 	return next, apply, nil
 }
 
+// BuildMetaReply builds the extra prompt shown for the current task state.
 func (c *taskCatalog) BuildMetaReply(task *TaskInstance) string {
 	if task == nil {
 		return ""
@@ -61,6 +65,7 @@ func (c *taskCatalog) BuildMetaReply(task *TaskInstance) string {
 	return handler.BuildMetaReply(task)
 }
 
+// resolve resolves the current value.
 func (c *taskCatalog) resolve(taskType string) (routeTaskHandler, bool) {
 	if c == nil || c.runtime == nil {
 		return nil, false

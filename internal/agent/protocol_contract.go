@@ -56,31 +56,7 @@ type OperationRequest struct {
 	TrustedParams map[string]any
 }
 
-func userActs() []UserAct {
-	return []UserAct{
-		ActCapabilityQuestion,
-		ActRuleQuestion,
-		ActReadQuery,
-		ActWriteRequest,
-		ActWorkflowContinue,
-		ActWorkflowCancel,
-		ActHelp,
-		ActUnknown,
-	}
-}
-
-func businessDomains() []BusinessDomain {
-	return []BusinessDomain{
-		DomainAttendance,
-		DomainSubscription,
-		DomainManualSign,
-		DomainSchedule,
-		DomainLeave,
-		DomainAnalytics,
-		DomainUnknown,
-	}
-}
-
+// protocolModes handles protocol modes.
 func protocolModes() []ProtocolMode {
 	return []ProtocolMode{
 		ProtocolModeLegacy,
@@ -89,6 +65,7 @@ func protocolModes() []ProtocolMode {
 	}
 }
 
+// normalizeProtocolMode normalizes protocol mode.
 func normalizeProtocolMode(value string) ProtocolMode {
 	mode := ProtocolMode(value)
 	for _, allowed := range protocolModes() {

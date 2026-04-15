@@ -32,6 +32,7 @@ type taskExecutionResult struct {
 
 type rejectExecutor struct{}
 
+// Execute runs the current logic and returns the normalized result.
 func (rejectExecutor) Execute() routeExecutionResult {
 	return routeExecutionResult{
 		Reply:        outOfDomainReply,
@@ -42,6 +43,7 @@ func (rejectExecutor) Execute() routeExecutionResult {
 
 type socialExecutor struct{}
 
+// Execute runs the current logic and returns the normalized result.
 func (socialExecutor) Execute() routeExecutionResult {
 	return routeExecutionResult{
 		Reply:        composeRouteReply(RouteDecision{Kind: RouteSocialRefuse}, nil),
@@ -52,6 +54,7 @@ func (socialExecutor) Execute() routeExecutionResult {
 
 type clarifyExecutor struct{}
 
+// Execute runs the current logic and returns the normalized result.
 func (clarifyExecutor) Execute(decision RouteDecision, task *TaskRouteState) routeExecutionResult {
 	return routeExecutionResult{
 		Reply:        composeRouteReply(decision, task),
@@ -64,6 +67,7 @@ type ragExecutor struct {
 	agent *Agent
 }
 
+// Execute runs the current logic and returns the normalized result.
 func (e ragExecutor) Execute(ctx context.Context, uctx *tools.UserContext, history []tools.Message, question string) (routeExecutionResult, error) {
 	retrievalResult, err := e.agent.retrieveKnowledge(ctx, uctx.TenantID, question)
 	if err != nil {
@@ -110,6 +114,7 @@ type toolQueryExecutor struct {
 	agent *Agent
 }
 
+// Execute runs the current logic and returns the normalized result.
 func (e toolQueryExecutor) Execute(ctx context.Context, uctx *tools.UserContext, history []tools.Message, question string) (routeExecutionResult, []string, error) {
 	if e.agent == nil || e.agent.llmClient == nil || e.agent.registry == nil {
 		return routeExecutionResult{}, nil, fmt.Errorf("tool query executor unavailable")
@@ -177,6 +182,7 @@ type taskStartExecutor struct {
 	agent *Agent
 }
 
+// Execute runs the current logic and returns the normalized result.
 func (e taskStartExecutor) Execute(ctx context.Context, decision RouteDecision, question string, uctx *tools.UserContext) (taskExecutionResult, error) {
 	if e.agent == nil || e.agent.taskCatalog == nil {
 		return taskExecutionResult{}, fmt.Errorf("task start executor unavailable")
@@ -202,6 +208,7 @@ type taskContinueExecutor struct {
 	agent *Agent
 }
 
+// Execute runs the current logic and returns the normalized result.
 func (e taskContinueExecutor) Execute(ctx context.Context, task *TaskInstance, question string, uctx *tools.UserContext) (taskExecutionResult, error) {
 	if e.agent == nil || e.agent.taskCatalog == nil {
 		return taskExecutionResult{}, fmt.Errorf("task continue executor unavailable")
@@ -224,6 +231,7 @@ type taskMetaExecutor struct {
 	agent *Agent
 }
 
+// Execute runs the current logic and returns the normalized result.
 func (e taskMetaExecutor) Execute(ctx context.Context, task *TaskInstance) (taskExecutionResult, error) {
 	if e.agent == nil || e.agent.runtime == nil {
 		return taskExecutionResult{}, fmt.Errorf("task meta executor unavailable")
@@ -263,6 +271,7 @@ func (e taskMetaExecutor) Execute(ctx context.Context, task *TaskInstance) (task
 
 type taskCancelExecutor struct{}
 
+// Execute runs the current logic and returns the normalized result.
 func (taskCancelExecutor) Execute(_ *TaskInstance) taskExecutionResult {
 	return taskExecutionResult{
 		Reply:        "已取消当前任务。如需继续，请重新告诉我。",
@@ -272,6 +281,7 @@ func (taskCancelExecutor) Execute(_ *TaskInstance) taskExecutionResult {
 	}
 }
 
+// executeTaskLifecycle runs the shared task lifecycle used by route task executors.
 func executeTaskLifecycle(ctx context.Context, agent *Agent, task *TaskInstance, uctx *tools.UserContext, executorName string) (taskExecutionResult, error) {
 	if agent == nil || agent.runtime == nil {
 		return taskExecutionResult{}, fmt.Errorf("task runtime unavailable")

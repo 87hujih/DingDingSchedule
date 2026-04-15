@@ -71,6 +71,7 @@ func buildTaskFromRequest(question string, uctx *tools.UserContext) *ActiveTask 
 	return nil
 }
 
+// applySlotFillToTask applies slot fill to task.
 func applySlotFillToTask(task *ActiveTask, fill slotFillResult) *ActiveTask {
 	if task == nil {
 		return nil

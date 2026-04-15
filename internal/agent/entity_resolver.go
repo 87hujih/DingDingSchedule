@@ -29,6 +29,7 @@ type entityResolution struct {
 	Candidates []string
 }
 
+// resolveDepartment resolves department.
 func resolveDepartment(ctx entityContext) entityResolution {
 	raw := strings.TrimSpace(ctx.Raw)
 	if !looksLikeEntityInput(raw) {
@@ -58,6 +59,7 @@ func resolveDepartment(ctx entityContext) entityResolution {
 	}
 }
 
+// resolveUser resolves user.
 func resolveUser(ctx entityContext) entityResolution {
 	raw := strings.TrimSpace(ctx.Raw)
 	if !looksLikeEntityInput(raw) {
@@ -95,6 +97,7 @@ func resolveUser(ctx entityContext) entityResolution {
 	}
 }
 
+// resolveDate resolves date.
 func resolveDate(raw string) (string, bool) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -114,40 +117,7 @@ func resolveDate(raw string) (string, bool) {
 	return value, true
 }
 
-func resolveSection(raw string) (int, bool) {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return 0, false
-	}
-	if strings.HasPrefix(value, "第") && strings.HasSuffix(value, "节") {
-		switch strings.TrimSuffix(strings.TrimPrefix(value, "第"), "节") {
-		case "一":
-			return 1, true
-		case "二":
-			return 2, true
-		case "三":
-			return 3, true
-		case "四":
-			return 4, true
-		case "五":
-			return 5, true
-		}
-	}
-	switch value {
-	case "1":
-		return 1, true
-	case "2":
-		return 2, true
-	case "3":
-		return 3, true
-	case "4":
-		return 4, true
-	case "5":
-		return 5, true
-	}
-	return 0, false
-}
-
+// looksLikeEntityInput reports whether it looks like entity input.
 func looksLikeEntityInput(raw string) bool {
 	if strings.TrimSpace(raw) == "" {
 		return false
@@ -161,6 +131,7 @@ func looksLikeEntityInput(raw string) bool {
 	return true
 }
 
+// exactDepartmentMatch handles exact department match.
 func exactDepartmentMatch(raw string, departments []agenttools.DeptItem) (*agenttools.DeptItem, bool) {
 	for i := range departments {
 		if strings.TrimSpace(departments[i].Name) == raw {
@@ -171,6 +142,7 @@ func exactDepartmentMatch(raw string, departments []agenttools.DeptItem) (*agent
 	return nil, false
 }
 
+// normalizedDepartmentMatch normalizes d department match.
 func normalizedDepartmentMatch(raw string, departments []agenttools.DeptItem) (*agenttools.DeptItem, bool) {
 	normalized := normalizeEntityName(raw)
 	var matched *agenttools.DeptItem
@@ -190,6 +162,7 @@ func normalizedDepartmentMatch(raw string, departments []agenttools.DeptItem) (*
 	return matched, true
 }
 
+// departmentCandidates handles department candidates.
 func departmentCandidates(raw string, departments []agenttools.DeptItem) []agenttools.DeptItem {
 	normalized := normalizeEntityName(raw)
 	matches := make([]agenttools.DeptItem, 0)
@@ -201,6 +174,7 @@ func departmentCandidates(raw string, departments []agenttools.DeptItem) []agent
 	return matches
 }
 
+// normalizeEntityName normalizes entity name.
 func normalizeEntityName(value string) string {
 	replacer := strings.NewReplacer(" ", "", "\t", "", "\n", "", "-", "", "_", "")
 	return replacer.Replace(strings.TrimSpace(value))

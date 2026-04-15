@@ -39,6 +39,7 @@ type WorkflowResult struct {
 	Workflow *WorkflowSnapshot
 }
 
+// cloneWorkflowSnapshot clones workflow snapshot.
 func cloneWorkflowSnapshot(workflow *WorkflowSnapshot) *WorkflowSnapshot {
 	if workflow == nil {
 		return nil

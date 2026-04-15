@@ -129,15 +129,3 @@ func TestResolveDateParsesExplicitDate(t *testing.T) {
 		t.Fatalf("resolveDate() = %q, want 2026-04-07", got)
 	}
 }
-
-func TestResolveSectionParsesChineseSection(t *testing.T) {
-	t.Parallel()
-
-	got, ok := resolveSection("第二节")
-	if !ok {
-		t.Fatalf("resolveSection() ok = false, want true")
-	}
-	if got != 2 {
-		t.Fatalf("resolveSection() = %d, want 2", got)
-	}
-}

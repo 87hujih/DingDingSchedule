@@ -16,6 +16,7 @@ type TaskInstance struct {
 	ExpiresAt      time.Time
 }
 
+// cloneTaskInstance clones task instance.
 func cloneTaskInstance(task *TaskInstance) *TaskInstance {
 	if task == nil {
 		return nil
@@ -40,6 +41,7 @@ func cloneTaskInstance(task *TaskInstance) *TaskInstance {
 	return &cloned
 }
 
+// taskInstanceFromActiveTask handles task instance from active task.
 func taskInstanceFromActiveTask(task *ActiveTask) *TaskInstance {
 	if task == nil {
 		return nil
@@ -54,6 +56,7 @@ func taskInstanceFromActiveTask(task *ActiveTask) *TaskInstance {
 	}
 }
 
+// activeTaskFromTaskInstance returns the active task from task instance.
 func activeTaskFromTaskInstance(task *TaskInstance) *ActiveTask {
 	if task == nil {
 		return nil
@@ -72,6 +75,7 @@ func activeTaskFromTaskInstance(task *TaskInstance) *ActiveTask {
 	return legacy
 }
 
+// cloneTaskSlots clones task slots.
 func cloneTaskSlots(slots map[string]string) map[string]string {
 	if len(slots) == 0 {
 		return nil
@@ -84,6 +88,7 @@ func cloneTaskSlots(slots map[string]string) map[string]string {
 	return cloned
 }
 
+// taskApplySlot handles task apply slot.
 func taskApplySlot(task *TaskInstance, matched *[]string, key, value string) {
 	if task == nil || key == "" {
 		return

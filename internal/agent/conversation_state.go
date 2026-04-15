@@ -21,6 +21,7 @@ type ActiveTask struct {
 	LastPrompt    string
 }
 
+// IsExpired reports whether the task has expired at the given time.
 func (t *ActiveTask) IsExpired(now time.Time) bool {
 	if t == nil {
 		return false
@@ -28,6 +29,7 @@ func (t *ActiveTask) IsExpired(now time.Time) bool {
 	return !t.ExpiresAt.IsZero() && !t.ExpiresAt.After(now)
 }
 
+// MissingSlots returns the slots that are still missing on the task.
 func (t *ActiveTask) MissingSlots() []string {
 	if t == nil || len(t.RequiredSlots) == 0 {
 		return nil
@@ -43,6 +45,7 @@ func (t *ActiveTask) MissingSlots() []string {
 	return missing
 }
 
+// cloneActiveTask clones active task.
 func cloneActiveTask(task *ActiveTask) *ActiveTask {
 	if task == nil {
 		return nil

@@ -8,6 +8,7 @@ type slotFillResult struct {
 	Ready        bool
 }
 
+// fillTaskSlots handles fill task slots.
 func fillTaskSlots(task *ActiveTask, reply string) slotFillResult {
 	filled := make(map[string]string)
 	if task != nil && task.FilledSlots != nil {
@@ -35,6 +36,7 @@ func fillTaskSlots(task *ActiveTask, reply string) slotFillResult {
 	}
 }
 
+// fillSubscriptionSlots handles fill subscription slots.
 func fillSubscriptionSlots(filled map[string]string, matched *[]string, normalized, original string) {
 	switch {
 	case containsAny(normalized, []string{"全部人员", "全部"}):
@@ -55,6 +57,7 @@ func fillSubscriptionSlots(filled map[string]string, matched *[]string, normaliz
 	}
 }
 
+// fillManualSignSlots handles fill manual sign slots.
 func fillManualSignSlots(filled map[string]string, matched *[]string, normalized, original string) {
 	switch {
 	case containsAny(normalized, []string{"今天"}):
@@ -94,6 +97,7 @@ func fillManualSignSlots(filled map[string]string, matched *[]string, normalized
 	}
 }
 
+// recordMatchedSlot records matched slot.
 func recordMatchedSlot(matched *[]string, name string) {
 	if matched == nil || name == "" {
 		return
@@ -106,6 +110,7 @@ func recordMatchedSlot(matched *[]string, name string) {
 	*matched = append(*matched, name)
 }
 
+// missingSlots returns missing slots.
 func missingSlots(required []string, filled map[string]string) []string {
 	missing := make([]string, 0, len(required))
 	for _, slot := range required {
@@ -117,6 +122,7 @@ func missingSlots(required []string, filled map[string]string) []string {
 	return missing
 }
 
+// isDepartmentListQuestion reports whether it is department list question.
 func isDepartmentListQuestion(question string) bool {
 	return containsAny(question, []string{
 		"都有哪些部门",

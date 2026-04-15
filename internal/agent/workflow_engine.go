@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// startWorkflow starts a workflow snapshot from a protocol draft.
 func startWorkflow(draft ProtocolDraft) (WorkflowSnapshot, bool) {
 	switch draft.Operation {
 	case "subscription.start":
@@ -26,6 +27,7 @@ func startWorkflow(draft ProtocolDraft) (WorkflowSnapshot, bool) {
 	}
 }
 
+// continueWorkflow continues a workflow snapshot with trusted entities.
 func continueWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft, trusted trustedEntities) WorkflowResult {
 	if isExplicitNewRequest(draft.Act) {
 		return WorkflowResult{Decision: WorkflowSuspendForNewRequest, Workflow: &workflow}
@@ -42,10 +44,7 @@ func continueWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft, trusted tr
 	}
 }
 
-func cancelWorkflow(WorkflowSnapshot) WorkflowResult {
-	return WorkflowResult{Decision: WorkflowCanceled, Workflow: nil}
-}
-
+// continueSubscriptionWorkflow continues subscription workflow.
 func continueSubscriptionWorkflow(workflow WorkflowSnapshot, trusted trustedEntities) WorkflowResult {
 	switch workflow.State {
 	case WorkflowCollectScope:
@@ -76,6 +75,7 @@ func continueSubscriptionWorkflow(workflow WorkflowSnapshot, trusted trustedEnti
 	}
 }
 
+// continueManualSignWorkflow continues manual sign workflow.
 func continueManualSignWorkflow(workflow WorkflowSnapshot, trusted trustedEntities) WorkflowResult {
 	if trusted.UserID != 0 {
 		workflow.Trusted.UserID = trusted.UserID
@@ -100,6 +100,7 @@ func continueManualSignWorkflow(workflow WorkflowSnapshot, trusted trustedEntiti
 	return WorkflowResult{Decision: WorkflowContinueDecision, Workflow: &workflow}
 }
 
+// workflowMissingSlots handles workflow missing slots.
 func workflowMissingSlots(trusted trustedEntities) []string {
 	missing := make([]string, 0, 3)
 	if trusted.UserID == 0 {
@@ -114,6 +115,7 @@ func workflowMissingSlots(trusted trustedEntities) []string {
 	return missing
 }
 
+// nextManualSignState handles next manual sign state.
 func nextManualSignState(slot string) WorkflowState {
 	switch slot {
 	case "user_id":
@@ -127,6 +129,7 @@ func nextManualSignState(slot string) WorkflowState {
 	}
 }
 
+// isExplicitNewRequest reports whether it is explicit new request.
 func isExplicitNewRequest(act UserAct) bool {
 	switch act {
 	case ActCapabilityQuestion, ActRuleQuestion, ActReadQuery, ActHelp:

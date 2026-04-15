@@ -16,6 +16,7 @@ type capability struct {
 	FollowUpHint      string
 }
 
+// listCapabilities returns capabilities.
 func listCapabilities() []capability {
 	return []capability{
 		{
@@ -64,6 +65,7 @@ func listCapabilities() []capability {
 	}
 }
 
+// filterCapabilities filters capabilities.
 func filterCapabilities(caps []capability, role int, conversationType string) []capability {
 	filtered := make([]capability, 0, len(caps))
 	for _, cap := range caps {
@@ -78,6 +80,7 @@ func filterCapabilities(caps []capability, role int, conversationType string) []
 	return filtered
 }
 
+// matchesConversationScope reports whether conversation scope matches.
 func matchesConversationScope(scope string, conversationType string) bool {
 	switch scope {
 	case "both", "":
@@ -91,6 +94,7 @@ func matchesConversationScope(scope string, conversationType string) bool {
 	}
 }
 
+// buildHelpReply builds help reply.
 func buildHelpReply(uctx *tools.UserContext) string {
 	role := 0
 	convType := "1"

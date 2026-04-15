@@ -23,6 +23,7 @@ type conversationDecision struct {
 	Reason string
 }
 
+// interpretConversation handles interpret conversation.
 func interpretConversation(question string, task *ActiveTask) conversationDecision {
 	normalized := normalizeQuery(question)
 	if normalized == "" {
@@ -47,6 +48,7 @@ func interpretConversation(question string, task *ActiveTask) conversationDecisi
 	return conversationDecision{Event: eventUnknown, Reason: "ambiguous_follow_up"}
 }
 
+// hasGreetingIntent reports whether it has greeting intent.
 func hasGreetingIntent(question string) bool {
 	return containsAny(question, []string{
 		"你好",
@@ -63,6 +65,7 @@ func hasGreetingIntent(question string) bool {
 	})
 }
 
+// isCancelMessage reports whether it is cancel message.
 func isCancelMessage(question string) bool {
 	return containsAny(question, []string{
 		"取消",
@@ -73,6 +76,7 @@ func isCancelMessage(question string) bool {
 	})
 }
 
+// isClearlyNewRequest reports whether it is clearly new request.
 func isClearlyNewRequest(question string) bool {
 	return hasHelpIntent(question) ||
 		hasClarifyIntent(question) ||
@@ -81,6 +85,7 @@ func isClearlyNewRequest(question string) bool {
 		hasRuleSignal(question)
 }
 
+// looksLikeTaskFollowUp reports whether it looks like task follow up.
 func looksLikeTaskFollowUp(question string, task *ActiveTask) bool {
 	if task == nil {
 		return false
@@ -102,6 +107,7 @@ func looksLikeTaskFollowUp(question string, task *ActiveTask) bool {
 	}
 }
 
+// looksLikeSubscriptionFollowUp reports whether it looks like subscription follow up.
 func looksLikeSubscriptionFollowUp(question string, task *ActiveTask) bool {
 	missing := task.MissingSlots()
 	if containsAny(question, []string{"全部", "全部人员", "指定部门", "部分部门"}) {
@@ -116,11 +122,13 @@ func looksLikeSubscriptionFollowUp(question string, task *ActiveTask) bool {
 	return false
 }
 
+// looksLikeManualSignFollowUp reports whether it looks like manual sign follow up.
 func looksLikeManualSignFollowUp(question string) bool {
 	return containsAny(question, []string{"今天", "昨天", "明天", "第", "节"}) ||
 		!containsAny(question, []string{"补签", "代签", "考勤"})
 }
 
+// containsAnySlot reports whether it contains any slot.
 func containsAnySlot(slots []string, want string) bool {
 	for _, slot := range slots {
 		if slot == want {

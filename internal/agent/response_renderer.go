@@ -18,6 +18,7 @@ type ResponseModel struct {
 	InternalError string
 }
 
+// renderProtocolResponse renders a structured protocol response into plain text.
 func renderProtocolResponse(model ResponseModel) string {
 	switch model.Kind {
 	case ResponseAnswer:
