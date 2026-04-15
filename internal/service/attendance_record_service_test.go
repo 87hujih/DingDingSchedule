@@ -143,6 +143,67 @@ func TestGetAttendanceDetailReturnsCurrentViewBeforeFinalize(t *testing.T) {
 	}
 }
 
+func TestGetAttendanceDetailTreatsPendingLeaveAsLeaveButRefusedLeaveAsNotLeave(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 10, 0, 0, time.Local),
+	})
+
+	leaves := []model.LeaveApproval{
+		{
+			TenantID:          fixtureTenantID,
+			ProcessInstanceID: "pi-pending-leave",
+			DingUserID:        fixture.users.onTime.DingUserID,
+			UserID:            fixture.users.onTime.ID,
+			UserName:          fixture.users.onTime.Name,
+			StartAt:           time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local),
+			EndAt:             time.Date(2026, 3, 19, 9, 40, 0, 0, time.Local),
+			LeaveType:         "事假",
+			Reason:            "审批中请假",
+			ApproveStatus:     "RUNNING",
+		},
+		{
+			TenantID:          fixtureTenantID,
+			ProcessInstanceID: "pi-refused-leave",
+			DingUserID:        fixture.users.late.DingUserID,
+			UserID:            fixture.users.late.ID,
+			UserName:          fixture.users.late.Name,
+			StartAt:           time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local),
+			EndAt:             time.Date(2026, 3, 19, 9, 40, 0, 0, time.Local),
+			LeaveType:         "病假",
+			Reason:            "已拒绝请假",
+			ApproveStatus:     "COMPLETED",
+			Result:            "refuse",
+		},
+	}
+	if err := fixture.db.Create(&leaves).Error; err != nil {
+		t.Fatalf("create leave approvals: %v", err)
+	}
+
+	resp, err := fixture.service.GetAttendanceDetail(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("get attendance detail: %v", err)
+	}
+
+	if resp.Statistics.Leave != 1 {
+		t.Fatalf("expected 1 leave user, got %d", resp.Statistics.Leave)
+	}
+	leaveNames := make([]string, 0, len(resp.Users.Leave))
+	for _, user := range resp.Users.Leave {
+		leaveNames = append(leaveNames, user.Name)
+	}
+	slices.Sort(leaveNames)
+	if !slices.Equal(leaveNames, []string{"OnTimeUser"}) {
+		t.Fatalf("unexpected leave users: got %v", leaveNames)
+	}
+
+	if resp.Statistics.NotArrived != 2 {
+		t.Fatalf("expected 2 not-arrived users, got %d", resp.Statistics.NotArrived)
+	}
+	if got := attendanceBasicNames(resp.Users.NotArrived); !slices.Equal(got, []string{"LateUser", "MissingUser"}) {
+		t.Fatalf("unexpected not-arrived users: got %v", got)
+	}
+}
+
 func TestGetAttendanceDetailReturnsFinalSnapshotAfterFinalize(t *testing.T) {
 	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
 		now: time.Date(2026, 3, 19, 8, 40, 0, 0, time.Local),
