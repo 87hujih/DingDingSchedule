@@ -22,9 +22,14 @@ docs/
 *.tmp
 *.swp
 .cache/
+.gocache/
+.codex-skills/
 .worktrees/
 tasks
 AGENTS.md
+findings.md
+progress.md
+task_plan.md
 
 # Local config (contains secrets)
 configs/local.yaml
@@ -35,9 +40,14 @@ configs/prod.yaml
 
 # Local deployment and security-sensitive files
 .env.example
+XSHELL_DEPLOY_COMPLETE_GUIDE.md
+one-click-deploy.sh
 setup-ssh-key.sh
-scripts/reset_admin_password.go
+scripts/reset_admin_password/
 reset_password.sql
+agent-rag-plan.md
+agent-rag-change-summary.md
+Go后端开发实习生_马华恩_18860331316.pdf
 
 # Uploads
 uploads/
