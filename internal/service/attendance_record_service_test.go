@@ -204,6 +204,71 @@ func TestGetAttendanceDetailTreatsPendingLeaveAsLeaveButRefusedLeaveAsNotLeave(t
 	}
 }
 
+func TestGetAttendanceDetailFinalSnapshotRemovesRefusedLeaveUsers(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 40, 0, 0, time.Local),
+		records: []dingtalk.CheckRecord{
+			{
+				DingUserID: fixtureDingUserIDOnTime,
+				CheckTime:  time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+			{
+				DingUserID: fixtureDingUserIDLate,
+				CheckTime:  time.Date(2026, 3, 19, 8, 5, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+		},
+	})
+
+	leave := &model.LeaveApproval{
+		TenantID:          fixtureTenantID,
+		ProcessInstanceID: "pi-finalized-then-refused",
+		DingUserID:        fixture.users.missing.DingUserID,
+		UserID:            fixture.users.missing.ID,
+		UserName:          fixture.users.missing.Name,
+		StartAt:           time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local),
+		EndAt:             time.Date(2026, 3, 19, 9, 40, 0, 0, time.Local),
+		LeaveType:         "事假",
+		Reason:            "先请假后拒绝",
+		ApproveStatus:     "RUNNING",
+	}
+	if err := fixture.db.Create(leave).Error; err != nil {
+		t.Fatalf("create leave approval: %v", err)
+	}
+
+	if _, err := fixture.service.FinalizeAttendanceRecord(context.Background(), fixture.request); err != nil {
+		t.Fatalf("finalize attendance record: %v", err)
+	}
+
+	if err := fixture.db.Model(&model.LeaveApproval{}).
+		Where("id = ?", leave.ID).
+		Updates(map[string]any{
+			"approve_status": "COMPLETED",
+			"result":         "refuse",
+		}).Error; err != nil {
+		t.Fatalf("update leave approval to refuse: %v", err)
+	}
+
+	resp, err := fixture.service.GetAttendanceDetail(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("get attendance detail: %v", err)
+	}
+
+	if resp.ViewMode != "final" {
+		t.Fatalf("expected final view mode, got %q", resp.ViewMode)
+	}
+	if resp.Statistics.Leave != 0 {
+		t.Fatalf("expected refused leave to be removed from leave list, got %d", resp.Statistics.Leave)
+	}
+	if len(resp.Users.Leave) != 0 {
+		t.Fatalf("expected no leave users, got %+v", resp.Users.Leave)
+	}
+	if got := attendanceBasicNames(resp.Users.NotArrived); !slices.Equal(got, []string{"MissingUser"}) {
+		t.Fatalf("expected refused leave user to move into not-arrived, got %v", got)
+	}
+}
+
 func TestGetAttendanceDetailReturnsFinalSnapshotAfterFinalize(t *testing.T) {
 	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
 		now: time.Date(2026, 3, 19, 8, 40, 0, 0, time.Local),

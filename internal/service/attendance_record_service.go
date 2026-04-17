@@ -815,14 +815,129 @@ func (s *AttendanceRecordService) GetAttendanceRecordFromDB(
 	slotEnd := periods[req.Section-1].End
 
 	resp := dto.NewAttendanceDetailResponseFromRecord(record, slotStart, slotEnd, userMap, userDeptNames)
+	slotStartAt, slotEndAt, calcErr := scheduleutil.CalculateSlotTime(date, req.Section, periods)
+	if calcErr == nil {
+		resp, err = s.reconcileSnapshotRefusedLeaves(ctx, date, req.Section, periods, slotStartAt, slotEndAt, userMap, userDeptNames, resp)
+		if err != nil {
+			return nil, err
+		}
+	}
 	resp, err = s.applyManualOverridesToDetail(ctx, date, req.Section, resp)
 	if err != nil {
 		return nil, err
 	}
-	slotStartAt, _, err := scheduleutil.CalculateSlotTime(date, req.Section, periods)
-	if err == nil {
+	if calcErr == nil {
 		resp.SetViewMetadata("final", true, s.calculateFinalizeAt(slotStartAt))
 	}
+	return resp, nil
+}
+
+func (s *AttendanceRecordService) reconcileSnapshotRefusedLeaves(
+	ctx context.Context,
+	date time.Time,
+	section int,
+	periods []config.Period,
+	slotStart, slotEnd time.Time,
+	userMap map[uint]*model.User,
+	userDeptNames map[uint]string,
+	resp *dto.AttendanceDetailResponse,
+) (*dto.AttendanceDetailResponse, error) {
+	if resp == nil || len(resp.Users.Leave) == 0 || s.leaveRepo == nil {
+		return resp, nil
+	}
+
+	leaveUserIDs := make([]uint, 0, len(resp.Users.Leave))
+	for _, user := range resp.Users.Leave {
+		leaveUserIDs = append(leaveUserIDs, user.ID)
+	}
+
+	currentLeaves, err := s.leaveRepo.ListApprovedByUserIDs(ctx, leaveUserIDs, slotStart, slotEnd)
+	if err != nil {
+		return nil, errs.WrapMsgErr("获取快照请假记录失败", err)
+	}
+
+	currentLeaveSet := make(map[uint]bool, len(currentLeaves))
+	for _, leave := range currentLeaves {
+		currentLeaveSet[leave.UserID] = true
+	}
+
+	stillLeave := make([]dto.AttendanceUserLeave, 0, len(resp.Users.Leave))
+	recheckUsers := make([]model.User, 0)
+	for _, user := range resp.Users.Leave {
+		if currentLeaveSet[user.ID] {
+			stillLeave = append(stillLeave, user)
+			continue
+		}
+		if modelUser, ok := userMap[user.ID]; ok && modelUser != nil {
+			recheckUsers = append(recheckUsers, *modelUser)
+		}
+	}
+
+	if len(recheckUsers) == 0 {
+		resp.Users.Leave = stillLeave
+		resp.Statistics.Leave = len(stillLeave)
+		return resp, nil
+	}
+
+	finalizeAt := minTime(s.calculateFinalizeAt(slotStart), slotEnd)
+	lateDeadline := slotStart.Add(time.Duration(s.scheduleCfg.LateGraceMinutes) * time.Minute)
+	onTime, late, err := s.getOnTimeUsers(ctx, recheckUsers, date, section, lateDeadline, finalizeAt)
+	if err != nil {
+		return nil, err
+	}
+	onTime = s.applyCarryForward(ctx, date, section, periods, recheckUsers, onTime)
+
+	fillCheckProfile := func(users []dto.AttendanceUserCheck) []dto.AttendanceUserCheck {
+		for i := range users {
+			if modelUser, ok := userMap[users[i].ID]; ok && modelUser != nil {
+				users[i].Name = modelUser.Name
+				users[i].Avatar = modelUser.Avatar
+			}
+			users[i].DeptName = userDeptNames[users[i].ID]
+		}
+		return users
+	}
+	onTime = fillCheckProfile(onTime)
+	late = fillCheckProfile(late)
+
+	recheckedLeave := make([]dto.AttendanceUserLeave, 0, len(stillLeave))
+	recheckedLeave = append(recheckedLeave, stillLeave...)
+	recheckedNotArrived := make([]dto.AttendanceUserBasic, 0, len(resp.Users.NotArrived)+len(recheckUsers))
+	recheckedNotArrived = append(recheckedNotArrived, resp.Users.NotArrived...)
+
+	processed := make(map[uint]bool, len(onTime)+len(late))
+	for _, user := range onTime {
+		processed[user.ID] = true
+	}
+	for _, user := range late {
+		processed[user.ID] = true
+	}
+
+	existingNotArrived := make(map[uint]bool, len(recheckedNotArrived))
+	for _, user := range recheckedNotArrived {
+		existingNotArrived[user.ID] = true
+	}
+	for _, user := range recheckUsers {
+		if processed[user.ID] || existingNotArrived[user.ID] {
+			continue
+		}
+		recheckedNotArrived = append(recheckedNotArrived, dto.AttendanceUserBasic{
+			ID:       user.ID,
+			Name:     user.Name,
+			Avatar:   user.Avatar,
+			DeptName: userDeptNames[user.ID],
+		})
+	}
+
+	resp.Users.OnTime = append(resp.Users.OnTime, onTime...)
+	resp.Users.Late = append(resp.Users.Late, late...)
+	resp.Users.Leave = recheckedLeave
+	resp.Users.NotArrived = recheckedNotArrived
+	resp.Statistics.OnTime = len(resp.Users.OnTime)
+	resp.Statistics.Late = len(resp.Users.Late)
+	resp.Statistics.Leave = len(resp.Users.Leave)
+	resp.Statistics.NotArrived = len(resp.Users.NotArrived)
+
 	return resp, nil
 }
 

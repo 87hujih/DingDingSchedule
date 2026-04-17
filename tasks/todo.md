@@ -1446,3 +1446,18 @@ g -n "schedule_server_deploy|docker build|docker run|GitHub Actions|GHCR|./deplo
 - 本轮实际执行与核验命令：
 - `ssh -p 22 root@106.52.42.194 "cd /opt/schedule_server && chmod +x deploy.sh && ./deploy.sh restart"`
 - `ssh -p 22 root@106.52.42.194 'docker ps --filter name=^/schedule-server$ --format "name={{.Names}} status={{.Status}}"; docker inspect schedule-server --format "{{.State.StartedAt}} {{.State.Health.Status}}"; curl -fsS http://localhost:26665/health'`
+
+## 当前任务
+- [x] 复核 `GetAttendanceDetail` 的实时/快照分支，确认“请假被拒绝后仍出现在请假人员中”的根因是否落在快照读取口径。
+- [x] 在 `internal/service/attendance_record_service_test.go` 新增失败回归测试，复现“快照落库后请假改为 refuse，详情仍保留请假人员”的问题。
+- [x] 以最小改动修复考勤详情中的请假回收逻辑，确保被拒绝/撤销的用户不再出现在 `leave` 列表中。
+- [x] 运行定向测试并补充复盘，核验实时详情、快照详情与拒绝请假回归场景。
+
+## 当前任务复盘
+- 已确认根因只出现在 `AttendanceRecordService.GetAttendanceDetail -> GetAttendanceRecordFromDB` 的最终快照分支：实时详情已经通过 `ListApprovedByUserIDs` 过滤 `refuse/cancel`，但快照读取仍直接反序列化历史 `leave_ids`，导致“Finalize 时还是请假、之后审批被拒绝”的用户继续留在 `leave` 列表里。
+- 已按 TDD 在 `internal/service/attendance_record_service_test.go` 新增 `TestGetAttendanceDetailFinalSnapshotRemovesRefusedLeaveUsers`，先用“先请假落快照，再把审批改为 refuse，再读详情”复现旧行为；首轮定向测试失败为 `expected refused leave to be removed from leave list, got 1`，证明问题确实落在快照读取口径。
+- `internal/service/attendance_record_service.go` 现已在 `GetAttendanceRecordFromDB` 构造快照响应后、合并人工代签前，调用 `reconcileSnapshotRefusedLeaves`：先用 `leaveRepo.ListApprovedByUserIDs` 二次确认当前仍有效的请假用户，再把已拒绝/撤销的用户从 `leave` 中移出，并按最终结算窗口重算这些用户的 `on_time` / `late` / `not_arrived`，避免简单挪成未到导致口径继续失真。
+- 本次保持改动最小，只修正最终详情读取口径；未改动实时详情、快照落库格式和其他列表接口。
+- 实际验证命令：
+- `$env:GOCACHE = (Resolve-Path .gocache).Path; go test ./internal/service -run TestGetAttendanceDetailFinalSnapshotRemovesRefusedLeaveUsers -v`（先红后绿）
+- `$env:GOCACHE = (Resolve-Path .gocache).Path; go test ./internal/service -run "Test(GetAttendanceDetailReturnsCurrentViewBeforeFinalize|GetAttendanceDetailReturnsFinalSnapshotAfterFinalize|GetAttendanceDetailTreatsPendingLeaveAsLeaveButRefusedLeaveAsNotLeave|GetAttendanceDetailFinalSnapshotRemovesRefusedLeaveUsers|FinalizeAttendanceRecordPersistsLateAndNotArrived|SignForUsersWithRecordIDKeepsSnapshotAndDetailConsistent)" -v`
