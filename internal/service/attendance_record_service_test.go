@@ -517,6 +517,104 @@ func TestAttendanceDetailPrioritizesRestDayAndLeaveOverHasCourse(t *testing.T) {
 	}
 	assertPriority("snapshot detail", snapshot)
 }
+
+func TestGetAttendanceDetailIgnoresRestDayWhenRestDayAttendanceDisabled(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 10, 0, 0, time.Local),
+		records: []dingtalk.CheckRecord{
+			{
+				DingUserID: fixtureDingUserIDOnTime,
+				CheckTime:  time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+		},
+	})
+
+	dayOfWeek := 4
+	if err := fixture.db.Create(&model.UserRestDay{
+		TenantID:  fixtureTenantID,
+		UserID:    fixture.users.onTime.ID,
+		DayOfWeek: &dayOfWeek,
+	}).Error; err != nil {
+		t.Fatalf("create rest day: %v", err)
+	}
+	disableRestDayAttendanceForTest(t, fixture.db)
+
+	resp, err := fixture.service.GetAttendanceDetail(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("get attendance detail: %v", err)
+	}
+
+	if resp.Statistics.RestDay != 0 {
+		t.Fatalf("expected rest_day count 0 when toggle disabled, got %d", resp.Statistics.RestDay)
+	}
+	if got := attendanceBasicNames(resp.Users.RestDay); len(got) != 0 {
+		t.Fatalf("expected no rest day users when toggle disabled, got %v", got)
+	}
+	if got := attendanceCheckNames(resp.Users.OnTime); !slices.Equal(got, []string{"OnTimeUser"}) {
+		t.Fatalf("expected on-time users to include rest-day user when toggle disabled, got %v", got)
+	}
+}
+
+func TestGetAttendanceDetailFinalViewIgnoresRestDayWhenRestDayAttendanceDisabled(t *testing.T) {
+	fixture := newAttendanceRealtimeFixture(t, attendanceRealtimeFixtureOptions{
+		now: time.Date(2026, 3, 19, 8, 40, 0, 0, time.Local),
+		records: []dingtalk.CheckRecord{
+			{
+				DingUserID: fixtureDingUserIDOnTime,
+				CheckTime:  time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local),
+				CheckType:  "OnDuty",
+			},
+		},
+	})
+
+	dayOfWeek := 4
+	if err := fixture.db.Create(&model.UserRestDay{
+		TenantID:  fixtureTenantID,
+		UserID:    fixture.users.onTime.ID,
+		DayOfWeek: &dayOfWeek,
+	}).Error; err != nil {
+		t.Fatalf("create rest day: %v", err)
+	}
+
+	finalized, err := fixture.service.FinalizeAttendanceRecord(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("finalize attendance record: %v", err)
+	}
+	if got := attendanceBasicNames(finalized.Users.RestDay); !slices.Equal(got, []string{"OnTimeUser"}) {
+		t.Fatalf("expected finalized snapshot to contain rest-day user before disabling toggle, got %v", got)
+	}
+
+	recordDate := time.Date(2026, 3, 19, 0, 0, 0, 0, time.Local)
+	record, err := fixture.recordRepo.FindByDateSection(context.Background(), recordDate, fixture.request.Section)
+	if err != nil {
+		t.Fatalf("find finalized record: %v", err)
+	}
+
+	disableRestDayAttendanceForTest(t, fixture.db)
+
+	resp, err := fixture.service.GetAttendanceDetail(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("get final attendance detail: %v", err)
+	}
+
+	if resp.RecordID != record.ID {
+		t.Fatalf("expected final detail to preserve record id %d, got %d", record.ID, resp.RecordID)
+	}
+	if resp.ViewMode != "final" || !resp.IsFinalized {
+		t.Fatalf("expected final view metadata, got view_mode=%q finalized=%v", resp.ViewMode, resp.IsFinalized)
+	}
+	if resp.Statistics.RestDay != 0 {
+		t.Fatalf("expected final rest_day count 0 when toggle disabled, got %d", resp.Statistics.RestDay)
+	}
+	if got := attendanceBasicNames(resp.Users.RestDay); len(got) != 0 {
+		t.Fatalf("expected final rest day users empty when toggle disabled, got %v", got)
+	}
+	if got := attendanceCheckNames(resp.Users.OnTime); !slices.Equal(got, []string{"OnTimeUser"}) {
+		t.Fatalf("expected final on-time users to include rest-day user when toggle disabled, got %v", got)
+	}
+}
+
 func TestFinalizeAttendanceRecordPersistsLateAndNotArrived(t *testing.T) {
 	var capturedEnd time.Time
 
@@ -1002,6 +1100,7 @@ func newAttendanceRealtimeFixture(t *testing.T, opts attendanceRealtimeFixtureOp
 		&model.LeaveApproval{},
 		&model.AttendanceRecord{},
 		&model.AttendanceManualOverride{},
+		&model.ScheduleSetting{},
 		&model.UserRestDay{},
 	); err != nil {
 		t.Fatalf("auto migrate: %v", err)
@@ -1037,6 +1136,7 @@ func newAttendanceRealtimeFixture(t *testing.T, opts attendanceRealtimeFixtureOp
 		leaveRepo:            repository.NewLeaveApprovalRepository(db),
 		attendanceRecordRepo: recordRepo,
 		manualOverrideRepo:   repository.NewAttendanceManualOverrideRepository(db),
+		scheduleSettingRepo:  repository.NewScheduleSettingRepository(db),
 		restDayRepo:          repository.NewUserRestDayRepository(db),
 		scheduleCfg:          config.Schedule{LateGraceMinutes: 1, Periods: []config.Period{{Name: "第一节", Start: "08:00", End: "09:40"}}},
 		logger:               zap.NewNop().Sugar(),
@@ -1062,6 +1162,34 @@ func newAttendanceRealtimeFixture(t *testing.T, opts attendanceRealtimeFixtureOp
 			missing: users[2],
 		},
 		records: opts.records,
+	}
+}
+
+func disableRestDayAttendanceForTest(t *testing.T, db *gorm.DB) {
+	t.Helper()
+
+	now := time.Date(2026, 3, 19, 8, 0, 0, 0, time.Local)
+	setting := &model.ScheduleSetting{
+		TenantID:                    fixtureTenantID,
+		CurrentMode:                 model.ScheduleModeSchool,
+		AttendanceEnabled:           true,
+		ScheduleChangeNotifyEnabled: true,
+		LateNotifyEnabled:           true,
+		RestDayEditingAllowed:       true,
+	}
+	if err := db.Where("tenant_id = ?", fixtureTenantID).Delete(&model.ScheduleSetting{}).Error; err != nil {
+		t.Fatalf("clear schedule setting: %v", err)
+	}
+	if err := db.Create(setting).Error; err != nil {
+		t.Fatalf("create schedule setting: %v", err)
+	}
+	if err := db.Model(&model.ScheduleSetting{}).
+		Where("tenant_id = ?", fixtureTenantID).
+		Updates(map[string]any{
+			"rest_day_attendance_enabled": false,
+			"updated_at":                  now,
+		}).Error; err != nil {
+		t.Fatalf("disable rest day attendance: %v", err)
 	}
 }
 

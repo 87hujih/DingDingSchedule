@@ -17,6 +17,7 @@ import (
 	"schedule_server/pkg/weekutil"
 
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // AttendanceService 考勤服务（从 ScheduleService 中拆分）。
@@ -269,22 +270,24 @@ func (s *AttendanceService) GetWeekSlotsAttendanceSummary(
 		leavesByUserID[l.UserID] = append(leavesByUserID[l.UserID], l)
 	}
 
-	// 整周休息日：一次查全部，按 dayOfWeek 分组到内存
-	allRestDays, err := s.restDayRepo.ListByUserIDs(ctx, userIDs)
-	if err != nil {
-		s.logger.Warnw("查询休息日记录失败，跳过休息日逻辑", "error", err)
-		allRestDays = nil
-	}
 	restDayMap := make(map[int]map[uint]struct{})
-	for _, rd := range allRestDays {
-		if rd.DayOfWeek == nil {
-			continue
+	if s.isRestDayAttendanceEnabled(ctx) {
+		// 整周休息日：一次查全部，按 dayOfWeek 分组到内存
+		allRestDays, err := s.restDayRepo.ListByUserIDs(ctx, userIDs)
+		if err != nil {
+			s.logger.Warnw("查询休息日记录失败，跳过休息日逻辑", "error", err)
+			allRestDays = nil
 		}
-		d := *rd.DayOfWeek
-		if restDayMap[d] == nil {
-			restDayMap[d] = make(map[uint]struct{})
+		for _, rd := range allRestDays {
+			if rd.DayOfWeek == nil {
+				continue
+			}
+			d := *rd.DayOfWeek
+			if restDayMap[d] == nil {
+				restDayMap[d] = make(map[uint]struct{})
+			}
+			restDayMap[d][rd.UserID] = struct{}{}
 		}
-		restDayMap[d][rd.UserID] = struct{}{}
 	}
 
 	// ── Step 2: 纯内存计算，遍历 7天 × N节（零 DB 开销）────────────────────
@@ -722,7 +725,7 @@ func (s *AttendanceService) computeOnRestDayUserItems(
 	users []model.User,
 	dayOfWeek int,
 ) ([]dto.CourseAttendanceUserItem, error) {
-	if len(users) == 0 || s.restDayRepo == nil {
+	if len(users) == 0 || s.restDayRepo == nil || !s.isRestDayAttendanceEnabled(ctx) {
 		return []dto.CourseAttendanceUserItem{}, nil
 	}
 
@@ -761,4 +764,19 @@ func (s *AttendanceService) computeOnRestDayUserItems(
 		}
 	}
 	return items, nil
+}
+
+func (s *AttendanceService) isRestDayAttendanceEnabled(ctx context.Context) bool {
+	if s.schedulePeriodSrv == nil {
+		return true
+	}
+
+	enabled, err := s.schedulePeriodSrv.IsRestDayAttendanceEnabled(ctx)
+	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			s.logger.Warnw("检查休息日考勤开关失败，默认启用", "error", err)
+		}
+		return true
+	}
+	return enabled
 }

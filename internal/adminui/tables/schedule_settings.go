@@ -64,6 +64,12 @@ func GetScheduleSettingTable(ctx *context.Context) (settingTable table.Table) {
 		}
 		return "❌ 已关闭"
 	})
+	info.AddField("休息日参与考勤", "rest_day_attendance_enabled", db.Tinyint).FieldDisplay(func(m types.FieldModel) interface{} {
+		if m.Value == "1" || m.Value == "true" {
+			return "✅ 已开启"
+		}
+		return "❌ 已关闭"
+	})
 	info.AddField("更新时间", "updated_at", db.Timestamp)
 	info.SetTable("schedule_settings").SetTitle("作息与考勤设置").SetDescription("管理作息模式和考勤开关")
 
@@ -104,6 +110,13 @@ func GetScheduleSettingTable(ctx *context.Context) (settingTable table.Table) {
 		}).
 		FieldDefault("1").
 		FieldHelpMsg("关闭后考勤统计时不再发送迟到提醒")
+	formList.AddField("休息日参与考勤", "rest_day_attendance_enabled", db.Tinyint, form.Switch).
+		FieldOptions(types.FieldOptions{
+			{Text: "开启", Value: "1"},
+			{Text: "关闭", Value: "0"},
+		}).
+		FieldDefault("1").
+		FieldHelpMsg("关闭后保留个人休息日数据，但考勤统计时忽略休息日")
 
 	formList.SetPreProcessFn(func(values form2.Values) form2.Values {
 		now := time.Now().Format("2006-01-02 15:04:05")

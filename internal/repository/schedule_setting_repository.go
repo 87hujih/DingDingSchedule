@@ -42,6 +42,12 @@ type ScheduleSettingRepository interface {
 
 	// IsRestDayEditingAllowed 检查休息日编辑权限是否启用
 	IsRestDayEditingAllowed(ctx context.Context) (bool, error)
+
+	// SetRestDayAttendanceEnabled 设置休息日是否参与考勤
+	SetRestDayAttendanceEnabled(ctx context.Context, enabled bool) error
+
+	// IsRestDayAttendanceEnabled 检查休息日是否参与考勤
+	IsRestDayAttendanceEnabled(ctx context.Context) (bool, error)
 }
 
 type scheduleSettingRepository struct {
@@ -127,4 +133,18 @@ func (r *scheduleSettingRepository) IsRestDayEditingAllowed(ctx context.Context)
 		return true, err // 默认允许
 	}
 	return setting.RestDayEditingAllowed, nil
+}
+
+func (r *scheduleSettingRepository) SetRestDayAttendanceEnabled(ctx context.Context, enabled bool) error {
+	return r.db.WithContext(ctx).
+		Model(&model.ScheduleSetting{}).
+		Update("rest_day_attendance_enabled", enabled).Error
+}
+
+func (r *scheduleSettingRepository) IsRestDayAttendanceEnabled(ctx context.Context) (bool, error) {
+	setting, err := r.GetByTenantID(ctx)
+	if err != nil {
+		return true, err // 默认启用
+	}
+	return setting.RestDayAttendanceEnabled, nil
 }

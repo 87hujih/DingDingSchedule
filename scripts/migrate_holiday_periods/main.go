@@ -77,8 +77,13 @@ func main() {
 		result := global.DB.WithContext(ctx).Where("tenant_id = ?", tenant.ID).First(&setting)
 		if result.Error != nil {
 			setting = model.ScheduleSetting{
-				TenantID:    tenant.ID,
-				CurrentMode: model.ScheduleModeSchool,
+				TenantID:                    tenant.ID,
+				CurrentMode:                 model.ScheduleModeSchool,
+				AttendanceEnabled:           true,
+				ScheduleChangeNotifyEnabled: true,
+				LateNotifyEnabled:           true,
+				RestDayEditingAllowed:       true,
+				RestDayAttendanceEnabled:    true,
 			}
 			if err := global.DB.WithContext(ctx).Create(&setting).Error; err != nil {
 				log.Printf("创建作息设置失败 (租户=%d): %v\n", tenant.ID, err)

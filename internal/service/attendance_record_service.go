@@ -785,6 +785,10 @@ func (s *AttendanceRecordService) GetAttendanceRecordFromDB(
 		return nil, err
 	}
 
+	if !s.isRestDayAttendanceEnabled(ctx) {
+		return s.buildFinalAttendanceDetailForRead(ctx, req, record.ID)
+	}
+
 	// 获取涉及的所有用户信息
 	userIDs := s.extractAllUserIDs(record)
 	users, err := s.userRepo.ListByIDs(ctx, userIDs)
@@ -829,6 +833,29 @@ func (s *AttendanceRecordService) GetAttendanceRecordFromDB(
 	if calcErr == nil {
 		resp.SetViewMetadata("final", true, s.calculateFinalizeAt(slotStartAt))
 	}
+	return resp, nil
+}
+
+func (s *AttendanceRecordService) buildFinalAttendanceDetailForRead(
+	ctx context.Context,
+	req *dto.AttendanceDetailRequest,
+	recordID uint,
+) (*dto.AttendanceDetailResponse, error) {
+	window, err := s.resolveAttendanceWindow(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, _, err := s.buildAttendanceDetail(ctx, req, window, minTime(window.finalizeAt, window.slotEnd), true)
+	if err != nil {
+		return nil, err
+	}
+	resp, err = s.applyManualOverridesToDetail(ctx, window.date, req.Section, resp)
+	if err != nil {
+		return nil, err
+	}
+	resp.RecordID = recordID
+	resp.SetViewMetadata("final", true, window.finalizeAt)
 	return resp, nil
 }
 
@@ -1475,7 +1502,7 @@ func (s *AttendanceRecordService) filterRestDayUsers(
 	users []model.User,
 	dayOfWeek int,
 ) []model.User {
-	if len(users) == 0 || s.restDayRepo == nil {
+	if len(users) == 0 || s.restDayRepo == nil || !s.isRestDayAttendanceEnabled(ctx) {
 		return nil
 	}
 
@@ -1510,6 +1537,21 @@ func (s *AttendanceRecordService) filterRestDayUsers(
 	return result
 }
 
+func (s *AttendanceRecordService) isRestDayAttendanceEnabled(ctx context.Context) bool {
+	if s.scheduleSettingRepo == nil {
+		return true
+	}
+
+	enabled, err := s.scheduleSettingRepo.IsRestDayAttendanceEnabled(ctx)
+	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			s.logger.Warnw("检查休息日考勤开关失败，默认启用", "error", err)
+		}
+		return true
+	}
+	return enabled
+}
+
 // toRestDayBasicList 将 model.User 列表转为 AttendanceUserBasic 列表
 func toRestDayBasicList(users []model.User) []dto.AttendanceUserBasic {
 	if len(users) == 0 {
@@ -1539,6 +1581,24 @@ func (s *AttendanceRecordService) GetAttendanceRecordsByDate(
 
 	if len(records) == 0 {
 		return nil, response.ErrNotFoundWithMsg("该日期暂无考勤记录")
+	}
+
+	if !s.isRestDayAttendanceEnabled(ctx) {
+		results := make([]*dto.AttendanceDetailResponse, 0, len(records))
+		dateStr := date.Format("2006-01-02")
+		for i := range records {
+			resp, err := s.buildFinalAttendanceDetailForRead(ctx, &dto.AttendanceDetailRequest{
+				Date:    dateStr,
+				Week:    records[i].Week,
+				Section: records[i].Section,
+				DeptIDs: deptIDs,
+			}, records[i].ID)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, resp)
+		}
+		return results, nil
 	}
 
 	// 2. 收集所有记录中涉及的用户ID

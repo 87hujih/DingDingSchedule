@@ -86,5 +86,9 @@ func registerScheduleSettingRoutes(rg *gin.RouterGroup, h *handler.Handler) {
 		// 休息日编辑权限开关
 		schedule.GET("/rest-day-editing/status", h.ScheduleSettingHdl.GetRestDayEditingStatus)
 		schedule.POST("/rest-day-editing/toggle", middleware.RequireAdmin(), h.ScheduleSettingHdl.ToggleRestDayEditing)
+
+		// 休息日是否参与考勤开关
+		schedule.GET("/rest-day-attendance/status", h.ScheduleSettingHdl.GetRestDayAttendanceStatus)
+		schedule.POST("/rest-day-attendance/toggle", middleware.RequireAdmin(), h.ScheduleSettingHdl.ToggleRestDayAttendance)
 	}
 }

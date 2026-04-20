@@ -141,10 +141,12 @@ func (s *SchedulePeriodService) GetScheduleInfo(ctx context.Context) (*ScheduleI
 	currentMode := model.ScheduleModeSchool
 	attendanceEnabled := true
 	restDayEditingAllowed := true
+	restDayAttendanceEnabled := true
 	if setting != nil {
 		currentMode = setting.CurrentMode
 		attendanceEnabled = setting.AttendanceEnabled
 		restDayEditingAllowed = setting.RestDayEditingAllowed
+		restDayAttendanceEnabled = setting.RestDayAttendanceEnabled
 	}
 
 	schoolPeriods, _ := s.GetPeriodsByMode(ctx, model.ScheduleModeSchool)
@@ -152,23 +154,25 @@ func (s *SchedulePeriodService) GetScheduleInfo(ctx context.Context) (*ScheduleI
 	activePeriods, _ := s.GetActivePeriods(ctx)
 
 	return &ScheduleInfo{
-		CurrentMode:           currentMode,
-		AttendanceEnabled:     attendanceEnabled,
-		RestDayEditingAllowed: restDayEditingAllowed,
-		ActivePeriods:         activePeriods,
-		SchoolPeriods:         schoolPeriods,
-		HolidayPeriods:        holidayPeriods,
+		CurrentMode:              currentMode,
+		AttendanceEnabled:        attendanceEnabled,
+		RestDayEditingAllowed:    restDayEditingAllowed,
+		RestDayAttendanceEnabled: restDayAttendanceEnabled,
+		ActivePeriods:            activePeriods,
+		SchoolPeriods:            schoolPeriods,
+		HolidayPeriods:           holidayPeriods,
 	}, nil
 }
 
 // ScheduleInfo 作息配置完整信息
 type ScheduleInfo struct {
-	CurrentMode           string          `json:"current_mode"`             // 当前模式
-	AttendanceEnabled     bool            `json:"attendance_enabled"`       // 考勤总开关
-	RestDayEditingAllowed bool            `json:"rest_day_editing_allowed"` // 休息日编辑开关
-	ActivePeriods         []config.Period `json:"active_periods"`           // 当前生效的配置
-	SchoolPeriods         []config.Period `json:"school_periods"`           // 上学配置
-	HolidayPeriods        []config.Period `json:"holiday_periods"`          // 假期配置
+	CurrentMode              string          `json:"current_mode"`                // 当前模式
+	AttendanceEnabled        bool            `json:"attendance_enabled"`          // 考勤总开关
+	RestDayEditingAllowed    bool            `json:"rest_day_editing_allowed"`    // 休息日编辑开关
+	RestDayAttendanceEnabled bool            `json:"rest_day_attendance_enabled"` // 休息日是否参与考勤
+	ActivePeriods            []config.Period `json:"active_periods"`              // 当前生效的配置
+	SchoolPeriods            []config.Period `json:"school_periods"`              // 上学配置
+	HolidayPeriods           []config.Period `json:"holiday_periods"`             // 假期配置
 }
 
 // SetRestDayEditingAllowed 设置休息日编辑权限开关
@@ -179,6 +183,16 @@ func (s *SchedulePeriodService) SetRestDayEditingAllowed(ctx context.Context, al
 // IsRestDayEditingAllowed 检查休息日编辑权限是否启用
 func (s *SchedulePeriodService) IsRestDayEditingAllowed(ctx context.Context) (bool, error) {
 	return s.settingRepo.IsRestDayEditingAllowed(ctx)
+}
+
+// SetRestDayAttendanceEnabled 设置休息日是否参与考勤
+func (s *SchedulePeriodService) SetRestDayAttendanceEnabled(ctx context.Context, enabled bool) error {
+	return s.settingRepo.SetRestDayAttendanceEnabled(ctx, enabled)
+}
+
+// IsRestDayAttendanceEnabled 检查休息日是否参与考勤
+func (s *SchedulePeriodService) IsRestDayAttendanceEnabled(ctx context.Context) (bool, error) {
+	return s.settingRepo.IsRestDayAttendanceEnabled(ctx)
 }
 
 // trimTimeSeconds 去掉时间的秒部分

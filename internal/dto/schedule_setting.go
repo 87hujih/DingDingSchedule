@@ -24,3 +24,13 @@ type ToggleRestDayEditingRequest struct {
 type RestDayEditingStatusResponse struct {
 	Allowed bool `json:"allowed"`
 }
+
+// ToggleRestDayAttendanceRequest 切换休息日是否参与考勤请求
+type ToggleRestDayAttendanceRequest struct {
+	Enabled bool `json:"enabled"` // true=参与, false=忽略
+}
+
+// RestDayAttendanceStatusResponse 休息日是否参与考勤状态响应
+type RestDayAttendanceStatusResponse struct {
+	Enabled bool `json:"enabled"`
+}
