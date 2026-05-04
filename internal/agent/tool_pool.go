@@ -15,6 +15,7 @@ func selectToolPool(question string, userRole int) toolPool {
 			Name: "admin_query",
 			ToolNames: []string{
 				"get_current_time",
+				"subscribe_attendance_push",
 				"unsubscribe_attendance_push",
 				"query_subscription_status",
 				"list_departments",
@@ -119,6 +120,7 @@ func hasAdminQuerySignal(question string) bool {
 		return true
 	}
 	return containsAny(question, []string{
+		"订阅",
 		"订阅状态",
 		"推送状态",
 		"部门列表",

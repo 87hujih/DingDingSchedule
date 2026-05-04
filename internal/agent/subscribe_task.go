@@ -54,11 +54,6 @@ func (h *subscribeTaskHandler) ApplyTurn(task *TaskInstance, message string, _ *
 		taskApplySlot(task, &matched, "scope", "department")
 	case isDepartmentListQuestion(normalized):
 		// meta follow-up; keep task state unchanged
-	default:
-		if deptNames := extractSubscriptionDeptNames(message); deptNames != "" {
-			taskApplySlot(task, &matched, "scope", "department")
-			taskApplySlot(task, &matched, "dept_names", deptNames)
-		}
 	}
 
 	reconcileSubscriptionTask(task)
@@ -221,41 +216,6 @@ func buildCachedDepartmentReply(task *TaskInstance) string {
 		return ""
 	}
 	return fmt.Sprintf("当前可选部门有：%s。请告诉我需要订阅哪些部门。", strings.Join(names, "、"))
-}
-
-// extractSubscriptionDeptNames extracts subscription department names.
-func extractSubscriptionDeptNames(message string) string {
-	candidate := strings.TrimSpace(message)
-	if candidate == "" {
-		return ""
-	}
-
-	candidate = strings.NewReplacer(
-		"请帮我", "",
-		"帮我", "",
-		"给我", "",
-		"开启", "",
-		"开通", "",
-		"打开", "",
-		"订阅", "",
-		"这个部门的", "",
-		"该部门的", "",
-		"这个部门", "",
-		"该部门", "",
-		"部门的", "",
-		"部门", "",
-		"考勤推送", "",
-		"推送", "",
-		"考勤", "",
-	).Replace(candidate)
-	candidate = strings.Trim(candidate, " ，。！？,!.")
-	if candidate == "" {
-		return ""
-	}
-	if containsAny(normalizeQuery(candidate), []string{"全部人员", "全部", "指定", "部分"}) {
-		return ""
-	}
-	return candidate
 }
 
 // reconcileSubscriptionTask handles reconcile subscription task.

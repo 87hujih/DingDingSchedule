@@ -307,59 +307,6 @@ func TestTaskStartExecutorAddsSoftSwitchNotice(t *testing.T) {
 	}
 }
 
-func TestTaskContinueExecutorUsesHandlerLocalParsingForLongSubscriptionFollowUp(t *testing.T) {
-	t.Parallel()
-
-	groupSub := &testGroupSubPort{}
-	a := NewAgent(Deps{
-		LLMBaseURL:     "http://127.0.0.1:0",
-		LLMAPIKey:      "test-key",
-		LLMModel:       "test-model",
-		GroupSub:       groupSub,
-		Dept:           testFamilyDeptPort{},
-		User:           testUserPort{},
-		Semester:       testSemesterPort{},
-		SchedulePeriod: testSchedulePeriodPort{},
-		Tenant:         testTenantPort{},
-		Logger:         zap.NewNop().Sugar(),
-	})
-	defer a.Stop()
-
-	result, err := (taskContinueExecutor{agent: a}).Execute(context.Background(), &TaskInstance{
-		ID:           "task-sub-continue",
-		Type:         "subscribe_attendance_push",
-		Status:       "waiting_slots",
-		Slots:        map[string]string{"scope": "department"},
-		MissingSlots: []string{"dept_names"},
-		ExpiresAt:    time.Now().Add(sessionTTL),
-	}, "请帮我订阅家族7期这个部门的考勤推送", &tools.UserContext{
-		TenantID:          42,
-		UserID:            7,
-		UserRole:          1,
-		ConversationType:  "2",
-		ConversationID:    "conv-continue",
-		ConversationTitle: "测试群",
-	})
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if result.KeepTaskOpen {
-		t.Fatalf("KeepTaskOpen = true, want task completed")
-	}
-	if !strings.Contains(result.Reply, "家族7期") {
-		t.Fatalf("Reply = %q, want selected department echoed", result.Reply)
-	}
-
-	groupSub.mu.Lock()
-	defer groupSub.mu.Unlock()
-	if groupSub.subscribeCalls != 1 {
-		t.Fatalf("Subscribe() call count = %d, want 1", groupSub.subscribeCalls)
-	}
-	if len(groupSub.lastSubscribedIDs) != 1 || groupSub.lastSubscribedIDs[0] != 201 {
-		t.Fatalf("subscribed dept ids = %v, want [201]", groupSub.lastSubscribedIDs)
-	}
-}
-
 func TestTaskCancelExecutorClearsTask(t *testing.T) {
 	t.Parallel()
 

@@ -48,7 +48,9 @@ func (r *semanticRouter) Route(ctx context.Context, routeCtx RouteContext) Route
 			Role: "system",
 			Content: "你是一个语义路由器。你只能返回 JSON，对用户消息做单一路由判定。" +
 				"输出字段：kind, confidence, reason_code, target_task_type, target_task_id, switch_task, soft_notice_code, clarify_code。" +
-				"kind 只允许：off_topic_reject,social_refuse,clarify,task_start,task_continue,task_meta,task_cancel,rag_query,tool_query。",
+				"kind 只允许：off_topic_reject,social_refuse,clarify,task_start,task_continue,task_meta,task_cancel,rag_query,tool_query。" +
+				"重要规则：当用户意图涉及 subscribe_attendance_push（开启/添加/开通考勤订阅、订阅考勤推送）时，必须路由到 tool_query，不要路由到 task_start。" +
+				"同理，unsubscribe_attendance_push 和 query_subscription_status 也路由到 tool_query。",
 		},
 		{
 			Role:    "user",
