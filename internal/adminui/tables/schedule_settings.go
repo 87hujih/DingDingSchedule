@@ -46,6 +46,16 @@ func GetScheduleSettingTable(ctx *context.Context) (settingTable table.Table) {
 			return m.Value
 		}
 	})
+	info.AddField("上学季节", "school_season", db.Varchar).FieldDisplay(func(m types.FieldModel) interface{} {
+		switch m.Value {
+		case "summer":
+			return "夏季作息"
+		case "winter":
+			return "冬季作息"
+		default:
+			return m.Value
+		}
+	})
 	info.AddField("考勤开关", "attendance_enabled", db.Tinyint).FieldDisplay(func(m types.FieldModel) interface{} {
 		if m.Value == "1" || m.Value == "true" {
 			return "✅ 已开启"
@@ -89,6 +99,14 @@ func GetScheduleSettingTable(ctx *context.Context) (settingTable table.Table) {
 		FieldDefault("school").
 		FieldMust().
 		FieldHelpMsg("选择当前生效的作息模式")
+	formList.AddField("上学季节", "school_season", db.Varchar, form.SelectSingle).
+		FieldOptions(types.FieldOptions{
+			{Text: "夏季作息", Value: "summer"},
+			{Text: "冬季作息", Value: "winter"},
+		}).
+		FieldDefault("winter").
+		FieldMust().
+		FieldHelpMsg("上学模式下选择夏季或冬季作息时间")
 	formList.AddField("考勤开关", "attendance_enabled", db.Tinyint, form.Switch).
 		FieldOptions(types.FieldOptions{
 			{Text: "开启", Value: "1"},

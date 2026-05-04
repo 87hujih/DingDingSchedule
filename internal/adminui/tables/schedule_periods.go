@@ -40,6 +40,10 @@ func GetSchedulePeriodTable(ctx *context.Context) (periodTable table.Table) {
 		switch m.Value {
 		case "school":
 			return "上学"
+		case "school_summer":
+			return "夏季上学"
+		case "school_winter":
+			return "冬季上学"
 		case "holiday":
 			return "假期"
 		default:
@@ -47,6 +51,8 @@ func GetSchedulePeriodTable(ctx *context.Context) (periodTable table.Table) {
 		}
 	}).FieldFilterable(types.FilterType{FormType: form.SelectSingle}).FieldFilterOptions(types.FieldOptions{
 		{Text: "上学", Value: "school"},
+		{Text: "夏季上学", Value: "school_summer"},
+		{Text: "冬季上学", Value: "school_winter"},
 		{Text: "假期", Value: "holiday"},
 	})
 	info.AddField("名称", "name", db.Varchar).
@@ -77,6 +83,8 @@ func GetSchedulePeriodTable(ctx *context.Context) (periodTable table.Table) {
 	formList.AddField("模式", "mode", db.Varchar, form.SelectSingle).
 		FieldOptions(types.FieldOptions{
 			{Text: "上学", Value: "school"},
+			{Text: "夏季上学", Value: "school_summer"},
+			{Text: "冬季上学", Value: "school_winter"},
 			{Text: "假期", Value: "holiday"},
 		}).
 		FieldDefault("school").
