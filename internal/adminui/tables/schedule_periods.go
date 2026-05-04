@@ -38,8 +38,6 @@ func GetSchedulePeriodTable(ctx *context.Context) (periodTable table.Table) {
 		})
 	info.AddField("模式", "mode", db.Varchar).FieldDisplay(func(m types.FieldModel) interface{} {
 		switch m.Value {
-		case "school":
-			return "上学"
 		case "school_summer":
 			return "夏季上学"
 		case "school_winter":
@@ -50,7 +48,6 @@ func GetSchedulePeriodTable(ctx *context.Context) (periodTable table.Table) {
 			return m.Value
 		}
 	}).FieldFilterable(types.FilterType{FormType: form.SelectSingle}).FieldFilterOptions(types.FieldOptions{
-		{Text: "上学", Value: "school"},
 		{Text: "夏季上学", Value: "school_summer"},
 		{Text: "冬季上学", Value: "school_winter"},
 		{Text: "假期", Value: "holiday"},
@@ -82,12 +79,11 @@ func GetSchedulePeriodTable(ctx *context.Context) (periodTable table.Table) {
 		FieldDisplayButCanNotEditWhenUpdate()
 	formList.AddField("模式", "mode", db.Varchar, form.SelectSingle).
 		FieldOptions(types.FieldOptions{
-			{Text: "上学", Value: "school"},
 			{Text: "夏季上学", Value: "school_summer"},
 			{Text: "冬季上学", Value: "school_winter"},
 			{Text: "假期", Value: "holiday"},
 		}).
-		FieldDefault("school").
+		FieldDefault("school_summer").
 		FieldMust().
 		FieldHelpMsg("选择配置所属的模式")
 	formList.AddField("名称", "name", db.Varchar, form.Text).
