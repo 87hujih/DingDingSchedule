@@ -19,6 +19,9 @@ type ScheduleSettingRepository interface {
 	// SwitchMode 切换作息模式
 	SwitchMode(ctx context.Context, mode string) error
 
+	// SwitchSeason 切换上学模式的季节
+	SwitchSeason(ctx context.Context, season string) error
+
 	// SetAttendanceEnabled 设置考勤开关状态
 	SetAttendanceEnabled(ctx context.Context, enabled bool) error
 
@@ -68,7 +71,7 @@ func (r *scheduleSettingRepository) Upsert(ctx context.Context, setting *model.S
 	return r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "tenant_id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"current_mode", "updated_at"}),
+			DoUpdates: clause.AssignmentColumns([]string{"current_mode", "school_season", "updated_at"}),
 		}).
 		Create(setting).Error
 }
@@ -77,6 +80,12 @@ func (r *scheduleSettingRepository) SwitchMode(ctx context.Context, mode string)
 	return r.db.WithContext(ctx).
 		Model(&model.ScheduleSetting{}).
 		Update("current_mode", mode).Error
+}
+
+func (r *scheduleSettingRepository) SwitchSeason(ctx context.Context, season string) error {
+	return r.db.WithContext(ctx).
+		Model(&model.ScheduleSetting{}).
+		Update("school_season", season).Error
 }
 
 func (r *scheduleSettingRepository) SetAttendanceEnabled(ctx context.Context, enabled bool) error {

@@ -12,7 +12,7 @@ RUN apk add --no-cache git gcc musl-dev
 ENV GOPROXY=https://goproxy.cn,direct
 ENV GOSUMDB=sum.golang.google.cn
 
-# 复制 go.mod 和 go.sum 并下载依赖（利用 Docker 缓存）
+# 复制 go.mod 和 go.sum 就并下载依赖（利用 Docker 缓存）
 COPY go.mod go.sum ./
 RUN go mod download
 

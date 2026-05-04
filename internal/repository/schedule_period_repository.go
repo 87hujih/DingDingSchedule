@@ -47,13 +47,28 @@ func (r *schedulePeriodRepository) ListActiveByMode(ctx context.Context, mode st
 }
 
 func (r *schedulePeriodRepository) ListActive(ctx context.Context) ([]*model.SchedulePeriod, error) {
-	// 获取当前模式
+	// 获取当前模式和季节
 	setting, err := r.settingRepo.GetByTenantID(ctx)
 	if err != nil {
-		// 默认使用上学模式
-		return r.ListActiveByMode(ctx, model.ScheduleModeSchool)
+		// 默认使用冬季上学模式
+		return r.ListActiveByMode(ctx, model.SchedulePeriodModeSchoolWinter)
 	}
-	return r.ListActiveByMode(ctx, setting.CurrentMode)
+
+	// 根据模式和季节确定 period mode
+	periodMode := r.resolvePeriodMode(setting)
+	return r.ListActiveByMode(ctx, periodMode)
+}
+
+// resolvePeriodMode 根据 schedule_settings 的模式和季节确定 schedule_periods.mode
+func (r *schedulePeriodRepository) resolvePeriodMode(setting *model.ScheduleSetting) string {
+	if setting.CurrentMode == model.ScheduleModeHoliday {
+		return model.SchedulePeriodModeHoliday
+	}
+	// school 模式：根据季节选择
+	if setting.SchoolSeason == model.SchoolSeasonSummer {
+		return model.SchedulePeriodModeSchoolSummer
+	}
+	return model.SchedulePeriodModeSchoolWinter
 }
 
 func (r *schedulePeriodRepository) ListAllByMode(ctx context.Context, mode string) ([]*model.SchedulePeriod, error) {

@@ -2,10 +2,23 @@ package model
 
 import "time"
 
-// ScheduleMode 作息模式常量
+// ScheduleMode 作息模式常量（顶层模式）
 const (
 	ScheduleModeSchool  = "school"  // 上学模式
 	ScheduleModeHoliday = "holiday" // 假期模式
+)
+
+// SchoolSeason 上学模式内的季节常量
+const (
+	SchoolSeasonSummer = "summer" // 夏季作息
+	SchoolSeasonWinter = "winter" // 冬季作息
+)
+
+// SchedulePeriodMode 作息时间段的模式标识（用于 schedule_periods.mode 字段）
+const (
+	SchedulePeriodModeSchoolSummer = "school_summer" // 夏季上学作息
+	SchedulePeriodModeSchoolWinter = "school_winter" // 冬季上学作息
+	SchedulePeriodModeHoliday      = "holiday"       // 假期作息
 )
 
 // SchedulePeriod 作息时间配置

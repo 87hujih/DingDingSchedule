@@ -46,3 +46,5 @@ type LeaveApproval struct {
 }
 
 func (*LeaveApproval) TableName() string { return "leave_approvals" }
+
+

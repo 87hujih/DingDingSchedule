@@ -146,3 +146,5 @@ func (r *leaveApprovalRepository) ListApprovedByUserIDs(ctx context.Context, use
 	}
 	return out, nil
 }
+
+

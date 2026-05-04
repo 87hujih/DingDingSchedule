@@ -53,7 +53,8 @@ func (h *ScheduleSettingHandler) GetCurrentMode(c *gin.Context) {
 		response.FailWithError(c, err)
 		return
 	}
-	response.OK(c, gin.H{"current_mode": mode})
+	season, _ := h.schedulePeriodSrv.GetCurrentSeason(c.Request.Context())
+	response.OK(c, gin.H{"current_mode": mode, "school_season": season})
 }
 
 // ToggleAttendance 切换考勤开关
