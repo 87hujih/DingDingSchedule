@@ -28,8 +28,9 @@ func TestPlannerRejectsOffTopicCodingQuestion(t *testing.T) {
 		Message: "帮我写一个二分查找",
 	})
 
-	if decision.Action != plannerActionOffTopicReject {
-		t.Fatalf("Action = %q, want %q", decision.Action, plannerActionOffTopicReject)
+	// Domain gate removed; off-topic rejection now handled by semantic router.
+	if decision.Action == plannerActionOffTopicReject {
+		t.Fatalf("Action = %q, domain gate should be removed", decision.Action)
 	}
 }
 

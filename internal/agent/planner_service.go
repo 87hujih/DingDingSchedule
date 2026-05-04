@@ -43,15 +43,6 @@ func planConversation(input PlannerInput) PlannerDecision {
 		}
 	}
 
-	if newDomainGate().Hint(normalized) == domainHintObviousOut {
-		return PlannerDecision{
-			Action:     plannerActionOffTopicReject,
-			UserIntent: userIntent,
-			Confidence: 0.98,
-			Reason:     "obvious_out_of_domain",
-		}
-	}
-
 	if hasGreetingIntent(normalized) || looksLikeSocialChat(normalized) {
 		return PlannerDecision{
 			Action:     plannerActionSocialRefuse,

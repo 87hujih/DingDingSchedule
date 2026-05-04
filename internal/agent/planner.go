@@ -12,13 +12,6 @@ func plan(input PlanInput) PlanDecision {
 		}
 	}
 
-	if input.DomainHint == domainHintObviousOut {
-		return PlanDecision{
-			Kind:              planKindObviousOut,
-			KnowledgeStrength: knowledgeStrength,
-		}
-	}
-
 	if input.TaskCandidate != nil {
 		if input.TaskCandidate.Status == taskStatusReady {
 			return PlanDecision{

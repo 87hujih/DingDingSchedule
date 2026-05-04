@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -483,21 +484,32 @@ func TestAgentChatReturnsRealtimeResultOnlyForRealtimePlusRuleQuestion(t *testin
 	}
 }
 
-// TestAgentChatRejectsOutOfDomainBeforeRetrieval 验证站外问题会在领域门禁处被拒绝。
+// TestAgentChatRejectsOutOfDomainBeforeRetrieval 验证站外问题通过语义路由器被拒绝。
 func TestAgentChatRejectsOutOfDomainBeforeRetrieval(t *testing.T) {
 	t.Parallel()
 
 	knowledge := &testKnowledgePort{}
+
+	routerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"kind\":\"off_topic_reject\",\"confidence\":0.95,\"reason_code\":\"out_of_domain\"}"}}]}`)
+	}))
+	defer routerServer.Close()
+
 	a := NewAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
-		Knowledge:      knowledge,
-		User:           testUserPort{},
-		Semester:       testSemesterPort{},
-		SchedulePeriod: testSchedulePeriodPort{},
-		Tenant:         testTenantPort{},
-		Logger:         zap.NewNop().Sugar(),
+		RouterLLMBaseURL: routerServer.URL + "/v1/chat/completions",
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "test-router",
+		RouteMode:        string(RouteModeLive),
+		Knowledge:        knowledge,
+		User:             testUserPort{},
+		Semester:         testSemesterPort{},
+		SchedulePeriod:   testSchedulePeriodPort{},
+		Tenant:           testTenantPort{},
+		Logger:           zap.NewNop().Sugar(),
 	})
 	defer a.Stop()
 
@@ -774,8 +786,8 @@ func TestAgentChatWritesKnowledgeMetricsToCallLog(t *testing.T) {
 	if log.QueryType != "rag" {
 		t.Fatalf("QueryType = %q, want rag", log.QueryType)
 	}
-	if log.DomainHint != "likely_in" {
-		t.Fatalf("DomainHint = %q, want likely_in", log.DomainHint)
+	if log.DomainHint != "" {
+		t.Fatalf("DomainHint = %q, want empty", log.DomainHint)
 	}
 	if log.PlanKind != "rag" {
 		t.Fatalf("PlanKind = %q, want rag", log.PlanKind)
@@ -1018,8 +1030,8 @@ func TestAgentChatWritesConversationTaskMetricsToCallLog(t *testing.T) {
 	if firstLog.ConversationEvent != "new_request" {
 		t.Fatalf("first ConversationEvent = %q, want new_request", firstLog.ConversationEvent)
 	}
-	if firstLog.DomainHint != "likely_in" {
-		t.Fatalf("first DomainHint = %q, want likely_in", firstLog.DomainHint)
+	if firstLog.DomainHint != "" {
+		t.Fatalf("first DomainHint = %q, want empty", firstLog.DomainHint)
 	}
 	if firstLog.PlanKind != "clarify" {
 		t.Fatalf("first PlanKind = %q, want clarify", firstLog.PlanKind)

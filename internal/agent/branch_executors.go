@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -127,55 +126,19 @@ func (e toolQueryExecutor) Execute(ctx context.Context, uctx *tools.UserContext,
 	messages = append(messages, history...)
 	messages = append(messages, tools.Message{Role: "user", Content: question})
 
-	result := routeExecutionResult{
+	loopResult, err := runReactLoop(ctx, e.agent.llmClient, e.agent.registry, uctx, messages, toolDefs, nil)
+	if err != nil {
+		return routeExecutionResult{}, loopResult.ToolsCalled, err
+	}
+
+	return routeExecutionResult{
+		Reply:        loopResult.Reply,
 		ToolDefs:     append([]tools.ToolDef(nil), toolDefs...),
+		LLMDuration:  loopResult.LLMDuration,
 		ExecutorName: "tool_query_executor",
 		ToolPool:     pool.Name,
 		AnswerMode:   answerModeToolFirst,
-	}
-	var toolsCalled []string
-
-	for round := 0; round < maxReactRounds; round++ {
-		llmTimeout := 50 * time.Second
-		if len(messages) > 0 && messages[len(messages)-1].Role == "tool" {
-			llmTimeout = 90 * time.Second
-		}
-
-		llmCtx, cancel := context.WithTimeout(context.Background(), llmTimeout)
-		llmStart := time.Now()
-		resp, err := e.agent.llmClient.Chat(llmCtx, messages, toolDefs)
-		result.LLMDuration += elapsedMs(llmStart)
-		cancel()
-		if err != nil {
-			return routeExecutionResult{}, toolsCalled, err
-		}
-
-		if len(resp.ToolCalls) == 0 {
-			reply := resp.Content
-			if reply == "" {
-				reply = "抱歉，我无法理解您的问题，请换个方式描述"
-			}
-			result.Reply = reply
-			return result, toolsCalled, nil
-		}
-
-		messages = append(messages, resp)
-		for _, tc := range resp.ToolCalls {
-			toolsCalled = append(toolsCalled, tc.Function.Name)
-			toolResult, err := e.agent.registry.Dispatch(ctx, uctx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
-			if err != nil {
-				toolResult = fmt.Sprintf(`{"error": "工具执行失败: %s"}`, err.Error())
-			}
-
-			messages = append(messages, tools.Message{
-				Role:       "tool",
-				Content:    toolResult,
-				ToolCallID: tc.ID,
-			})
-		}
-	}
-
-	return routeExecutionResult{}, toolsCalled, fmt.Errorf("超出最大轮数")
+	}, loopResult.ToolsCalled, nil
 }
 
 type taskStartExecutor struct {

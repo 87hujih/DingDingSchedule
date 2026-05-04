@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"schedule_server/internal/agent/tools"
-	"schedule_server/internal/tenantctx"
 	"schedule_server/pkg/dingtalk"
 
 	"go.uber.org/zap"
@@ -64,65 +63,13 @@ type Agent struct {
 	registry     *tools.Registry
 	runtime      *taskRuntime
 	taskCatalog  *taskCatalog
-	domainGate   *domainGate
 	sessions     *sessionManager
 	limiter      *rateLimiter
+	logWriter    *callLogWriter
 	stopCleanup  chan struct{}
 	once         sync.Once
 }
 
-type callMetrics struct {
-	QueryType               queryKind
-	ConversationEvent       conversationEvent
-	ActiveTaskType          string
-	TaskStatusBefore        string
-	TaskStatusAfter         string
-	DomainResult            domainResult
-	DomainHint              DomainHint
-	PlanKind                PlanKind
-	KnowledgeStrength       KnowledgeStrength
-	PlannerReason           string
-	PlannerAction           string
-	PlannerConfidence       float64
-	TaskID                  string
-	TaskKeepOpen            bool
-	TaskSwitch              bool
-	LastErrorCode           string
-	ShadowPlannerAction     string
-	ShadowPlannerMatched    bool
-	RouteKind               string
-	RouteConfidence         float64
-	RouteReasonCode         string
-	RouteSource             string
-	ClarifyCode             string
-	SoftNoticeCode          string
-	ExecutorName            string
-	ToolPool                string
-	RouterLatencyMs         int64
-	ExecutorLatencyMs       int64
-	ShadowRouteKind         string
-	ShadowRouteMatched      bool
-	ProtocolMode            string
-	ProtocolAct             string
-	ProtocolDomain          string
-	ProtocolOperation       string
-	ProtocolValidationCode  string
-	WorkflowIDBefore        string
-	WorkflowIDAfter         string
-	ResponseKind            string
-	ExecutionAllowed        bool
-	AnswerMode              answerMode
-	LLMDurationMs           int64
-	RetrievalDurationMs     int64
-	RetrievalHitCount       int
-	RetrievalCandidateCount int
-	SourceRefs              []string
-	RetrievalTopRefs        []string
-	RetrievalScores         []int
-	FollowUpMatchedSlots    []string
-	RetrievalFilteredReason string
-	KnowledgeDocTypes       []string
-}
 
 // NewAgent 创建 Agent
 func NewAgent(deps Deps) *Agent {
@@ -157,7 +104,6 @@ func NewAgent(deps Deps) *Agent {
 		routeMode:    routeMode,
 		protocolMode: protocolMode,
 		sessions:     newSessionManager(),
-		domainGate:   newDomainGate(),
 		limiter:      newRateLimiter(),
 		stopCleanup:  make(chan struct{}),
 	}
@@ -181,6 +127,11 @@ func NewAgent(deps Deps) *Agent {
 	// 启动 Session 过期清理
 	go a.cleanupLoop()
 
+	// 启动异步日志写入 worker
+	if deps.CallLog != nil {
+		a.logWriter = newCallLogWriter(deps.CallLog, deps.Logger)
+	}
+
 	return a
 }
 
@@ -188,6 +139,9 @@ func NewAgent(deps Deps) *Agent {
 func (a *Agent) Stop() {
 	a.once.Do(func() {
 		close(a.stopCleanup)
+		if a.logWriter != nil {
+			a.logWriter.Stop()
+		}
 	})
 }
 
@@ -222,58 +176,16 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		return "请输入您的问题", nil
 	}
 
-	// 1. 通过 CorpID 确定租户并注入上下文（必须先于用户查询，保证租户隔离正确）
-	tenantID, err := a.deps.Tenant.FindTenantIDByCorpID(ctx, msg.CorpID)
-	if err != nil {
-		a.deps.Logger.Errorw("查找租户失败", "corpID", msg.CorpID, "err", err)
-		return "系统错误，请稍后重试", nil
+	// 1. 认证：租户解析 + 用户查找 + 限流
+	auth, rejectReply := a.resolveChatAuth(ctx, msg)
+	if rejectReply != "" {
+		return rejectReply, nil
 	}
-	if tenantID == 0 {
-		a.deps.Logger.Infow("未找到对应企业，拒绝服务", "corpID", msg.CorpID)
-		return "未找到对应的企业，请联系管理员", nil
-	}
-	ctx = tenantctx.WithTenantID(ctx, tenantID)
-
-	// 2. 查用户（已有租户上下文，隔离正确）
-	user, err := a.deps.User.FindByDingUserID(ctx, msg.SenderID)
-	if err != nil {
-		a.deps.Logger.Errorw("查找用户失败", "senderID", msg.SenderID, "err", err)
-		return "系统错误，请稍后重试", nil
-	}
-	if user == nil {
-		a.deps.Logger.Infow("用户未绑定账户，拒绝服务", "senderID", msg.SenderID)
-		return "您尚未绑定账户，请先通过小程序登录", nil
-	}
-
-	// 3. 构建 UserContext
-	uctx := &tools.UserContext{
-		TenantID:          user.TenantID,
-		UserID:            user.ID,
-		UserRole:          user.Role,
-		DingUserID:        user.DingUserID,
-		Name:              user.Name,
-		ConversationType:  msg.ConversationType,
-		ConversationID:    msg.ConversationID,
-		ConversationTitle: msg.ConversationTitle,
-	}
-
-	// 4. 构建 session key（使用 tenantID 确保租户隔离）
-	var sessionKey string
-	if msg.ConversationType == "2" {
-		sessionKey = fmt.Sprintf("%d:%s:%s", user.TenantID, msg.ConversationID, msg.SenderID)
-	} else {
-		sessionKey = fmt.Sprintf("%d:%s", user.TenantID, msg.SenderID)
-	}
-
-	// 5. 限流检查
-	if !a.limiter.Allow(sessionKey) {
-		a.deps.Logger.Infow("限流拦截", "user", user.Name, "tenantID", user.TenantID)
-		return "你发消息太快了，请稍后再试", nil
-	}
+	ctx, uctx, sessionKey := auth.ctx, auth.uctx, auth.sessionKey
 
 	a.deps.Logger.Infow("收到消息",
-		"user", user.Name,
-		"tenantID", user.TenantID,
+		"user", uctx.Name,
+		"tenantID", uctx.TenantID,
 		"convType", msg.ConversationType,
 		"content", msg.Content,
 	)
@@ -285,7 +197,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	history, activeTask := a.sessions.getSessionState(sessionKey)
 	_, activeWorkflow := a.sessions.getWorkflowState(sessionKey)
 	userMsg := tools.Message{Role: "user", Content: msg.Content}
-	metrics := callMetrics{ProtocolMode: string(a.protocolMode)}
+	metrics := callMetrics{Proto: protocolMetrics{Mode: string(a.protocolMode)}}
 	beforeTask := cloneActiveTask(activeTask)
 	protocolWorkflow := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
 	if protocolWorkflow == nil && a.protocolMode == ProtocolModeShadow {
@@ -301,7 +213,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		protocolValidation = validateProtocol(protocolDraft, protocolWorkflow)
 		applyProtocolMetrics(&metrics, protocolDraft, protocolValidation)
 		if activeWorkflow != nil {
-			metrics.WorkflowIDBefore = activeWorkflow.ID
+			metrics.Wf.IDBefore = activeWorkflow.ID
 		}
 	}
 	if handled, reply, err := a.tryHandleProtocolPrimary(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, &metrics, activeWorkflow, protocolWorkflow); handled {
@@ -321,17 +233,17 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 			routeContext := buildRouteContext(msg.Content, uctx, history, routeTask)
 			shadowRouteStart := time.Now()
 			routeDecision = newSemanticRouter(a.routerClient).Route(ctx, routeContext)
-			metrics.RouterLatencyMs = elapsedMs(shadowRouteStart)
+			metrics.Route.RouterLatencyMs = elapsedMs(shadowRouteStart)
 		}
 		if a.routeMode == string(RouteModeLive) {
-			metrics.RouteKind = string(routeDecision.Kind)
-			metrics.RouteConfidence = routeDecision.Confidence
-			metrics.RouteReasonCode = routeDecision.ReasonCode
-			metrics.RouteSource = string(routeDecision.RouteSource)
-			metrics.ClarifyCode = routeDecision.ClarifyCode
-			metrics.SoftNoticeCode = routeDecision.SoftNoticeCode
+			metrics.Route.Kind = string(routeDecision.Kind)
+			metrics.Route.Confidence = routeDecision.Confidence
+			metrics.Route.ReasonCode = routeDecision.ReasonCode
+			metrics.Route.Source = string(routeDecision.RouteSource)
+			metrics.Route.ClarifyCode = routeDecision.ClarifyCode
+			metrics.Route.SoftNoticeCode = routeDecision.SoftNoticeCode
 		} else {
-			metrics.ShadowRouteKind = string(routeDecision.Kind)
+			metrics.Shadow.RouteKind = string(routeDecision.Kind)
 		}
 	}
 
@@ -345,10 +257,10 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 			ClarifyCode: "ambiguous_intent",
 			RouteSource: RouteSourceFallback,
 		}
-		metrics.RouteKind = string(fallback.Kind)
-		metrics.RouteReasonCode = fallback.ReasonCode
-		metrics.RouteSource = string(fallback.RouteSource)
-		metrics.ClarifyCode = fallback.ClarifyCode
+		metrics.Route.Kind = string(fallback.Kind)
+		metrics.Route.ReasonCode = fallback.ReasonCode
+		metrics.Route.Source = string(fallback.RouteSource)
+		metrics.Route.ClarifyCode = fallback.ClarifyCode
 		if handled, reply, err := a.tryHandleRoutePrimary(ctx, uctx, sessionKey, msg.Content, history, userMsg, startTime, beforeTask, &metrics, fallback); handled {
 			return reply, err
 		}
@@ -361,11 +273,6 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		UserContext: uctx,
 	})
 	applyShadowPlannerMetrics(&metrics, shadowDecision, shadowTask)
-	domainHint := domainHintUnknown
-	if a.domainGate != nil {
-		domainHint = a.domainGate.Hint(msg.Content)
-	}
-	metrics.DomainHint = domainHint
 
 	if hasGreetingIntent(normalized) {
 		recordLegacyPlannerAction(&metrics, plannerActionSocialRefuse)
@@ -374,7 +281,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		metrics.ConversationEvent = eventGreeting
 		metrics.DomainResult = domainIn
 		metrics.PlanKind = planKindTool
-		metrics.PlannerReason = "greeting"
+		metrics.Planner.Reason = "greeting"
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
 		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
@@ -388,59 +295,8 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 
 	conversationDecision := interpretConversation(msg.Content, activeTask)
 	metrics.ConversationEvent = conversationDecision.Event
-	switch conversationDecision.Event {
-	case eventCancel:
-		recordLegacyPlannerAction(&metrics, plannerActionCancelTask)
-		a.sessions.clearActiveTask(sessionKey)
-		reply := "已取消当前任务。如需继续，请重新告诉我。"
-		applyConversationMetrics(&metrics, beforeTask, taskWithStatus(beforeTask, taskStatusCanceled), nil)
-		metrics.DomainResult = domainIn
-		metrics.PlanKind = planKindTool
-		metrics.PlannerReason = conversationDecision.Reason
-		metrics.QueryType = queryKindTool
-		metrics.AnswerMode = answerModeToolFirst
-		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return reply, nil
-	case eventTaskFollowUp:
-		recordLegacyPlannerAction(&metrics, plannerActionContinueTask)
-		fill := fillTaskSlots(activeTask, msg.Content)
-		nextTask := applySlotFillToTask(activeTask, fill)
-		reply, followUpTools, resultingTask, err := a.respondForTaskState(ctx, uctx, sessionKey, nextTask)
-		if err != nil {
-			applyConversationMetrics(&metrics, beforeTask, resultingTaskOrFallback(resultingTask, nextTask), matchedSlotNames(fill))
-			a.deps.Logger.Errorw("task follow-up 执行失败", "user", uctx.Name, "question", msg.Content, "err", err)
-			a.writeCallLog(ctx, uctx, msg.Content, "", followUpTools, 0, startTime, "failed", err.Error(), metrics)
-			return "系统错误，请稍后重试", nil
-		}
-		afterTask := resultingTask
-		if afterTask == nil && nextTask != nil && nextTask.Status == taskStatusReady {
-			afterTask = taskWithStatus(nextTask, taskStatusCompleted)
-		}
-		applyConversationMetrics(&metrics, beforeTask, afterTask, matchedSlotNames(fill))
-		metrics.DomainResult = domainIn
-		metrics.PlanKind = planKindContinueTask
-		metrics.KnowledgeStrength = knowledgeStrengthNone
-		metrics.PlannerReason = conversationDecision.Reason
-		metrics.QueryType = queryKindTool
-		metrics.AnswerMode = answerModeToolFirst
-		toolsCalled = append(toolsCalled, followUpTools...)
-		a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, 0, startTime, "success", "", metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return reply, nil
-	case eventUnknown:
-		recordLegacyPlannerAction(&metrics, plannerActionTaskMeta)
-		reply := buildUnknownFollowUpReply(activeTask)
-		applyConversationMetrics(&metrics, beforeTask, beforeTask, nil)
-		metrics.DomainResult = domainIn
-		metrics.PlanKind = planKindClarify
-		metrics.KnowledgeStrength = knowledgeStrengthNone
-		metrics.PlannerReason = conversationDecision.Reason
-		metrics.QueryType = queryKindTool
-		metrics.AnswerMode = answerModeToolFirst
-		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return reply, nil
+	if handled, reply, err := a.handleConversationEvent(ctx, uctx, sessionKey, msg, userMsg, startTime, &metrics, activeTask, beforeTask, conversationDecision, toolsCalled); handled {
+		return reply, err
 	}
 	if activeTask != nil {
 		a.sessions.clearActiveTask(sessionKey)
@@ -452,7 +308,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		reply := buildHelpReply(uctx)
 		metrics.DomainResult = domainIn
 		metrics.PlanKind = planKindTool
-		metrics.PlannerReason = "help_intent"
+		metrics.Planner.Reason = "help_intent"
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
 		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
@@ -465,7 +321,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		metrics.DomainResult = domainIn
 		metrics.PlanKind = planKindClarify
 		metrics.KnowledgeStrength = knowledgeStrengthNone
-		metrics.PlannerReason = shadowDecision.Reason
+		metrics.Planner.Reason = shadowDecision.Reason
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeReject
 		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
@@ -473,213 +329,9 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		return reply, nil
 	}
 
-	if domainHint == domainHintObviousOut {
-		recordLegacyPlannerAction(&metrics, plannerActionOffTopicReject)
-		metrics.DomainResult = domainOut
-		metrics.PlanKind = planKindObviousOut
-		metrics.KnowledgeStrength = knowledgeStrengthNone
-		metrics.PlannerReason = "obvious_out"
-		a.deps.Logger.Infow("明显站外问题，直接拒答", "user", uctx.Name, "question", msg.Content)
-		metrics.QueryType = queryKindTool
-		metrics.AnswerMode = answerModeReject
-		reply := composePlannerReply(PlannerDecision{Action: plannerActionOffTopicReject}, nil, nil)
-		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
-		return reply, nil
-	}
 	metrics.DomainResult = domainIn
 
-	taskCandidate := buildTaskFromRequest(msg.Content, uctx)
-	retrievalResult := RetrievalResult{}
-	if a.deps.Knowledge != nil && taskCandidate == nil {
-		retrievalStart := time.Now()
-		retrievalResult, err = a.retrieveKnowledge(ctx, uctx.TenantID, msg.Content)
-		metrics.RetrievalDurationMs = elapsedMs(retrievalStart)
-		if err != nil {
-			a.deps.Logger.Errorw("知识预检失败", "user", uctx.Name, "question", msg.Content, "err", err)
-			retrievalResult = RetrievalResult{}
-		}
-	}
-	metrics.RetrievalHitCount = len(retrievalResult.Hits)
-	metrics.RetrievalCandidateCount = retrievalResult.CandidateCount
-	metrics.SourceRefs = append([]string(nil), retrievalResult.TopRefs...)
-	metrics.RetrievalTopRefs = append([]string(nil), retrievalResult.TopRefs...)
-	metrics.RetrievalScores = append([]int(nil), retrievalResult.TopScores...)
-	metrics.RetrievalFilteredReason = retrievalResult.FilteredReason
-	metrics.KnowledgeDocTypes = append([]string(nil), retrievalResult.KnowledgeDocTypes...)
-
-	planDecision := plan(PlanInput{
-		Question:          msg.Content,
-		UserContext:       uctx,
-		History:           history,
-		ActiveTask:        nil,
-		ConversationEvent: conversationDecision,
-		DomainHint:        domainHint,
-		Retrieval:         retrievalResult,
-		TaskCandidate:     taskCandidate,
-		HasLiveSignal:     hasLiveSignal(normalized),
-		HasRuleSignal:     hasRuleSignal(normalized),
-		HasActionIntent:   hasActionIntent(normalized),
-		HasClarifyIntent:  hasClarifyIntent(normalized),
-		HasHelpIntent:     hasHelpIntent(normalized),
-	})
-	metrics.PlanKind = planDecision.Kind
-	metrics.KnowledgeStrength = planDecision.KnowledgeStrength
-	metrics.PlannerReason = planDecision.ClarifyReason
-
-	switch planDecision.Kind {
-	case planKindClarify:
-		if planDecision.ActiveTask != nil {
-			recordLegacyPlannerAction(&metrics, legacyTaskPlannerAction(beforeTask, planDecision.ActiveTask))
-			reply, taskTools, resultingTask, err := a.respondForTaskState(ctx, uctx, sessionKey, planDecision.ActiveTask)
-			if err != nil {
-				applyConversationMetrics(&metrics, beforeTask, resultingTaskOrFallback(resultingTask, planDecision.ActiveTask), nil)
-				a.deps.Logger.Errorw("planner clarify 执行失败", "user", uctx.Name, "question", msg.Content, "err", err)
-				a.writeCallLog(ctx, uctx, msg.Content, "", taskTools, 0, startTime, "failed", err.Error(), metrics)
-				return "系统错误，请稍后重试", nil
-			}
-			applyConversationMetrics(&metrics, beforeTask, resultingTaskOrFallback(resultingTask, planDecision.ActiveTask), nil)
-			metrics.QueryType = queryKindTool
-			metrics.AnswerMode = answerModeToolFirst
-			toolsCalled = append(toolsCalled, taskTools...)
-			a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, 0, startTime, "success", "", metrics)
-			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-			return reply, nil
-		}
-		recordLegacyPlannerAction(&metrics, plannerActionTaskMeta)
-		reply := buildPlannerClarifyReply(planDecision.ClarifyReason, nil)
-		metrics.QueryType = queryKindTool
-		metrics.AnswerMode = answerModeToolFirst
-		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return reply, nil
-	case planKindTool:
-		if planDecision.ActiveTask != nil {
-			recordLegacyPlannerAction(&metrics, legacyTaskPlannerAction(beforeTask, planDecision.ActiveTask))
-			reply, taskTools, resultingTask, err := a.respondForTaskState(ctx, uctx, sessionKey, planDecision.ActiveTask)
-			if err != nil {
-				applyConversationMetrics(&metrics, beforeTask, resultingTaskOrFallback(resultingTask, planDecision.ActiveTask), nil)
-				a.deps.Logger.Errorw("planner task 执行失败", "user", uctx.Name, "question", msg.Content, "err", err)
-				a.writeCallLog(ctx, uctx, msg.Content, "", taskTools, 0, startTime, "failed", err.Error(), metrics)
-				return "系统错误，请稍后重试", nil
-			}
-			afterTask := resultingTask
-			if afterTask == nil && planDecision.ActiveTask != nil && planDecision.ActiveTask.Status == taskStatusReady {
-				afterTask = taskWithStatus(planDecision.ActiveTask, taskStatusCompleted)
-			}
-			applyConversationMetrics(&metrics, beforeTask, afterTask, nil)
-			metrics.QueryType = queryKindTool
-			metrics.AnswerMode = answerModeToolFirst
-			toolsCalled = append(toolsCalled, taskTools...)
-			a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, 0, startTime, "success", "", metrics)
-			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-			return reply, nil
-		}
-	}
-
-	if metrics.ShadowPlannerAction == "" {
-		recordLegacyPlannerAction(&metrics, plannerActionSocialRefuse)
-	}
-
-	answerMode := answerModeToolFirst
-	switch planDecision.Kind {
-	case planKindRAG:
-		answerMode = answerModeKnowledgeOnly
-	case planKindMixed:
-		answerMode = answerModeMixed
-	case planKindTool:
-		answerMode = answerModeToolFirst
-	}
-	metrics.QueryType = modeToQueryKind(answerMode)
-	metrics.AnswerMode = answerMode
-
-	if answerMode == answerModeKnowledgeOnly && classifyKnowledgeStrength(retrievalResult) != knowledgeStrengthStrong {
-		reply := buildPlannerClarifyReply("weak_knowledge_match", nil)
-		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return reply, nil
-	}
-
-	// 8. 构建完整消息列表（system + retrieval prompt + history + 当前用户消息）
-	systemMsg := tools.Message{Role: "system", Content: a.buildSystemPrompt(ctx, uctx)}
-	messages := make([]tools.Message, 0, 3+len(history)+1)
-	messages = append(messages, systemMsg)
-	switch answerMode {
-	case answerModeKnowledgeOnly:
-		if prompt := buildKnowledgeOnlyPrompt(retrievalResult); prompt != "" {
-			messages = append(messages, tools.Message{Role: "system", Content: prompt})
-		}
-	case answerModeMixed:
-		if prompt := buildMixedAnswerPrompt(retrievalResult); prompt != "" {
-			messages = append(messages, tools.Message{Role: "system", Content: prompt})
-		}
-	}
-	messages = append(messages, history...)
-	messages = append(messages, userMsg)
-
-	// 9. 获取该用户可用的工具列表
-	toolDefs := a.registry.ToToolDefs(uctx.UserRole)
-	if answerMode == answerModeKnowledgeOnly {
-		toolDefs = nil
-	}
-
-	// 10. ReAct Loop
-	for round := 0; round < maxReactRounds; round++ {
-		// 总结阶段（末尾为 tool 消息）LLM 需处理完整工具结果，输入 token 较多，给予更长超时时间
-		// 工具调用阶段使用 50s，总结阶段使用 90s
-		llmTimeout := 50 * time.Second
-		if len(messages) > 0 && messages[len(messages)-1].Role == "tool" {
-			llmTimeout = 90 * time.Second
-		}
-		llmCtx, llmCancel := context.WithTimeout(context.Background(), llmTimeout)
-		llmStart := time.Now()
-		resp, err := a.llmClient.Chat(llmCtx, messages, toolDefs)
-		metrics.LLMDurationMs += elapsedMs(llmStart)
-		llmCancel()
-		if err != nil {
-			a.deps.Logger.Errorw("LLM 调用失败", "round", round, "err", err)
-			a.writeCallLog(ctx, uctx, msg.Content, "", toolsCalled, round, startTime, "failed", err.Error(), metrics)
-			return "AI 服务暂时不可用，请稍后重试", nil
-		}
-
-		// 无工具调用 → 返回最终回复
-		if len(resp.ToolCalls) == 0 {
-			reply := resp.Content
-			if reply == "" {
-				reply = "抱歉，我无法理解您的问题，请换个方式描述"
-			}
-			a.deps.Logger.Infow("回复完成", "user", uctx.Name, "rounds", round+1, "reply", reply)
-			a.writeCallLog(ctx, uctx, msg.Content, reply, toolsCalled, round+1, startTime, "success", "", metrics)
-			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-			return reply, nil
-		}
-
-		// 有工具调用 → 执行工具
-		messages = append(messages, resp) // assistant message with tool_calls
-
-		for _, tc := range resp.ToolCalls {
-			a.deps.Logger.Infow("调用工具", "tool", tc.Function.Name, "user", uctx.Name, "args", tc.Function.Arguments)
-			toolsCalled = append(toolsCalled, tc.Function.Name)
-			toolResult, err := a.registry.Dispatch(ctx, uctx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
-			if err != nil {
-				a.deps.Logger.Warnw("工具执行失败",
-					"tool", tc.Function.Name,
-					"err", err,
-				)
-				toolResult = fmt.Sprintf(`{"error": "工具执行失败: %s"}`, err.Error())
-			}
-
-			messages = append(messages, tools.Message{
-				Role:       "tool",
-				Content:    toolResult,
-				ToolCallID: tc.ID,
-			})
-		}
-	}
-
-	// 超出最大轮数
-	a.deps.Logger.Warnw("ReAct Loop 超出最大轮数", "sessionKey", sessionKey)
-	a.writeCallLog(ctx, uctx, msg.Content, "", toolsCalled, maxReactRounds, startTime, "failed", "超出最大轮数", metrics)
-	return "处理轮次过多，请简化您的问题后重试", nil
+	return a.handleWithKnowledgeAndPlan(ctx, uctx, sessionKey, msg, userMsg, startTime, &metrics, history, normalized, conversationDecision, beforeTask)
 }
 
 // buildGreetingReply builds greeting reply.
@@ -816,7 +468,7 @@ func (a *Agent) tryHandlePlannerPrimary(ctx context.Context, uctx *tools.UserCon
 		metrics.DomainResult = domainOut
 		metrics.PlanKind = planKindObviousOut
 		metrics.KnowledgeStrength = knowledgeStrengthNone
-		metrics.PlannerReason = decision.Reason
+		metrics.Planner.Reason = decision.Reason
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeReject
 		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
@@ -827,7 +479,7 @@ func (a *Agent) tryHandlePlannerPrimary(ctx context.Context, uctx *tools.UserCon
 		metrics.DomainResult = domainIn
 		metrics.PlanKind = planKindClarify
 		metrics.KnowledgeStrength = knowledgeStrengthNone
-		metrics.PlannerReason = decision.Reason
+		metrics.Planner.Reason = decision.Reason
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeReject
 		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
@@ -840,7 +492,7 @@ func (a *Agent) tryHandlePlannerPrimary(ctx context.Context, uctx *tools.UserCon
 		metrics.DomainResult = domainIn
 		metrics.PlanKind = planKindTool
 		metrics.KnowledgeStrength = knowledgeStrengthNone
-		metrics.PlannerReason = decision.Reason
+		metrics.Planner.Reason = decision.Reason
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
 		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
@@ -861,7 +513,7 @@ func (a *Agent) tryHandlePlannerPrimary(ctx context.Context, uctx *tools.UserCon
 					metrics.DomainResult = domainIn
 					metrics.PlanKind = planKindClarify
 					metrics.KnowledgeStrength = knowledgeStrengthNone
-					metrics.PlannerReason = decision.Reason
+					metrics.Planner.Reason = decision.Reason
 					metrics.QueryType = queryKindTool
 					metrics.AnswerMode = answerModeToolFirst
 					a.writeCallLog(ctx, uctx, question, "", toolsCalled, 0, startTime, "failed", err.Error(), *metrics)
@@ -876,7 +528,7 @@ func (a *Agent) tryHandlePlannerPrimary(ctx context.Context, uctx *tools.UserCon
 		metrics.DomainResult = domainIn
 		metrics.PlanKind = planKindClarify
 		metrics.KnowledgeStrength = knowledgeStrengthNone
-		metrics.PlannerReason = decision.Reason
+		metrics.Planner.Reason = decision.Reason
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
 		a.writeCallLog(ctx, uctx, question, reply, toolsCalled, 0, startTime, "success", "", *metrics)
@@ -903,7 +555,7 @@ func (a *Agent) tryHandlePlannerPrimary(ctx context.Context, uctx *tools.UserCon
 		metrics.DomainResult = domainIn
 		metrics.PlanKind = plannerPrimaryPlanKind(decision, nextTask)
 		metrics.KnowledgeStrength = knowledgeStrengthNone
-		metrics.PlannerReason = plannerPrimaryReason(decision, nextTask)
+		metrics.Planner.Reason = plannerPrimaryReason(decision, nextTask)
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
 		a.writeCallLog(ctx, uctx, question, reply, taskTools, 0, startTime, "success", "", *metrics)
@@ -928,7 +580,7 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 		metrics.DomainResult = domainOut
 		metrics.AnswerMode = result.AnswerMode
 		metrics.QueryType = modeToQueryKind(result.AnswerMode)
-		metrics.ExecutorName = result.ExecutorName
+		metrics.Route.ExecutorName = result.ExecutorName
 		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return true, reply, nil
@@ -939,7 +591,7 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 		metrics.DomainResult = domainIn
 		metrics.AnswerMode = result.AnswerMode
 		metrics.QueryType = modeToQueryKind(result.AnswerMode)
-		metrics.ExecutorName = result.ExecutorName
+		metrics.Route.ExecutorName = result.ExecutorName
 		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return true, reply, nil
@@ -951,7 +603,7 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 		metrics.DomainResult = domainIn
 		metrics.AnswerMode = result.AnswerMode
 		metrics.QueryType = modeToQueryKind(result.AnswerMode)
-		metrics.ExecutorName = result.ExecutorName
+		metrics.Route.ExecutorName = result.ExecutorName
 		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return true, reply, nil
@@ -966,22 +618,22 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 		metrics.DomainResult = domainIn
 		metrics.AnswerMode = result.AnswerMode
 		metrics.QueryType = modeToQueryKind(result.AnswerMode)
-		metrics.ExecutorName = result.ExecutorName
+		metrics.Route.ExecutorName = result.ExecutorName
 		metrics.LLMDurationMs += result.LLMDuration
-		metrics.RetrievalHitCount = len(result.Retrieval.Hits)
-		metrics.RetrievalCandidateCount = result.Retrieval.CandidateCount
+		metrics.Retrieval.HitCount = len(result.Retrieval.Hits)
+		metrics.Retrieval.CandidateCount = result.Retrieval.CandidateCount
 		metrics.SourceRefs = append([]string(nil), result.Retrieval.TopRefs...)
-		metrics.RetrievalTopRefs = append([]string(nil), result.Retrieval.TopRefs...)
-		metrics.RetrievalScores = append([]int(nil), result.Retrieval.TopScores...)
-		metrics.RetrievalFilteredReason = result.Retrieval.FilteredReason
-		metrics.KnowledgeDocTypes = append([]string(nil), result.Retrieval.KnowledgeDocTypes...)
+		metrics.Retrieval.TopRefs = append([]string(nil), result.Retrieval.TopRefs...)
+		metrics.Retrieval.TopScores = append([]int(nil), result.Retrieval.TopScores...)
+		metrics.Retrieval.FilteredReason = result.Retrieval.FilteredReason
+		metrics.Retrieval.DocTypes = append([]string(nil), result.Retrieval.KnowledgeDocTypes...)
 		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return true, reply, nil
 	case RouteToolQuery:
 		executorStart := time.Now()
 		result, toolsCalled, err := (toolQueryExecutor{agent: a}).Execute(ctx, uctx, history, question)
-		metrics.ExecutorLatencyMs = elapsedMs(executorStart)
+		metrics.Route.ExecutorLatencyMs = elapsedMs(executorStart)
 		if err != nil {
 			failReply := "AI 服务暂时不可用，请稍后重试"
 			if err.Error() == "超出最大轮数" {
@@ -995,8 +647,8 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 		metrics.DomainResult = domainIn
 		metrics.AnswerMode = result.AnswerMode
 		metrics.QueryType = modeToQueryKind(result.AnswerMode)
-		metrics.ExecutorName = result.ExecutorName
-		metrics.ToolPool = result.ToolPool
+		metrics.Route.ExecutorName = result.ExecutorName
+		metrics.Route.ToolPool = result.ToolPool
 		metrics.LLMDurationMs += result.LLMDuration
 		a.writeCallLog(ctx, uctx, question, reply, toolsCalled, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
@@ -1004,7 +656,7 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 	case RouteTaskStart:
 		executorStart := time.Now()
 		result, err := (taskStartExecutor{agent: a}).Execute(ctx, decision, question, uctx)
-		metrics.ExecutorLatencyMs = elapsedMs(executorStart)
+		metrics.Route.ExecutorLatencyMs = elapsedMs(executorStart)
 		if err != nil {
 			a.writeCallLog(ctx, uctx, question, "", nil, 0, startTime, "failed", err.Error(), *metrics)
 			return true, "系统错误，请稍后重试", nil
@@ -1019,7 +671,7 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 		metrics.DomainResult = domainIn
 		metrics.AnswerMode = result.AnswerMode
 		metrics.QueryType = modeToQueryKind(result.AnswerMode)
-		metrics.ExecutorName = result.ExecutorName
+		metrics.Route.ExecutorName = result.ExecutorName
 		a.writeCallLog(ctx, uctx, question, result.Reply, result.ToolsCalled, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: result.Reply})
 		return true, result.Reply, nil
@@ -1030,7 +682,7 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 		}
 		executorStart := time.Now()
 		result, err := (taskContinueExecutor{agent: a}).Execute(ctx, currentTask, question, uctx)
-		metrics.ExecutorLatencyMs = elapsedMs(executorStart)
+		metrics.Route.ExecutorLatencyMs = elapsedMs(executorStart)
 		if err != nil {
 			a.writeCallLog(ctx, uctx, question, "", nil, 0, startTime, "failed", err.Error(), *metrics)
 			return true, "系统错误，请稍后重试", nil
@@ -1045,7 +697,7 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 		metrics.DomainResult = domainIn
 		metrics.AnswerMode = result.AnswerMode
 		metrics.QueryType = modeToQueryKind(result.AnswerMode)
-		metrics.ExecutorName = result.ExecutorName
+		metrics.Route.ExecutorName = result.ExecutorName
 		a.writeCallLog(ctx, uctx, question, result.Reply, result.ToolsCalled, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: result.Reply})
 		return true, result.Reply, nil
@@ -1056,7 +708,7 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 		}
 		executorStart := time.Now()
 		result, err := (taskMetaExecutor{agent: a}).Execute(ctx, currentTask)
-		metrics.ExecutorLatencyMs = elapsedMs(executorStart)
+		metrics.Route.ExecutorLatencyMs = elapsedMs(executorStart)
 		if err != nil {
 			a.writeCallLog(ctx, uctx, question, "", nil, 0, startTime, "failed", err.Error(), *metrics)
 			return true, "系统错误，请稍后重试", nil
@@ -1069,7 +721,7 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 		metrics.DomainResult = domainIn
 		metrics.AnswerMode = result.AnswerMode
 		metrics.QueryType = modeToQueryKind(result.AnswerMode)
-		metrics.ExecutorName = result.ExecutorName
+		metrics.Route.ExecutorName = result.ExecutorName
 		a.writeCallLog(ctx, uctx, question, result.Reply, result.ToolsCalled, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: result.Reply})
 		return true, result.Reply, nil
@@ -1084,7 +736,7 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 		metrics.DomainResult = domainIn
 		metrics.AnswerMode = result.AnswerMode
 		metrics.QueryType = modeToQueryKind(result.AnswerMode)
-		metrics.ExecutorName = result.ExecutorName
+		metrics.Route.ExecutorName = result.ExecutorName
 		a.writeCallLog(ctx, uctx, question, result.Reply, nil, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: result.Reply})
 		return true, result.Reply, nil
@@ -1205,9 +857,6 @@ func (a *Agent) legacyPlannerPrimaryAction(question string, activeTask *ActiveTa
 	normalized := normalizeQuery(question)
 	if hasHelpIntent(normalized) {
 		return plannerActionSocialRefuse
-	}
-	if a.domainGate != nil && a.domainGate.Hint(question) == domainHintObviousOut {
-		return plannerActionOffTopicReject
 	}
 	if candidate := buildTaskFromRequest(question, uctx); candidate != nil {
 		return plannerActionStartTask
@@ -1391,64 +1040,64 @@ func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, quest
 		ConvType:                uctx.ConversationType,
 		QueryType:               string(metrics.QueryType),
 		ConversationEvent:       string(metrics.ConversationEvent),
-		ActiveTaskType:          metrics.ActiveTaskType,
-		TaskStatusBefore:        metrics.TaskStatusBefore,
-		TaskStatusAfter:         metrics.TaskStatusAfter,
+		ActiveTaskType:          metrics.Task.ActiveTaskType,
+		TaskStatusBefore:        metrics.Task.TaskStatusBefore,
+		TaskStatusAfter:         metrics.Task.TaskStatusAfter,
 		DomainResult:            string(metrics.DomainResult),
 		DomainHint:              string(metrics.DomainHint),
 		PlanKind:                string(metrics.PlanKind),
 		KnowledgeStrength:       string(metrics.KnowledgeStrength),
-		PlannerReason:           metrics.PlannerReason,
-		PlannerAction:           metrics.PlannerAction,
-		PlannerConfidence:       metrics.PlannerConfidence,
-		TaskID:                  metrics.TaskID,
-		TaskKeepOpen:            metrics.TaskKeepOpen,
-		TaskSwitch:              metrics.TaskSwitch,
-		LastErrorCode:           metrics.LastErrorCode,
-		ShadowPlannerAction:     metrics.ShadowPlannerAction,
-		ShadowPlannerMatched:    metrics.ShadowPlannerMatched,
-		RouteKind:               metrics.RouteKind,
-		RouteConfidence:         metrics.RouteConfidence,
-		RouteReasonCode:         metrics.RouteReasonCode,
-		RouteSource:             metrics.RouteSource,
-		ClarifyCode:             metrics.ClarifyCode,
-		SoftNoticeCode:          metrics.SoftNoticeCode,
-		ExecutorName:            metrics.ExecutorName,
-		ToolPool:                metrics.ToolPool,
-		RouterLatencyMs:         metrics.RouterLatencyMs,
-		ExecutorLatencyMs:       metrics.ExecutorLatencyMs,
-		ShadowRouteKind:         metrics.ShadowRouteKind,
-		ShadowRouteMatched:      metrics.ShadowRouteMatched,
-		ProtocolMode:            metrics.ProtocolMode,
-		ProtocolAct:             metrics.ProtocolAct,
-		ProtocolDomain:          metrics.ProtocolDomain,
-		ProtocolOperation:       metrics.ProtocolOperation,
-		ProtocolValidationCode:  metrics.ProtocolValidationCode,
-		WorkflowIDBefore:        metrics.WorkflowIDBefore,
-		WorkflowIDAfter:         metrics.WorkflowIDAfter,
+		PlannerReason:           metrics.Planner.Reason,
+		PlannerAction:           metrics.Planner.Action,
+		PlannerConfidence:       metrics.Planner.Confidence,
+		TaskID:                  metrics.Task.TaskID,
+		TaskKeepOpen:            metrics.Task.TaskKeepOpen,
+		TaskSwitch:              metrics.Task.TaskSwitch,
+		LastErrorCode:           metrics.Task.LastErrorCode,
+		ShadowPlannerAction:     metrics.Shadow.PlannerAction,
+		ShadowPlannerMatched:    metrics.Shadow.PlannerMatched,
+		RouteKind:               metrics.Route.Kind,
+		RouteConfidence:         metrics.Route.Confidence,
+		RouteReasonCode:         metrics.Route.ReasonCode,
+		RouteSource:             metrics.Route.Source,
+		ClarifyCode:             metrics.Route.ClarifyCode,
+		SoftNoticeCode:          metrics.Route.SoftNoticeCode,
+		ExecutorName:            metrics.Route.ExecutorName,
+		ToolPool:                metrics.Route.ToolPool,
+		RouterLatencyMs:         metrics.Route.RouterLatencyMs,
+		ExecutorLatencyMs:       metrics.Route.ExecutorLatencyMs,
+		ShadowRouteKind:         metrics.Shadow.RouteKind,
+		ShadowRouteMatched:      metrics.Shadow.RouteMatched,
+		ProtocolMode:            metrics.Proto.Mode,
+		ProtocolAct:             metrics.Proto.Act,
+		ProtocolDomain:          metrics.Proto.Domain,
+		ProtocolOperation:       metrics.Proto.Operation,
+		ProtocolValidationCode:  metrics.Proto.ValidationCode,
+		WorkflowIDBefore:        metrics.Wf.IDBefore,
+		WorkflowIDAfter:         metrics.Wf.IDAfter,
 		ResponseKind:            metrics.ResponseKind,
-		ExecutionAllowed:        metrics.ExecutionAllowed,
+		ExecutionAllowed:        metrics.Proto.ExecutionAllowed,
 		AnswerMode:              string(metrics.AnswerMode),
 		Question:                question,
 		ToolsCalled:             toolsCalled,
 		ToolCallCount:           len(toolsCalled),
 		Reply:                   reply,
 		SourceRefs:              append([]string(nil), metrics.SourceRefs...),
-		RetrievalHitCount:       metrics.RetrievalHitCount,
-		RetrievalCandidateCount: metrics.RetrievalCandidateCount,
-		RetrievalTopRefs:        append([]string(nil), metrics.RetrievalTopRefs...),
-		RetrievalScores:         append([]int(nil), metrics.RetrievalScores...),
+		RetrievalHitCount:       metrics.Retrieval.HitCount,
+		RetrievalCandidateCount: metrics.Retrieval.CandidateCount,
+		RetrievalTopRefs:        append([]string(nil), metrics.Retrieval.TopRefs...),
+		RetrievalScores:         append([]int(nil), metrics.Retrieval.TopScores...),
 		FollowUpMatchedSlots:    append([]string(nil), metrics.FollowUpMatchedSlots...),
-		RetrievalFilteredReason: metrics.RetrievalFilteredReason,
-		KnowledgeDocTypes:       append([]string(nil), metrics.KnowledgeDocTypes...),
-		RetrievalDurationMs:     metrics.RetrievalDurationMs,
+		RetrievalFilteredReason: metrics.Retrieval.FilteredReason,
+		KnowledgeDocTypes:       append([]string(nil), metrics.Retrieval.DocTypes...),
+		RetrievalDurationMs:     metrics.Retrieval.DurationMs,
 		LLMDurationMs:           metrics.LLMDurationMs,
 		Rounds:                  rounds,
 		DurationMs:              elapsedMs(startTime),
 		Status:                  status,
 		ErrorMsg:                errMsg,
 	}
-	go a.deps.CallLog.Write(context.Background(), log)
+	a.logWriter.Write(log)
 }
 
 // applyShadowPlannerMetrics writes shadow planner fields into call metrics.
@@ -1456,12 +1105,12 @@ func applyShadowPlannerMetrics(metrics *callMetrics, decision PlannerDecision, a
 	if metrics == nil {
 		return
 	}
-	metrics.PlannerAction = string(decision.Action)
-	metrics.PlannerConfidence = decision.Confidence
-	metrics.TaskKeepOpen = decision.KeepTaskOpen
-	metrics.TaskSwitch = decision.SwitchTask
+	metrics.Planner.Action = string(decision.Action)
+	metrics.Planner.Confidence = decision.Confidence
+	metrics.Task.TaskKeepOpen = decision.KeepTaskOpen
+	metrics.Task.TaskSwitch = decision.SwitchTask
 	if activeTask != nil {
-		metrics.TaskID = activeTask.ID
+		metrics.Task.TaskID = activeTask.ID
 	}
 }
 
@@ -1470,8 +1119,8 @@ func recordLegacyPlannerAction(metrics *callMetrics, action PlannerAction) {
 	if metrics == nil {
 		return
 	}
-	metrics.ShadowPlannerAction = string(action)
-	metrics.ShadowPlannerMatched = metrics.ShadowPlannerAction != "" && metrics.ShadowPlannerAction == metrics.PlannerAction
+	metrics.Shadow.PlannerAction = string(action)
+	metrics.Shadow.PlannerMatched = metrics.Shadow.PlannerAction != "" && metrics.Shadow.PlannerAction == metrics.Planner.Action
 }
 
 // applyProtocolMetrics writes protocol draft and validation fields into call metrics.
@@ -1479,11 +1128,11 @@ func applyProtocolMetrics(metrics *callMetrics, draft ProtocolDraft, validation 
 	if metrics == nil {
 		return
 	}
-	metrics.ProtocolAct = string(draft.Act)
-	metrics.ProtocolDomain = string(draft.Domain)
-	metrics.ProtocolOperation = draft.Operation
-	metrics.ProtocolValidationCode = validation.ValidationCode
-	metrics.ExecutionAllowed = validation.AllowExecution
+	metrics.Proto.Act = string(draft.Act)
+	metrics.Proto.Domain = string(draft.Domain)
+	metrics.Proto.Operation = draft.Operation
+	metrics.Proto.ValidationCode = validation.ValidationCode
+	metrics.Proto.ExecutionAllowed = validation.AllowExecution
 }
 
 // tryHandleProtocolPrimary attempts to answer through the protocol-primary path.
@@ -1499,7 +1148,7 @@ func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserCo
 	validation := validateProtocol(draft, workflowCtx)
 	applyProtocolMetrics(metrics, draft, validation)
 	if activeWorkflow != nil {
-		metrics.WorkflowIDBefore = activeWorkflow.ID
+		metrics.Wf.IDBefore = activeWorkflow.ID
 	}
 
 	switch draft.Operation {
@@ -1514,7 +1163,7 @@ func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserCo
 		metrics.ResponseKind = string(ResponseResult)
 		metrics.AnswerMode = answerModeToolFirst
 		metrics.QueryType = queryKindTool
-		metrics.ExecutorName = "protocol_live_write"
+		metrics.Route.ExecutorName = "protocol_live_write"
 		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return true, reply, nil
@@ -1567,10 +1216,18 @@ func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserCo
 		if err != nil {
 			return false, "", nil
 		}
+		dateStr, ok := extractParamString(req.TrustedParams, "date")
+		if !ok {
+			return false, "", nil
+		}
+		sectionInt, ok := extractParamInt(req.TrustedParams, "section")
+		if !ok {
+			return false, "", nil
+		}
 		result, err := a.deps.Attendance.GetAttendanceDetail(ctx, tools.AttendanceQuery{
-			Date:    req.TrustedParams["date"].(string),
+			Date:    dateStr,
 			Week:    week,
-			Section: req.TrustedParams["section"].(int),
+			Section: sectionInt,
 		})
 		if err != nil {
 			return false, "", nil
@@ -1580,7 +1237,7 @@ func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserCo
 		metrics.ResponseKind = string(ResponseResult)
 		metrics.AnswerMode = answerModeToolFirst
 		metrics.QueryType = queryKindTool
-		metrics.ExecutorName = "protocol_live_read"
+		metrics.Route.ExecutorName = "protocol_live_read"
 		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return true, reply, nil
@@ -1605,12 +1262,12 @@ func applyConversationMetrics(metrics *callMetrics, before, after *ActiveTask, m
 	if metrics == nil {
 		return
 	}
-	metrics.ActiveTaskType = taskTypeForLog(after)
-	if metrics.ActiveTaskType == "" {
-		metrics.ActiveTaskType = taskTypeForLog(before)
+	metrics.Task.ActiveTaskType = taskTypeForLog(after)
+	if metrics.Task.ActiveTaskType == "" {
+		metrics.Task.ActiveTaskType = taskTypeForLog(before)
 	}
-	metrics.TaskStatusBefore = taskStatusForLog(before)
-	metrics.TaskStatusAfter = taskStatusForLog(after)
+	metrics.Task.TaskStatusBefore = taskStatusForLog(before)
+	metrics.Task.TaskStatusAfter = taskStatusForLog(after)
 	metrics.FollowUpMatchedSlots = append([]string(nil), matchedSlots...)
 }
 
@@ -1820,12 +1477,12 @@ func (a *Agent) handleProtocolFallback(ctx context.Context, uctx *tools.UserCont
 
 	reply := renderProtocolResponse(model)
 	if activeWorkflow != nil {
-		metrics.WorkflowIDAfter = activeWorkflow.ID
+		metrics.Wf.IDAfter = activeWorkflow.ID
 	}
 	metrics.ResponseKind = string(model.Kind)
 	metrics.AnswerMode = answerMode
 	metrics.QueryType = queryKindTool
-	metrics.ExecutorName = "protocol_live_guardrail"
+	metrics.Route.ExecutorName = "protocol_live_guardrail"
 	a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
 	a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 	return reply, nil
@@ -1900,7 +1557,7 @@ func (a *Agent) handleProtocolManualSignPrimary(ctx context.Context, uctx *tools
 	switch resolution.UserResolution.Status {
 	case ResolveAmbiguous:
 		a.sessions.setWorkflowState(sessionKey, result.Workflow)
-		metrics.WorkflowIDAfter = result.Workflow.ID
+		metrics.Wf.IDAfter = result.Workflow.ID
 		metrics.ResponseKind = string(ResponseSelectOptions)
 		metrics.AnswerMode = answerModeToolFirst
 		metrics.QueryType = queryKindTool
@@ -1914,7 +1571,7 @@ func (a *Agent) handleProtocolManualSignPrimary(ctx context.Context, uctx *tools
 	case ResolveNotFound:
 		if resolution.UserInput != "" {
 			a.sessions.setWorkflowState(sessionKey, result.Workflow)
-			metrics.WorkflowIDAfter = result.Workflow.ID
+			metrics.Wf.IDAfter = result.Workflow.ID
 			metrics.ResponseKind = string(ResponseClarify)
 			metrics.AnswerMode = answerModeToolFirst
 			metrics.QueryType = queryKindTool
@@ -1931,7 +1588,7 @@ func (a *Agent) handleProtocolManualSignPrimary(ctx context.Context, uctx *tools
 		if blocked {
 			reply := buildManualSignMissingFieldsReply(result.Workflow.MissingSlots)
 			a.sessions.setWorkflowState(sessionKey, result.Workflow)
-			metrics.WorkflowIDAfter = result.Workflow.ID
+			metrics.Wf.IDAfter = result.Workflow.ID
 			metrics.ResponseKind = string(ResponseClarify)
 			metrics.AnswerMode = answerModeToolFirst
 			metrics.QueryType = queryKindTool
@@ -1939,22 +1596,34 @@ func (a *Agent) handleProtocolManualSignPrimary(ctx context.Context, uctx *tools
 			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 			return true, reply, nil
 		}
-		if err := a.deps.Attendance.SignForUsersBySlot(ctx, req.TrustedParams["date"].(string), req.TrustedParams["section"].(int), []uint{req.TrustedParams["user_id"].(uint)}); err != nil {
+		dateStr, ok := extractParamString(req.TrustedParams, "date")
+		if !ok {
+			return false, "", nil
+		}
+		sectionInt, ok := extractParamInt(req.TrustedParams, "section")
+		if !ok {
+			return false, "", nil
+		}
+		userIDUint, ok := extractParamUint(req.TrustedParams, "user_id")
+		if !ok {
+			return false, "", nil
+		}
+		if err := a.deps.Attendance.SignForUsersBySlot(ctx, dateStr, sectionInt, []uint{userIDUint}); err != nil {
 			return false, "", nil
 		}
 		a.sessions.clearWorkflowState(sessionKey)
-		reply := fmt.Sprintf("已为%s补签 %s 第%d节考勤", result.Workflow.Trusted.UserName, req.TrustedParams["date"].(string), req.TrustedParams["section"].(int))
-		metrics.WorkflowIDAfter = ""
+		reply := fmt.Sprintf("已为%s补签 %s 第%d节考勤", result.Workflow.Trusted.UserName, dateStr, sectionInt)
+		metrics.Wf.IDAfter = ""
 		metrics.ResponseKind = string(ResponseResult)
 		metrics.AnswerMode = answerModeToolFirst
 		metrics.QueryType = queryKindTool
-		metrics.ExecutorName = "protocol_live_write"
+		metrics.Route.ExecutorName = "protocol_live_write"
 		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return true, reply, nil
 	case WorkflowContinueDecision, WorkflowRejectInvalidShape:
 		a.sessions.setWorkflowState(sessionKey, result.Workflow)
-		metrics.WorkflowIDAfter = result.Workflow.ID
+		metrics.Wf.IDAfter = result.Workflow.ID
 		metrics.ResponseKind = string(ResponseClarify)
 		metrics.AnswerMode = answerModeToolFirst
 		metrics.QueryType = queryKindTool
@@ -2051,7 +1720,7 @@ func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *too
 			return false, "", nil
 		}
 		a.sessions.setWorkflowState(sessionKey, &workflow)
-		metrics.WorkflowIDAfter = workflow.ID
+		metrics.Wf.IDAfter = workflow.ID
 		metrics.ResponseKind = string(ResponseClarify)
 		metrics.AnswerMode = answerModeToolFirst
 		metrics.QueryType = queryKindTool
@@ -2070,7 +1739,7 @@ func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *too
 		if err != nil {
 			return false, "", nil
 		}
-		metrics.WorkflowIDAfter = activeWorkflow.ID
+		metrics.Wf.IDAfter = activeWorkflow.ID
 		metrics.ResponseKind = string(ResponseSelectOptions)
 		metrics.AnswerMode = answerModeToolFirst
 		metrics.QueryType = queryKindTool
@@ -2089,7 +1758,7 @@ func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *too
 			Kind:          ResponseClarify,
 			ClarifyReason: "subscription_missing_fields",
 		})
-		metrics.WorkflowIDAfter = activeWorkflow.ID
+		metrics.Wf.IDAfter = activeWorkflow.ID
 		metrics.ResponseKind = string(ResponseClarify)
 		metrics.AnswerMode = answerModeToolFirst
 		metrics.QueryType = queryKindTool
@@ -2105,7 +1774,7 @@ func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *too
 			return false, "", nil
 		}
 		a.sessions.setWorkflowState(sessionKey, result.Workflow)
-		metrics.WorkflowIDAfter = result.Workflow.ID
+		metrics.Wf.IDAfter = result.Workflow.ID
 		metrics.ResponseKind = string(ResponseClarify)
 		metrics.AnswerMode = answerModeToolFirst
 		metrics.QueryType = queryKindTool
@@ -2129,7 +1798,7 @@ func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *too
 		}
 		a.sessions.clearWorkflowState(sessionKey)
 		reply := "已为此群开启考勤推送"
-		metrics.WorkflowIDAfter = ""
+		metrics.Wf.IDAfter = ""
 		metrics.ResponseKind = string(ResponseResult)
 		metrics.AnswerMode = answerModeToolFirst
 		metrics.QueryType = queryKindTool
@@ -2141,7 +1810,7 @@ func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *too
 			Kind:          ResponseClarify,
 			ClarifyReason: "subscription_invalid_shape",
 		})
-		metrics.WorkflowIDAfter = activeWorkflow.ID
+		metrics.Wf.IDAfter = activeWorkflow.ID
 		metrics.ResponseKind = string(ResponseClarify)
 		metrics.AnswerMode = answerModeToolFirst
 		metrics.QueryType = queryKindTool
@@ -2358,4 +2027,64 @@ func parseToolErrorPayload(toolResult string) toolErrorPayload {
 		return toolErrorPayload{}
 	}
 	return payload
+}
+
+// extractParamString safely extracts a string value from a params map.
+func extractParamString(params map[string]any, key string) (string, bool) {
+	if params == nil {
+		return "", false
+	}
+	v, ok := params[key]
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
+// extractParamInt safely extracts an int value from a params map.
+func extractParamInt(params map[string]any, key string) (int, bool) {
+	if params == nil {
+		return 0, false
+	}
+	v, ok := params[key]
+	if !ok {
+		return 0, false
+	}
+	// JSON 数字反序列化为 float64，需要兼容
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case float64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
+// extractParamUint safely extracts a uint value from a params map.
+func extractParamUint(params map[string]any, key string) (uint, bool) {
+	if params == nil {
+		return 0, false
+	}
+	v, ok := params[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case uint:
+		return n, true
+	case int:
+		if n < 0 {
+			return 0, false
+		}
+		return uint(n), true
+	case float64:
+		if n < 0 {
+			return 0, false
+		}
+		return uint(n), true
+	default:
+		return 0, false
+	}
 }

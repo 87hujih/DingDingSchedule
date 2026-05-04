@@ -15,6 +15,9 @@ import (
 	"schedule_server/internal/agent/tools"
 )
 
+// maxResponseBodySize 限制 LLM 响应体最大读取量（10MB），防止异常端点返回超大响应。
+const maxResponseBodySize = 10 * 1024 * 1024
+
 // LLMClient OpenAI-compatible HTTP 客户端
 type LLMClient struct {
 	baseURL    string
@@ -144,7 +147,7 @@ func (c *LLMClient) doChat(ctx context.Context, reqBody chatRequest) (tools.Mess
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		return tools.Message{}, true, fmt.Errorf("读取响应失败: %w", err)
 	}

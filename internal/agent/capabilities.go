@@ -103,12 +103,11 @@ func buildHelpReply(uctx *tools.UserContext) string {
 		convType = uctx.ConversationType
 	}
 
-	allCaps := listCapabilities()
-	currentCaps := filterCapabilities(allCaps, role, convType)
+	currentCaps := filterCapabilities(listCapabilities(), role, convType)
 
 	var b strings.Builder
 	b.WriteString("我可以帮助处理这些系统能力：\n")
-	for _, cap := range allCaps {
+	for _, cap := range currentCaps {
 		b.WriteString(fmt.Sprintf("- %s：%s\n", cap.Title, cap.Description))
 	}
 

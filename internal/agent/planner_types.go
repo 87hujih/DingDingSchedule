@@ -35,7 +35,6 @@ type PlanInput struct {
 	History           []tools.Message
 	ActiveTask        *ActiveTask
 	ConversationEvent conversationDecision
-	DomainHint        DomainHint
 	Retrieval         RetrievalResult
 	TaskCandidate     *ActiveTask
 	HasLiveSignal     bool

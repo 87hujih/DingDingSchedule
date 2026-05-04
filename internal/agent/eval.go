@@ -118,7 +118,6 @@ func LoadEvalCases(path string) ([]EvalCase, error) {
 
 // EvaluateCases 评估 unified planner、知识检索以及可选的端到端问答结果。
 func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, cases []EvalCase, observer EvalObserver) (EvalSummary, []EvalCaseResult, error) {
-	domainGate := newDomainGate()
 	results := make([]EvalCaseResult, 0, len(cases))
 	summary := EvalSummary{TotalCases: len(cases)}
 
@@ -134,11 +133,8 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 
 		normalized := normalizeQuery(tc.Question)
 		conversationDecision := interpretConversation(tc.Question, nil)
-		domainHint := domainGate.Hint(tc.Question)
-		result.DomainHint = string(domainHint)
 
-		domainResult := evalDomainResultForHint(domainHint)
-		result.DomainResult = string(domainResult)
+		result.DomainResult = string(domainIn)
 		expectedDomain := strings.TrimSpace(tc.ExpectedDomain)
 		if expectedDomain == "" {
 			expectedDomain = result.DomainResult
@@ -153,14 +149,14 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 
 		retrievalResult := RetrievalResult{}
 		var retrievalErr error
-		if domainHint != domainHintObviousOut && taskCandidate == nil {
+		if taskCandidate == nil {
 			retrievalResult, retrievalErr = searchEvalKnowledge(ctx, knowledge, tenantID, tc.Question)
 			if retrievalErr != nil {
 				result.Error = retrievalErr.Error()
 			}
 		}
 
-		planDecision := evalPlanDecision(normalized, conversationDecision, domainHint, retrievalResult, taskCandidate, userCtx, tc.Question)
+		planDecision := evalPlanDecision(normalized, conversationDecision, retrievalResult, taskCandidate, userCtx, tc.Question)
 		result.PlanKind = string(planDecision.Kind)
 		result.KnowledgeStrength = string(planDecision.KnowledgeStrength)
 		result.PlannerReason = planDecision.ClarifyReason
@@ -298,19 +294,10 @@ func evalUserContext() *tools.UserContext {
 	}
 }
 
-// evalDomainResultForHint returns eval domain result for hint.
-func evalDomainResultForHint(hint DomainHint) domainResult {
-	if hint == domainHintObviousOut {
-		return domainOut
-	}
-	return domainIn
-}
-
 // evalPlanDecision handles eval plan decision.
 func evalPlanDecision(
 	normalized string,
 	conversationDecision conversationDecision,
-	domainHint DomainHint,
 	retrievalResult RetrievalResult,
 	taskCandidate *ActiveTask,
 	userCtx *tools.UserContext,
@@ -336,7 +323,6 @@ func evalPlanDecision(
 		History:           nil,
 		ActiveTask:        nil,
 		ConversationEvent: conversationDecision,
-		DomainHint:        domainHint,
 		Retrieval:         retrievalResult,
 		TaskCandidate:     taskCandidate,
 		HasLiveSignal:     hasLiveSignal(normalized),
