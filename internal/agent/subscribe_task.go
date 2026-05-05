@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,12 +33,12 @@ func (h *subscribeTaskHandler) CreateTask(message string, uctx *tools.UserContex
 		ExpiresAt: time.Now().Add(sessionTTL),
 	}
 
-	apply, _ := h.ApplyTurn(task, message, uctx)
+	apply, _ := h.ApplyTurn(task, message, uctx, nil)
 	return task, apply
 }
 
 // ApplyTurn applies the current user turn to the task state.
-func (h *subscribeTaskHandler) ApplyTurn(task *TaskInstance, message string, _ *tools.UserContext) (TaskApplyResult, error) {
+func (h *subscribeTaskHandler) ApplyTurn(task *TaskInstance, message string, _ *tools.UserContext, extracted *ExtractedEntities) (TaskApplyResult, error) {
 	if task == nil {
 		return TaskApplyResult{}, nil
 	}
@@ -45,26 +46,48 @@ func (h *subscribeTaskHandler) ApplyTurn(task *TaskInstance, message string, _ *
 		task.Slots = make(map[string]string)
 	}
 
-	normalized := normalizeQuery(message)
 	var matched []string
+
+	// 优先使用 LLM 提取的实体
+	if extracted != nil {
+		if extracted.Scope != "" {
+			taskApplySlot(task, &matched, "scope", extracted.Scope)
+		}
+		if len(extracted.DeptNames) > 0 {
+			taskApplySlot(task, &matched, "dept_names", strings.Join(extracted.DeptNames, ","))
+			if task.Slots["scope"] == "" {
+				task.Slots["scope"] = "department"
+			}
+		}
+	}
+
+	// 如果 LLM 没有提取到实体，回退到硬编码规则（向后兼容）
+	if len(matched) == 0 {
+		h.applyTurnFallback(task, message, &matched)
+	}
+
+	reconcileSubscriptionTask(task)
+	return TaskApplyResult{MatchedSlots: matched}, nil
+}
+
+// applyTurnFallback 保留原有硬编码逻辑作为降级方案
+func (h *subscribeTaskHandler) applyTurnFallback(task *TaskInstance, message string, matched *[]string) {
+	normalized := normalizeQuery(message)
 	switch {
 	case containsAny(normalized, []string{"全部人员", "全部"}):
-		taskApplySlot(task, &matched, "scope", "all")
+		taskApplySlot(task, matched, "scope", "all")
 	case containsAny(normalized, []string{"指定部门", "部分部门"}):
-		taskApplySlot(task, &matched, "scope", "department")
+		taskApplySlot(task, matched, "scope", "department")
 	default:
 		if containsTaskMissingSlot(task, "dept_names") {
 			if resolved := matchDepartmentFromCandidates(task, message); resolved != "" {
-				taskApplySlot(task, &matched, "dept_names", resolved)
+				taskApplySlot(task, matched, "dept_names", resolved)
 				if task.Slots["scope"] == "" {
 					task.Slots["scope"] = "department"
 				}
 			}
 		}
 	}
-
-	reconcileSubscriptionTask(task)
-	return TaskApplyResult{MatchedSlots: matched}, nil
 }
 
 // Prepare loads any context needed before the task executes or clarifies.
@@ -217,12 +240,7 @@ func needsDepartmentCache(task *TaskInstance) bool {
 
 // containsTaskMissingSlot reports whether it contains task missing slot.
 func containsTaskMissingSlot(task *TaskInstance, want string) bool {
-	for _, slot := range task.MissingSlots {
-		if slot == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(task.MissingSlots, want)
 }
 
 // cachedDepartmentNames handles cached department names.

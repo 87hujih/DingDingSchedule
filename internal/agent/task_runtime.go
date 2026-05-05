@@ -30,7 +30,7 @@ type runtimeTaskHandler interface {
 type routeTaskHandler interface {
 	runtimeTaskHandler
 	CreateTask(message string, uctx *tools.UserContext) (*TaskInstance, TaskApplyResult)
-	ApplyTurn(task *TaskInstance, message string, uctx *tools.UserContext) (TaskApplyResult, error)
+	ApplyTurn(task *TaskInstance, message string, uctx *tools.UserContext, extracted *ExtractedEntities) (TaskApplyResult, error)
 	BuildMetaReply(task *TaskInstance) string
 }
 

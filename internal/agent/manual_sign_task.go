@@ -32,12 +32,12 @@ func (h *manualSignTaskHandler) CreateTask(message string, uctx *tools.UserConte
 		ExpiresAt: time.Now().Add(sessionTTL),
 	}
 
-	apply, _ := h.ApplyTurn(task, message, uctx)
+	apply, _ := h.ApplyTurn(task, message, uctx, nil)
 	return task, apply
 }
 
 // ApplyTurn applies the current user turn to the task state.
-func (h *manualSignTaskHandler) ApplyTurn(task *TaskInstance, message string, _ *tools.UserContext) (TaskApplyResult, error) {
+func (h *manualSignTaskHandler) ApplyTurn(task *TaskInstance, message string, _ *tools.UserContext, _ *ExtractedEntities) (TaskApplyResult, error) {
 	if task == nil {
 		return TaskApplyResult{}, nil
 	}

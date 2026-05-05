@@ -41,4 +41,15 @@ type RouteDecision struct {
 	SoftNoticeCode string      `json:"soft_notice_code,omitempty"`
 	ClarifyCode    string      `json:"clarify_code,omitempty"`
 	RouteSource    RouteSource `json:"-"`
+
+	ExtractedEntities *ExtractedEntities `json:"extracted_entities,omitempty"`
+}
+
+// ExtractedEntities holds entities extracted by the semantic router.
+type ExtractedEntities struct {
+	Scope     string   `json:"scope,omitempty"`
+	DeptNames []string `json:"dept_names,omitempty"`
+	UserName  string   `json:"user_name,omitempty"`
+	Date      string   `json:"date,omitempty"`
+	Section   int      `json:"section,omitempty"`
 }

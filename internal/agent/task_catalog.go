@@ -30,7 +30,7 @@ func (c *taskCatalog) Start(taskType, message string, uctx *tools.UserContext) (
 }
 
 // Continue applies the next user turn to an existing task instance.
-func (c *taskCatalog) Continue(task *TaskInstance, message string, uctx *tools.UserContext) (*TaskInstance, TaskApplyResult, error) {
+func (c *taskCatalog) Continue(task *TaskInstance, message string, uctx *tools.UserContext, extracted *ExtractedEntities) (*TaskInstance, TaskApplyResult, error) {
 	if task == nil {
 		return nil, TaskApplyResult{}, fmt.Errorf("empty task")
 	}
@@ -45,7 +45,7 @@ func (c *taskCatalog) Continue(task *TaskInstance, message string, uctx *tools.U
 		return nil, TaskApplyResult{}, fmt.Errorf("clone task failed: %s", task.Type)
 	}
 
-	apply, err := handler.ApplyTurn(next, message, uctx)
+	apply, err := handler.ApplyTurn(next, message, uctx, extracted)
 	if err != nil {
 		return nil, TaskApplyResult{}, err
 	}

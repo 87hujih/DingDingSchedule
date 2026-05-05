@@ -32,7 +32,7 @@ func (h *unsubscribeTaskHandler) CreateTask(_ string, _ *tools.UserContext) (*Ta
 }
 
 // ApplyTurn applies the current user turn to the task state.
-func (h *unsubscribeTaskHandler) ApplyTurn(task *TaskInstance, _ string, _ *tools.UserContext) (TaskApplyResult, error) {
+func (h *unsubscribeTaskHandler) ApplyTurn(task *TaskInstance, _ string, _ *tools.UserContext, _ *ExtractedEntities) (TaskApplyResult, error) {
 	if task == nil {
 		return TaskApplyResult{}, nil
 	}

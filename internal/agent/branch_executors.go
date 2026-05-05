@@ -172,12 +172,12 @@ type taskContinueExecutor struct {
 }
 
 // Execute runs the current logic and returns the normalized result.
-func (e taskContinueExecutor) Execute(ctx context.Context, task *TaskInstance, question string, uctx *tools.UserContext) (taskExecutionResult, error) {
+func (e taskContinueExecutor) Execute(ctx context.Context, task *TaskInstance, question string, uctx *tools.UserContext, extracted *ExtractedEntities) (taskExecutionResult, error) {
 	if e.agent == nil || e.agent.taskCatalog == nil {
 		return taskExecutionResult{}, fmt.Errorf("task continue executor unavailable")
 	}
 
-	nextTask, apply, err := e.agent.taskCatalog.Continue(task, question, uctx)
+	nextTask, apply, err := e.agent.taskCatalog.Continue(task, question, uctx, extracted)
 	if err != nil {
 		return taskExecutionResult{}, err
 	}

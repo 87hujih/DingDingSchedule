@@ -728,7 +728,7 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 			return false, "", nil
 		}
 		executorStart := time.Now()
-		result, err := (taskContinueExecutor{agent: a}).Execute(ctx, currentTask, question, uctx)
+		result, err := (taskContinueExecutor{agent: a}).Execute(ctx, currentTask, question, uctx, decision.ExtractedEntities)
 		metrics.Route.ExecutorLatencyMs = elapsedMs(executorStart)
 		if err != nil {
 			a.writeCallLog(ctx, uctx, question, "", nil, 0, startTime, "failed", err.Error(), *metrics)
@@ -1076,7 +1076,7 @@ func splitTaskValues(value string) []string {
 }
 
 // writeCallLog 异步写入调用记录，不阻塞对话响应
-func (a *Agent) writeCallLog(ctx context.Context, uctx *tools.UserContext, question, reply string, toolsCalled []string, rounds int, startTime time.Time, status, errMsg string, metrics callMetrics) {
+func (a *Agent) writeCallLog(_ context.Context, uctx *tools.UserContext, question, reply string, toolsCalled []string, rounds int, startTime time.Time, status, errMsg string, metrics callMetrics) {
 	if a.deps.CallLog == nil {
 		return
 	}

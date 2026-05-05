@@ -60,7 +60,26 @@ kind 只允许：off_topic_reject, social_refuse, clarify, task_start, task_cont
 
 **social_refuse**：闲聊、打招呼
 **off_topic_reject**：与课表/考勤/请假完全无关
-**clarify**：意图模糊，无法判断`
+**clarify**：意图模糊，无法判断
+
+## 实体提取
+
+当 kind 为 task_continue 时，你必须同时提取用户提供的实体：
+
+### 订阅任务 (target_task_type=subscribe_attendance_push)
+- scope: "all"（用户说全部）或 "department"（用户指定部门）
+- dept_names: 部门名称数组，从 active_task.candidate_hints 中匹配
+
+### 补签任务 (target_task_type=sign_for_user)
+- user_name: 用户姓名
+- date: 日期（"今天"、"昨天"、"明天"或 YYYY-MM-DD）
+- section: 节次（1-5）
+
+### 匹配规则
+1. 用户说"和"、"跟"、"与"、顿号、逗号分隔的多个值 → 数组
+2. 用户说"两个都要"、"全部"、"所有" → scope="all"
+3. 用户说"第一个"、"第二个" → 从 candidate_hints 中按索引取
+4. 用户说的名称必须在 candidate_hints 中存在，否则留空`
 
 
 type semanticRouter struct {
