@@ -52,8 +52,15 @@ func (h *subscribeTaskHandler) ApplyTurn(task *TaskInstance, message string, _ *
 		taskApplySlot(task, &matched, "scope", "all")
 	case containsAny(normalized, []string{"指定部门", "部分部门"}):
 		taskApplySlot(task, &matched, "scope", "department")
-	case isDepartmentListQuestion(normalized):
-		// meta follow-up; keep task state unchanged
+	default:
+		if containsTaskMissingSlot(task, "dept_names") {
+			if resolved := matchDepartmentFromCandidates(task, message); resolved != "" {
+				taskApplySlot(task, &matched, "dept_names", resolved)
+				if task.Slots["scope"] == "" {
+					task.Slots["scope"] = "department"
+				}
+			}
+		}
 	}
 
 	reconcileSubscriptionTask(task)
@@ -163,7 +170,7 @@ func (h *subscribeTaskHandler) BuildClarifyReply(task *TaskInstance) string {
 	if task == nil {
 		return "请再具体说明你要查询或操作的内容。"
 	}
-	if containsTaskMissingSlot(task, "dept_names") {
+	if containsTaskMissingSlot(task, "dept_names") || containsTaskMissingSlot(task, "scope") {
 		if reply := buildCachedDepartmentReply(task); reply != "" {
 			return reply
 		}
@@ -176,15 +183,36 @@ func (h *subscribeTaskHandler) BuildMetaReply(task *TaskInstance) string {
 	return h.BuildClarifyReply(task)
 }
 
+// matchDepartmentFromCandidates matches a department name from the cached candidate list.
+func matchDepartmentFromCandidates(task *TaskInstance, message string) string {
+	candidates := cachedDepartmentNames(task)
+	if len(candidates) == 0 {
+		return ""
+	}
+	normalized := normalizeQuery(message)
+	if normalized == "" {
+		return ""
+	}
+	for _, name := range candidates {
+		if name == "" {
+			continue
+		}
+		if strings.Contains(normalized, normalizeQuery(name)) {
+			return name
+		}
+	}
+	return ""
+}
+
 // needsDepartmentCache reports whether it needs department cache.
 func needsDepartmentCache(task *TaskInstance) bool {
 	if task == nil || task.Type != "subscribe_attendance_push" {
 		return false
 	}
-	if task.Slots["scope"] != "department" {
-		return false
+	if containsTaskMissingSlot(task, "dept_names") {
+		return task.Slots["scope"] == "department"
 	}
-	return containsTaskMissingSlot(task, "dept_names")
+	return containsTaskMissingSlot(task, "scope")
 }
 
 // containsTaskMissingSlot reports whether it contains task missing slot.

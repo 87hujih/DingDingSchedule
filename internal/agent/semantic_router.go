@@ -11,6 +11,58 @@ import (
 
 const semanticRouterTimeout = 5 * time.Second
 
+const semanticRouterSystemPrompt = `你是一个语义路由器。你只能返回 JSON，对用户消息做单一路由判定。
+
+输出字段：kind, confidence, reason_code, target_task_type, target_task_id, switch_task, soft_notice_code, clarify_code。
+
+kind 只允许：off_topic_reject, social_refuse, clarify, task_start, task_continue, task_meta, task_cancel, rag_query, tool_query。
+
+## 路由规则
+
+### 有 active_task 时
+
+当 active_task 存在且未过期时，用户消息属于以下三种之一：
+
+**task_continue**（用户在提供缺失字段的值）：
+- 用户直接回答了系统之前询问的内容
+- 例如：missing_slots=["scope"]，用户说"全部人员"或"全部"→ task_continue
+- 例如：missing_slots=["scope"]，用户说"指定部门"或"部分部门"→ task_continue
+- 例如：missing_slots=["dept_names"]，用户说"一年级组"→ task_continue
+- 例如：missing_slots=["user_name","date","section"]，用户说"昨天第五节"→ task_continue
+
+**task_meta**（用户在询问与当前任务相关的信息，而非提供答案）：
+- 用户在请求信息以帮助自己做决策
+- 例如：missing_slots=["scope"]，用户说"都有哪些部门"/"有哪些可选"/"部门列表"→ task_meta
+- 例如：missing_slots=["dept_names"]，用户说"缺什么信息"/"还差什么"→ task_meta
+- 例如：用户说"补签有时间限制吗"/"这个功能怎么用"→ task_meta
+- 判断标准：用户不是在提供答案，而是在提问。如果是疑问句或请求列举/说明，优先 task_meta
+
+**task_cancel**（用户要取消）：
+- 用户说"取消"/"不用了"/"算了"→ task_cancel
+
+**关键区分原则**：如果不确定是 task_continue 还是 task_meta，优先选 task_meta。误判为 meta 的代价是多给一次信息，误判为 continue 的代价是吞掉用户问题。
+
+### 无 active_task 时
+
+判断是否为新任务请求或其他意图：
+
+**task_start**（新任务）：
+- 开启/添加/开通考勤订阅 → task_start, target_task_type=subscribe_attendance_push
+- 取消/关闭考勤订阅 → task_start, target_task_type=unsubscribe_attendance_push
+- 查询订阅状态 → task_start, target_task_type=query_subscription_status
+- 补签/代签考勤 → task_start, target_task_type=sign_for_user
+
+**tool_query**（需要调用工具查询但不是任务型操作）：
+- 查课表、查考勤状态、查请假等实时数据查询
+
+**rag_query**（规则/知识类问题）：
+- 询问规则说明、制度解释等
+
+**social_refuse**：闲聊、打招呼
+**off_topic_reject**：与课表/考勤/请假完全无关
+**clarify**：意图模糊，无法判断`
+
+
 type semanticRouter struct {
 	client *LLMClient
 }
@@ -45,12 +97,8 @@ func (r *semanticRouter) Route(ctx context.Context, routeCtx RouteContext) Route
 
 	resp, err := r.client.Chat(routerCtx, []tools.Message{
 		{
-			Role: "system",
-			Content: "你是一个语义路由器。你只能返回 JSON，对用户消息做单一路由判定。" +
-				"输出字段：kind, confidence, reason_code, target_task_type, target_task_id, switch_task, soft_notice_code, clarify_code。" +
-				"kind 只允许：off_topic_reject,social_refuse,clarify,task_start,task_continue,task_meta,task_cancel,rag_query,tool_query。" +
-				"重要规则：当用户意图涉及 subscribe_attendance_push（开启/添加/开通考勤订阅、订阅考勤推送）时，必须路由到 tool_query，不要路由到 task_start。" +
-				"同理，unsubscribe_attendance_push 和 query_subscription_status 也路由到 tool_query。",
+			Role:    "system",
+			Content: semanticRouterSystemPrompt,
 		},
 		{
 			Role:    "user",

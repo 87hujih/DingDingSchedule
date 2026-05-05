@@ -259,8 +259,8 @@ func TestTaskStartExecutorCreatesSubscriptionTask(t *testing.T) {
 	if result.Task == nil || result.Task.Type != "subscribe_attendance_push" {
 		t.Fatalf("Task = %#v, want created subscription task", result.Task)
 	}
-	if !strings.Contains(result.Reply, "全部人员") {
-		t.Fatalf("Reply = %q, want scope guidance", result.Reply)
+	if !strings.Contains(result.Reply, "信工24级") {
+		t.Fatalf("Reply = %q, want department list", result.Reply)
 	}
 }
 

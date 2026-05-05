@@ -191,21 +191,19 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	)
 
 	startTime := time.Now()
-	var toolsCalled []string
-
-	// 6. 加载历史消息和活动任务
-	history, activeTask := a.sessions.getSessionState(sessionKey)
-	_, activeWorkflow := a.sessions.getWorkflowState(sessionKey)
 	userMsg := tools.Message{Role: "user", Content: msg.Content}
 	metrics := callMetrics{Proto: protocolMetrics{Mode: string(a.protocolMode)}}
-	beforeTask := cloneActiveTask(activeTask)
-	protocolWorkflow := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
-	if protocolWorkflow == nil && a.protocolMode == ProtocolModeShadow {
-		protocolWorkflow = protocolWorkflowContextFromActiveTask(activeTask)
-	}
-	var protocolDraft ProtocolDraft
-	var protocolValidation ProtocolValidationResult
+
+	// 2. protocol 模式优先
 	if a.protocolMode != ProtocolModeLegacy {
+		_, activeWorkflow := a.sessions.getWorkflowState(sessionKey)
+		protocolWorkflow := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
+		if protocolWorkflow == nil && a.protocolMode == ProtocolModeShadow {
+			_, activeTask := a.sessions.getSessionState(sessionKey)
+			protocolWorkflow = protocolWorkflowContextFromActiveTask(activeTask)
+		}
+		var protocolDraft ProtocolDraft
+		var protocolValidation ProtocolValidationResult
 		protocolDraft = compileProtocol(protocolInput{
 			Message:        msg.Content,
 			ActiveWorkflow: protocolWorkflow,
@@ -215,15 +213,92 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		if activeWorkflow != nil {
 			metrics.Wf.IDBefore = activeWorkflow.ID
 		}
+		if handled, reply, err := a.tryHandleProtocolPrimary(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, &metrics, activeWorkflow, protocolWorkflow); handled {
+			return reply, err
+		}
+		if a.protocolMode == ProtocolModeLive {
+			reply, err := a.handleProtocolFallback(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, &metrics, protocolDraft, protocolValidation, activeWorkflow)
+			return reply, err
+		}
 	}
-	if handled, reply, err := a.tryHandleProtocolPrimary(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, &metrics, activeWorkflow, protocolWorkflow); handled {
+
+	// 3. semantic router 为主决策入口（routeMode=live）
+	if a.routeMode == string(RouteModeLive) {
+		return a.chatWithSemanticRouter(ctx, uctx, sessionKey, msg, userMsg, startTime, &metrics)
+	}
+
+	// 4. legacy 路径（routeMode=shadow 或 off）
+	return a.chatLegacy(ctx, uctx, sessionKey, msg, userMsg, startTime, &metrics)
+}
+
+// chatWithSemanticRouter 使用 semantic router 作为唯一决策入口的处理路径。
+func (a *Agent) chatWithSemanticRouter(
+	ctx context.Context,
+	uctx *tools.UserContext,
+	sessionKey string,
+	msg *dingtalk.ChatMessage,
+	userMsg tools.Message,
+	startTime time.Time,
+	metrics *callMetrics,
+) (string, error) {
+	history, _ := a.sessions.getSessionState(sessionKey)
+	_, routeTask := a.sessions.getTaskState(sessionKey)
+
+	var routeDecision RouteDecision
+	if shortCircuit, ok := detectShortCircuitRoute(msg.Content, uctx, routeTask); ok {
+		routeDecision = shortCircuit
+	} else {
+		routeContext := buildRouteContext(msg.Content, uctx, history, routeTask)
+		routeStart := time.Now()
+		routeDecision = newSemanticRouter(a.routerClient).Route(ctx, routeContext)
+		metrics.Route.RouterLatencyMs = elapsedMs(routeStart)
+	}
+
+	metrics.Route.Kind = string(routeDecision.Kind)
+	metrics.Route.Confidence = routeDecision.Confidence
+	metrics.Route.ReasonCode = routeDecision.ReasonCode
+	metrics.Route.Source = string(routeDecision.RouteSource)
+	metrics.Route.ClarifyCode = routeDecision.ClarifyCode
+	metrics.Route.SoftNoticeCode = routeDecision.SoftNoticeCode
+
+	beforeTask := cloneActiveTask(activeTaskFromTaskInstance(routeTask))
+	if handled, reply, err := a.tryHandleRoutePrimary(ctx, uctx, sessionKey, msg.Content, history, userMsg, startTime, beforeTask, metrics, routeDecision); handled {
 		return reply, err
 	}
-	if a.protocolMode == ProtocolModeLive {
-		reply, err := a.handleProtocolFallback(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, &metrics, protocolDraft, protocolValidation, activeWorkflow)
+
+	// fallback：semantic router 返回了 tryHandleRoutePrimary 无法处理的 kind
+	fallback := RouteDecision{
+		Kind:        RouteClarify,
+		ReasonCode:  "router_unhandled_kind",
+		ClarifyCode: "ambiguous_intent",
+		RouteSource: RouteSourceFallback,
+	}
+	metrics.Route.Kind = string(fallback.Kind)
+	metrics.Route.ReasonCode = fallback.ReasonCode
+	metrics.Route.Source = string(fallback.RouteSource)
+	metrics.Route.ClarifyCode = fallback.ClarifyCode
+	if handled, reply, err := a.tryHandleRoutePrimary(ctx, uctx, sessionKey, msg.Content, history, userMsg, startTime, beforeTask, metrics, fallback); handled {
 		return reply, err
 	}
+
+	return "请再具体说明你要查询或操作的内容。", nil
+}
+
+// chatLegacy 使用 planner + interpreter 的遗留处理路径。
+func (a *Agent) chatLegacy(
+	ctx context.Context,
+	uctx *tools.UserContext,
+	sessionKey string,
+	msg *dingtalk.ChatMessage,
+	userMsg tools.Message,
+	startTime time.Time,
+	metrics *callMetrics,
+) (string, error) {
+	history, activeTask := a.sessions.getSessionState(sessionKey)
 	normalized := normalizeQuery(msg.Content)
+	beforeTask := cloneActiveTask(activeTask)
+	var toolsCalled []string
+
 	var routeDecision RouteDecision
 	if a.routeMode != string(RouteModeOff) {
 		_, routeTask := a.sessions.getTaskState(sessionKey)
@@ -235,35 +310,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 			routeDecision = newSemanticRouter(a.routerClient).Route(ctx, routeContext)
 			metrics.Route.RouterLatencyMs = elapsedMs(shadowRouteStart)
 		}
-		if a.routeMode == string(RouteModeLive) {
-			metrics.Route.Kind = string(routeDecision.Kind)
-			metrics.Route.Confidence = routeDecision.Confidence
-			metrics.Route.ReasonCode = routeDecision.ReasonCode
-			metrics.Route.Source = string(routeDecision.RouteSource)
-			metrics.Route.ClarifyCode = routeDecision.ClarifyCode
-			metrics.Route.SoftNoticeCode = routeDecision.SoftNoticeCode
-		} else {
-			metrics.Shadow.RouteKind = string(routeDecision.Kind)
-		}
-	}
-
-	if handled, reply, err := a.tryHandleRoutePrimary(ctx, uctx, sessionKey, msg.Content, history, userMsg, startTime, beforeTask, &metrics, routeDecision); handled {
-		return reply, err
-	}
-	if a.routeMode == string(RouteModeLive) {
-		fallback := RouteDecision{
-			Kind:        RouteClarify,
-			ReasonCode:  "router_unhandled_kind",
-			ClarifyCode: "ambiguous_intent",
-			RouteSource: RouteSourceFallback,
-		}
-		metrics.Route.Kind = string(fallback.Kind)
-		metrics.Route.ReasonCode = fallback.ReasonCode
-		metrics.Route.Source = string(fallback.RouteSource)
-		metrics.Route.ClarifyCode = fallback.ClarifyCode
-		if handled, reply, err := a.tryHandleRoutePrimary(ctx, uctx, sessionKey, msg.Content, history, userMsg, startTime, beforeTask, &metrics, fallback); handled {
-			return reply, err
-		}
+		metrics.Shadow.RouteKind = string(routeDecision.Kind)
 	}
 
 	shadowTask := plannerTaskFromLegacyTask(sessionKey, activeTask)
@@ -272,51 +319,51 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		ActiveTask:  shadowTask,
 		UserContext: uctx,
 	})
-	applyShadowPlannerMetrics(&metrics, shadowDecision, shadowTask)
+	applyShadowPlannerMetrics(metrics, shadowDecision, shadowTask)
 
 	if hasGreetingIntent(normalized) {
-		recordLegacyPlannerAction(&metrics, plannerActionSocialRefuse)
+		recordLegacyPlannerAction(metrics, plannerActionSocialRefuse)
 		reply := buildGreetingReply(uctx)
-		applyConversationMetrics(&metrics, beforeTask, beforeTask, nil)
+		applyConversationMetrics(metrics, beforeTask, beforeTask, nil)
 		metrics.ConversationEvent = eventGreeting
 		metrics.DomainResult = domainIn
 		metrics.PlanKind = planKindTool
 		metrics.Planner.Reason = "greeting"
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
-		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
+		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return reply, nil
 	}
 
-	if handled, reply, err := a.tryHandlePlannerPrimary(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, beforeTask, &metrics, shadowDecision); handled {
+	if handled, reply, err := a.tryHandlePlannerPrimary(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, beforeTask, metrics, shadowDecision); handled {
 		return reply, err
 	}
 
 	conversationDecision := interpretConversation(msg.Content, activeTask)
 	metrics.ConversationEvent = conversationDecision.Event
-	if handled, reply, err := a.handleConversationEvent(ctx, uctx, sessionKey, msg, userMsg, startTime, &metrics, activeTask, beforeTask, conversationDecision, toolsCalled); handled {
+	if handled, reply, err := a.handleConversationEvent(ctx, uctx, sessionKey, msg, userMsg, startTime, metrics, activeTask, beforeTask, conversationDecision, toolsCalled); handled {
 		return reply, err
 	}
 	if activeTask != nil {
 		a.sessions.clearActiveTask(sessionKey)
 	}
-	applyConversationMetrics(&metrics, beforeTask, nil, nil)
+	applyConversationMetrics(metrics, beforeTask, nil, nil)
 
 	if hasHelpIntent(normalized) {
-		recordLegacyPlannerAction(&metrics, plannerActionSocialRefuse)
+		recordLegacyPlannerAction(metrics, plannerActionSocialRefuse)
 		reply := buildHelpReply(uctx)
 		metrics.DomainResult = domainIn
 		metrics.PlanKind = planKindTool
 		metrics.Planner.Reason = "help_intent"
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeToolFirst
-		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
+		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return reply, nil
 	}
 	if shadowDecision.Action == plannerActionSocialRefuse {
-		recordLegacyPlannerAction(&metrics, plannerActionSocialRefuse)
+		recordLegacyPlannerAction(metrics, plannerActionSocialRefuse)
 		reply := composePlannerReply(shadowDecision, nil, nil)
 		metrics.DomainResult = domainIn
 		metrics.PlanKind = planKindClarify
@@ -324,14 +371,14 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		metrics.Planner.Reason = shadowDecision.Reason
 		metrics.QueryType = queryKindTool
 		metrics.AnswerMode = answerModeReject
-		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
+		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return reply, nil
 	}
 
 	metrics.DomainResult = domainIn
 
-	return a.handleWithKnowledgeAndPlan(ctx, uctx, sessionKey, msg, userMsg, startTime, &metrics, history, normalized, conversationDecision, beforeTask)
+	return a.handleWithKnowledgeAndPlan(ctx, uctx, sessionKey, msg, userMsg, startTime, metrics, history, normalized, conversationDecision, beforeTask)
 }
 
 // buildGreetingReply builds greeting reply.

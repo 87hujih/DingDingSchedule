@@ -37,7 +37,7 @@ func fillTaskSlots(task *ActiveTask, reply string) slotFillResult {
 }
 
 // fillSubscriptionSlots handles fill subscription slots.
-func fillSubscriptionSlots(filled map[string]string, matched *[]string, normalized, original string) {
+func fillSubscriptionSlots(filled map[string]string, matched *[]string, normalized, _ string) {
 	switch {
 	case containsAny(normalized, []string{"全部人员", "全部"}):
 		filled["scope"] = "all"
@@ -45,15 +45,6 @@ func fillSubscriptionSlots(filled map[string]string, matched *[]string, normaliz
 	case containsAny(normalized, []string{"指定部门", "部分部门"}):
 		filled["scope"] = "department"
 		recordMatchedSlot(matched, "scope")
-	case isDepartmentListQuestion(normalized):
-		return
-	default:
-		if normalized != "" && !containsAny(normalized, []string{"订阅", "开启", "开通", "打开", "关闭", "取消", "推送", "考勤"}) {
-			filled["scope"] = "department"
-			filled["dept_names"] = original
-			recordMatchedSlot(matched, "scope")
-			recordMatchedSlot(matched, "dept_names")
-		}
 	}
 }
 

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestFillTaskSlotsAcceptsDepartmentOnlyReply(t *testing.T) {
+func TestFillTaskSlotsDoesNotBlindlyAcceptDeptName(t *testing.T) {
 	t.Parallel()
 
 	result := fillTaskSlots(&ActiveTask{
@@ -15,14 +15,8 @@ func TestFillTaskSlotsAcceptsDepartmentOnlyReply(t *testing.T) {
 		FilledSlots:   map[string]string{"scope": "department"},
 	}, "信工24级")
 
-	if result.Filled["dept_names"] != "信工24级" {
-		t.Fatalf("dept_names = %q, want 信工24级", result.Filled["dept_names"])
-	}
-	if !reflect.DeepEqual(result.MatchedSlots, []string{"dept_names", "scope"}) {
-		t.Fatalf("matched slots = %v, want [dept_names scope]", result.MatchedSlots)
-	}
-	if !result.Ready {
-		t.Fatalf("ready = false, want true")
+	if _, ok := result.Filled["dept_names"]; ok {
+		t.Fatalf("dept_names should not be filled by blind acceptance, got %q", result.Filled["dept_names"])
 	}
 }
 

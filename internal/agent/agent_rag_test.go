@@ -3182,6 +3182,77 @@ func requestToolNames(req capturedChatRequest) []string {
 	return names
 }
 
+func TestAgentSemanticRouterHandlesTaskMetaQuestion(t *testing.T) {
+	t.Parallel()
+
+	routerServer := newRouteDecisionServer(t,
+		RouteDecision{Kind: RouteTaskStart, TargetTaskType: "subscribe_attendance_push"},
+		RouteDecision{Kind: RouteTaskMeta},
+		RouteDecision{Kind: RouteTaskContinue},
+	)
+	defer routerServer.Close()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:       "http://127.0.0.1:0",
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
+		RouterLLMBaseURL: routerServer.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
+		GroupSub:         &testGroupSubPort{},
+		Dept:             testClarifyDeptPort{},
+		User:             testUserPort{},
+		Semester:         testSemesterPort{},
+		SchedulePeriod:   testSchedulePeriodPort{},
+		Tenant:           testTenantPort{},
+		Logger:           zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	chatMsg := func(content string) *dingtalk.ChatMessage {
+		return &dingtalk.ChatMessage{
+			CorpID:            "corp-1",
+			SenderID:          "ding-user",
+			SenderNick:        "Alice",
+			Content:           content,
+			ConversationID:    "conv-sub-meta",
+			ConversationType:  "2",
+			ConversationTitle: "测试群",
+		}
+	}
+
+	// Step 1: Start subscription task — proactively shows department list
+	firstReply, err := a.Chat(context.Background(), chatMsg("在这个群聊添加考勤订阅"))
+	if err != nil {
+		t.Fatalf("first Chat() error = %v", err)
+	}
+	if !strings.Contains(firstReply, "信工24级") {
+		t.Fatalf("first reply = %q, want department list containing 信工24级", firstReply)
+	}
+
+	// Step 2: Ask for department list (meta question) — still shows list, not a dead loop
+	secondReply, err := a.Chat(context.Background(), chatMsg("都有哪些部门"))
+	if err != nil {
+		t.Fatalf("second Chat() error = %v", err)
+	}
+	if !strings.Contains(secondReply, "信工24级") {
+		t.Fatalf("second reply = %q, want department list containing 信工24级", secondReply)
+	}
+	if !strings.Contains(secondReply, "教务处") {
+		t.Fatalf("second reply = %q, want department list containing 教务处", secondReply)
+	}
+
+	// Step 3: Provide department name (task continue)
+	thirdReply, err := a.Chat(context.Background(), chatMsg("信工24级"))
+	if err != nil {
+		t.Fatalf("third Chat() error = %v", err)
+	}
+	if !strings.Contains(thirdReply, "开启") && !strings.Contains(thirdReply, "订阅") {
+		t.Fatalf("third reply = %q, want subscription confirmation", thirdReply)
+	}
+}
+
 func newRouteDecisionServer(t *testing.T, decisions ...RouteDecision) *httptest.Server {
 	t.Helper()
 
