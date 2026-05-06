@@ -15,7 +15,7 @@ const semanticRouterSystemPrompt = `你是一个语义路由器。你只能返�
 
 输出字段：kind, confidence, reason_code, target_task_type, target_task_id, switch_task, soft_notice_code, clarify_code。
 
-kind 只允许：off_topic_reject, social_refuse, clarify, task_start, task_continue, task_meta, task_cancel, rag_query, tool_query。
+kind 只允许：off_topic_reject, social_refuse, clarify, task_start, task_continue, task_meta, task_cancel, rag_query, tool_query, mixed_query。
 
 ## 路由规则
 
@@ -58,6 +58,12 @@ kind 只允许：off_topic_reject, social_refuse, clarify, task_start, task_cont
 **rag_query**（规则/知识类问题）：
 - 询问规则说明、制度解释等
 
+**mixed_query**（同时需要实时数据和规则说明）：
+- 用户既想知道实时数据，又想了解相关规则或解释
+- 例如："我今天迟到了吗？迟到怎么判定的？"
+- 例如："昨天谁缺勤了？缺勤有什么影响？"
+- 例如："本周请假情况怎么样？请假流程是什么？"
+
 **social_refuse**：闲聊、打招呼
 **off_topic_reject**：与课表/考勤/请假完全无关
 **clarify**：意图模糊，无法判断
@@ -94,6 +100,13 @@ func newSemanticRouter(client *LLMClient) *semanticRouter {
 // Route routes the question through the semantic router model.
 func (r *semanticRouter) Route(ctx context.Context, routeCtx RouteContext) RouteDecision {
 	fallback := func(reason string) RouteDecision {
+		if kind := fallbackQueryKind(routeCtx.Message); kind != "" {
+			return RouteDecision{
+				Kind:        kind,
+				ReasonCode:  reason,
+				RouteSource: RouteSourceFallback,
+			}
+		}
 		return RouteDecision{
 			Kind:        RouteClarify,
 			ReasonCode:  reason,
@@ -151,9 +164,29 @@ func isValidRouteKind(kind RouteKind) bool {
 		RouteTaskMeta,
 		RouteTaskCancel,
 		RouteRAGQuery,
-		RouteToolQuery:
+		RouteToolQuery,
+		RouteMixedQuery:
 		return true
 	default:
 		return false
+	}
+}
+
+// fallbackQueryKind 在 semantic router 失败时，基于规则信号做降级路由。
+// 返回空字符串表示无法判断，应使用 clarify。
+func fallbackQueryKind(question string) RouteKind {
+	normalized := normalizeQuery(question)
+	live := hasLiveSignal(normalized)
+	rule := hasRuleSignal(normalized)
+
+	switch {
+	case live && rule:
+		return RouteMixedQuery
+	case live:
+		return RouteToolQuery
+	case rule:
+		return RouteRAGQuery
+	default:
+		return ""
 	}
 }

@@ -119,8 +119,7 @@ func (e toolQueryExecutor) Execute(ctx context.Context, uctx *tools.UserContext,
 		return routeExecutionResult{}, nil, fmt.Errorf("tool query executor unavailable")
 	}
 
-	pool := selectToolPool(question, uctx.UserRole)
-	toolDefs := e.agent.registry.ToToolDefsByName(uctx.UserRole, pool.ToolNames)
+	toolDefs := e.agent.registry.ToToolDefs(uctx.UserRole)
 	messages := make([]tools.Message, 0, 2+len(history))
 	messages = append(messages, tools.Message{Role: "system", Content: e.agent.buildSystemPrompt(ctx, uctx)})
 	messages = append(messages, history...)
@@ -136,8 +135,51 @@ func (e toolQueryExecutor) Execute(ctx context.Context, uctx *tools.UserContext,
 		ToolDefs:     append([]tools.ToolDef(nil), toolDefs...),
 		LLMDuration:  loopResult.LLMDuration,
 		ExecutorName: "tool_query_executor",
-		ToolPool:     pool.Name,
+		ToolPool:     "full",
 		AnswerMode:   answerModeToolFirst,
+	}, loopResult.ToolsCalled, nil
+}
+
+type mixedQueryExecutor struct {
+	agent *Agent
+}
+
+// Execute retrieves knowledge and runs the ReAct loop with knowledge context injected.
+func (e mixedQueryExecutor) Execute(ctx context.Context, uctx *tools.UserContext, history []tools.Message, question string) (routeExecutionResult, []string, error) {
+	if e.agent == nil || e.agent.llmClient == nil || e.agent.registry == nil {
+		return routeExecutionResult{}, nil, fmt.Errorf("mixed query executor unavailable")
+	}
+
+	toolDefs := e.agent.registry.ToToolDefs(uctx.UserRole)
+
+	retrievalResult, err := e.agent.retrieveKnowledge(ctx, uctx.TenantID, question)
+	if err != nil {
+		return routeExecutionResult{}, nil, err
+	}
+
+	messages := make([]tools.Message, 0, 3+len(history)+1)
+	messages = append(messages, tools.Message{Role: "system", Content: e.agent.buildSystemPrompt(ctx, uctx)})
+	if len(retrievalResult.Hits) > 0 {
+		if prompt := buildMixedAnswerPrompt(retrievalResult); prompt != "" {
+			messages = append(messages, tools.Message{Role: "system", Content: prompt})
+		}
+	}
+	messages = append(messages, history...)
+	messages = append(messages, tools.Message{Role: "user", Content: question})
+
+	loopResult, err := runReactLoop(ctx, e.agent.llmClient, e.agent.registry, uctx, messages, toolDefs, nil)
+	if err != nil {
+		return routeExecutionResult{}, loopResult.ToolsCalled, err
+	}
+
+	return routeExecutionResult{
+		Reply:        loopResult.Reply,
+		ToolDefs:     append([]tools.ToolDef(nil), toolDefs...),
+		Retrieval:    retrievalResult,
+		LLMDuration:  loopResult.LLMDuration,
+		ExecutorName: "mixed_query_executor",
+		ToolPool:     "full",
+		AnswerMode:   answerModeMixed,
 	}, loopResult.ToolsCalled, nil
 }
 

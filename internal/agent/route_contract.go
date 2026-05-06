@@ -12,6 +12,7 @@ const (
 	RouteTaskCancel     RouteKind = "task_cancel"
 	RouteRAGQuery       RouteKind = "rag_query"
 	RouteToolQuery      RouteKind = "tool_query"
+	RouteMixedQuery     RouteKind = "mixed_query"
 )
 
 type RouteSource string

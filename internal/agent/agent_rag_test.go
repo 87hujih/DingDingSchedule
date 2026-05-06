@@ -635,8 +635,8 @@ func TestAgentChatKeepsToolFirstForLiveQueryWithoutRuleSignal(t *testing.T) {
 	if !toolPoolContains(names, "query_attendance_status") {
 		t.Fatalf("tool-first request missing attendance tool: %v", names)
 	}
-	if toolPoolContains(names, "subscribe_attendance_push") {
-		t.Fatalf("tool-first request leaked admin subscription tool: %v", names)
+	if !toolPoolContains(names, "subscribe_attendance_push") {
+		t.Fatalf("tool-first request missing admin tool (expected full set for LLM selection): %v", names)
 	}
 }
 

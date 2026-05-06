@@ -26,7 +26,7 @@ func TestSemanticRouterFallsBackToClarifyOnTimeout(t *testing.T) {
 	}
 }
 
-func TestSemanticRouterFallsBackToClarifyOnInvalidJSON(t *testing.T) {
+func TestSemanticRouterFallsBackToRuleMatchOnInvalidJSON(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +39,29 @@ func TestSemanticRouterFallsBackToClarifyOnInvalidJSON(t *testing.T) {
 
 	decision := router.Route(context.Background(), RouteContext{
 		Message: "今天第一节张三为什么迟到",
+	})
+
+	if decision.Kind != RouteMixedQuery {
+		t.Fatalf("Kind = %q, want %q", decision.Kind, RouteMixedQuery)
+	}
+	if decision.RouteSource != RouteSourceFallback {
+		t.Fatalf("RouteSource = %q, want %q", decision.RouteSource, RouteSourceFallback)
+	}
+}
+
+func TestSemanticRouterFallsBackToClarifyWhenNoSignals(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"not-json"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	router := newSemanticRouter(NewLLMClient(server.URL, "test-key", "router-model"))
+
+	decision := router.Route(context.Background(), RouteContext{
+		Message: "你好啊",
 	})
 
 	if decision.Kind != RouteClarify {

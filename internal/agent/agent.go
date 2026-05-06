@@ -267,17 +267,32 @@ func (a *Agent) chatWithSemanticRouter(
 	}
 
 	// fallback：semantic router 返回了 tryHandleRoutePrimary 无法处理的 kind
-	fallback := RouteDecision{
+	// 先尝试规则匹配降级，再回退到 clarify
+	if kind := fallbackQueryKind(msg.Content); kind != "" {
+		fallback := RouteDecision{
+			Kind:        kind,
+			ReasonCode:  "router_unhandled_kind",
+			RouteSource: RouteSourceFallback,
+		}
+		metrics.Route.Kind = string(fallback.Kind)
+		metrics.Route.ReasonCode = fallback.ReasonCode
+		metrics.Route.Source = string(fallback.RouteSource)
+		if handled, reply, err := a.tryHandleRoutePrimary(ctx, uctx, sessionKey, msg.Content, history, userMsg, startTime, beforeTask, metrics, fallback); handled {
+			return reply, err
+		}
+	}
+
+	clarifyFallback := RouteDecision{
 		Kind:        RouteClarify,
 		ReasonCode:  "router_unhandled_kind",
 		ClarifyCode: "ambiguous_intent",
 		RouteSource: RouteSourceFallback,
 	}
-	metrics.Route.Kind = string(fallback.Kind)
-	metrics.Route.ReasonCode = fallback.ReasonCode
-	metrics.Route.Source = string(fallback.RouteSource)
-	metrics.Route.ClarifyCode = fallback.ClarifyCode
-	if handled, reply, err := a.tryHandleRoutePrimary(ctx, uctx, sessionKey, msg.Content, history, userMsg, startTime, beforeTask, metrics, fallback); handled {
+	metrics.Route.Kind = string(clarifyFallback.Kind)
+	metrics.Route.ReasonCode = clarifyFallback.ReasonCode
+	metrics.Route.Source = string(clarifyFallback.RouteSource)
+	metrics.Route.ClarifyCode = clarifyFallback.ClarifyCode
+	if handled, reply, err := a.tryHandleRoutePrimary(ctx, uctx, sessionKey, msg.Content, history, userMsg, startTime, beforeTask, metrics, clarifyFallback); handled {
 		return reply, err
 	}
 
@@ -697,6 +712,36 @@ func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserConte
 		metrics.Route.ExecutorName = result.ExecutorName
 		metrics.Route.ToolPool = result.ToolPool
 		metrics.LLMDurationMs += result.LLMDuration
+		a.writeCallLog(ctx, uctx, question, reply, toolsCalled, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	case RouteMixedQuery:
+		executorStart := time.Now()
+		result, toolsCalled, err := (mixedQueryExecutor{agent: a}).Execute(ctx, uctx, history, question)
+		metrics.Route.ExecutorLatencyMs = elapsedMs(executorStart)
+		if err != nil {
+			failReply := "AI 服务暂时不可用，请稍后重试"
+			if err.Error() == "超出最大轮数" {
+				failReply = "处理轮次过多，请简化您的问题后重试"
+			}
+			a.writeCallLog(ctx, uctx, question, "", toolsCalled, 0, startTime, "failed", err.Error(), *metrics)
+			return true, failReply, nil
+		}
+		reply := result.Reply
+		applyConversationMetrics(metrics, beforeTask, beforeTask, nil)
+		metrics.DomainResult = domainIn
+		metrics.AnswerMode = result.AnswerMode
+		metrics.QueryType = modeToQueryKind(result.AnswerMode)
+		metrics.Route.ExecutorName = result.ExecutorName
+		metrics.Route.ToolPool = result.ToolPool
+		metrics.LLMDurationMs += result.LLMDuration
+		metrics.Retrieval.HitCount = len(result.Retrieval.Hits)
+		metrics.Retrieval.CandidateCount = result.Retrieval.CandidateCount
+		metrics.SourceRefs = append([]string(nil), result.Retrieval.TopRefs...)
+		metrics.Retrieval.TopRefs = append([]string(nil), result.Retrieval.TopRefs...)
+		metrics.Retrieval.TopScores = append([]int(nil), result.Retrieval.TopScores...)
+		metrics.Retrieval.FilteredReason = result.Retrieval.FilteredReason
+		metrics.Retrieval.DocTypes = append([]string(nil), result.Retrieval.KnowledgeDocTypes...)
 		a.writeCallLog(ctx, uctx, question, reply, toolsCalled, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return true, reply, nil

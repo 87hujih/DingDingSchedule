@@ -167,13 +167,13 @@ func TestToolQueryExecutorUsesRestrictedToolPool(t *testing.T) {
 	}
 	names := requestToolNames(captured)
 	if len(names) == 0 {
-		t.Fatalf("request tool names = empty, want restricted pool")
+		t.Fatalf("request tool names = empty, want full tool set")
 	}
 	if !toolPoolContains(names, "query_attendance_status") {
 		t.Fatalf("request tool names missing attendance tool: %v", names)
 	}
-	if toolPoolContains(names, "subscribe_attendance_push") {
-		t.Fatalf("request tool names leaked admin subscription tool: %v", names)
+	if !toolPoolContains(names, "subscribe_attendance_push") {
+		t.Fatalf("request tool names missing admin tool (expected full set for LLM selection): %v", names)
 	}
 	if requestContains(captured, "考勤规则#1") || requestContains(captured, "上课开始后超过 10 分钟打卡视为迟到") {
 		t.Fatalf("tool_query request should not inject knowledge prompt, messages = %+v", captured.Messages)
