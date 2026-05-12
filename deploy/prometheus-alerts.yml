@@ -1,0 +1,115 @@
+groups:
+  - name: schedule-server-alerts
+    rules:
+      # ===== HTTP =====
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+          > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP 5xx error rate exceeds 5%"
+          description: "Current error rate {{ $value | humanizePercentage }}, sustained for 2 minutes"
+
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))
+          > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP P95 latency exceeds 500ms"
+          description: "Current P95 latency {{ $value | humanizeDuration }}"
+
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))
+          > 2
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP P99 latency exceeds 2s"
+          description: "Current P99 latency {{ $value | humanizeDuration }}"
+
+      # ===== Database =====
+      - alert: DBConnectionPoolHigh
+        expr: |
+          db_connection_pool_in_use / (db_connection_pool_open > 0)
+          > 0.8
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DB connection pool usage exceeds 80%"
+          description: "Current usage {{ $value | humanizePercentage }}"
+
+      - alert: DBQuerySlow
+        expr: |
+          histogram_quantile(0.95, sum(rate(db_query_duration_seconds_bucket[5m])) by (le))
+          > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DB query P95 duration exceeds 500ms"
+          description: "Current P95 query duration {{ $value | humanizeDuration }}"
+
+      # ===== Service Availability =====
+      - alert: ServiceDown
+        expr: up{job="schedule-server"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Schedule Server is down"
+          description: "Service has been down for over 1 minute"
+
+      # ===== Go Runtime =====
+      - alert: TooManyGoroutines
+        expr: go_goroutines > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Goroutine count is abnormal"
+          description: "Current goroutine count: {{ $value }}"
+
+      - alert: HighMemoryUsage
+        expr: go_memstats_alloc_bytes / 1024 / 1024 > 512
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory usage exceeds 512MB"
+          description: "Current memory allocation: {{ $value | humanize1024 }}B"
+
+      # ===== Agent =====
+      - alert: AgentHighLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(agent_call_duration_seconds_bucket[5m])) by (le))
+          > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent P95 call duration exceeds 10s"
+          description: "Current P95 duration {{ $value | humanizeDuration }}"
+
+      - alert: AgentHighFailureRate
+        expr: |
+          sum(rate(agent_calls_total{status=~"failed|timeout"}[5m]))
+          /
+          sum(rate(agent_calls_total[5m]))
+          > 0.1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent failure rate exceeds 10%"
+          description: "Current failure rate {{ $value | humanizePercentage }}"
