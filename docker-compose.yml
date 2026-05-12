@@ -53,6 +53,7 @@ services:
       - "3000:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
+      # 生产环境请设置 GRAFANA_ADMIN_PASSWORD 环境变量
       GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin123}"
       GF_USERS_ALLOW_SIGN_UP: "false"
       TZ: "${TZ:-Asia/Shanghai}"

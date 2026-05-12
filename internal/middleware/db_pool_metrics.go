@@ -1,8 +1,6 @@
 package middleware
 
 import (
-	"time"
-
 	"schedule_server/global"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -54,10 +52,4 @@ var (
 
 func init() {
 	prometheus.MustRegister(dbPoolOpen, dbPoolInUse, dbPoolIdle)
-}
-
-// StartDBPoolMetricsCollector 启动 DB 连接池指标定期采集。
-// GaugeFunc 已自动响应 scrape，此函数仅为保持接口兼容。
-func StartDBPoolMetricsCollector(_ time.Duration) {
-	select {}
 }

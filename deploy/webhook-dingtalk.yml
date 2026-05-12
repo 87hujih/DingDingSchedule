@@ -1,3 +1,4 @@
+# ⚠️ 请替换为实际的钉钉群机器人 Webhook 地址和密钥
 targets:
   ops:
     url: https://oapi.dingtalk.com/robot/send?access_token=YOUR_ACCESS_TOKEN

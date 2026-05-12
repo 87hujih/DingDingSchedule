@@ -103,7 +103,7 @@ groups:
 
       - alert: AgentHighFailureRate
         expr: |
-          sum(rate(agent_calls_total{status=~"failed|timeout"}[5m]))
+          sum(rate(agent_calls_total{status="failed"}[5m]))
           /
           sum(rate(agent_calls_total[5m]))
           > 0.1
