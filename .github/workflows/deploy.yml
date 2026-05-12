@@ -185,9 +185,12 @@ jobs:
 
           "${SSH_CMD[@]}" "${SSH_AUTH_OPTS[@]}" "${SSH_OPTS[@]}" -MNf "${REMOTE}"
 
-          "${SSH_CMD[@]}" "${SSH_AUTH_OPTS[@]}" "${SSH_OPTS[@]}" "${REMOTE}" "mkdir -p /opt/schedule_server/logs /opt/schedule_server/uploads /opt/schedule_server/configs"
+          "${SSH_CMD[@]}" "${SSH_AUTH_OPTS[@]}" "${SSH_OPTS[@]}" "${REMOTE}" "mkdir -p /opt/schedule_server/logs /opt/schedule_server/uploads /opt/schedule_server/configs /opt/schedule_server/deploy"
 
           "${SCP_CMD[@]}" "${SCP_AUTH_OPTS[@]}" "${SCP_OPTS[@]}" deploy.sh docker-compose.prod.yml .env.prod.example "${REMOTE}:/opt/schedule_server/"
+
+          # 同步监控配置文件到服务器
+          "${SCP_CMD[@]}" "${SCP_AUTH_OPTS[@]}" "${SCP_OPTS[@]}" -r deploy/ "${REMOTE}:/opt/schedule_server/"
 
           docker save "${IMAGE_REPO}:${IMAGE_TAG}" | "${SSH_CMD[@]}" "${SSH_AUTH_OPTS[@]}" "${SSH_OPTS[@]}" "${REMOTE}" "docker load"
 
