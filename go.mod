@@ -14,6 +14,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/mozillazg/go-pinyin v0.21.0
 	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.1
+	github.com/prometheus/client_golang v1.23.2
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/viper v1.18.2
 	github.com/xuri/excelize/v2 v2.8.0
@@ -22,7 +23,9 @@ require (
 	golang.org/x/net v0.43.0
 	golang.org/x/text v0.28.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
+	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/mysql v1.5.7
+	gorm.io/driver/sqlite v1.5.7
 	gorm.io/gorm v1.25.12
 )
 
@@ -62,7 +65,6 @@ require (
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
@@ -88,8 +90,6 @@ require (
 	google.golang.org/protobuf v1.36.8 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
-	gorm.io/driver/sqlite v1.5.7 // indirect
 	xorm.io/builder v0.3.7 // indirect
 	xorm.io/xorm v1.0.2 // indirect
 )
