@@ -5,6 +5,9 @@ FROM golang:1.24-alpine AS builder
 # 设置工作目录
 WORKDIR /build
 
+# 换用国内 Alpine 镜像源
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+
 # 安装必要的构建工具
 RUN apk add --no-cache git gcc musl-dev
 
@@ -24,6 +27,9 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o schedule_
 
 # 阶段2: 运行阶段
 FROM alpine:latest
+
+# 换用国内 Alpine 镜像源
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
 
 # 安装必要的运行时依赖
 RUN apk add --no-cache ca-certificates tzdata
