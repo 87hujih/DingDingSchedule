@@ -1,0 +1,7 @@
+targets:
+  ops:
+    url: https://oapi.dingtalk.com/robot/send?access_token=YOUR_ACCESS_TOKEN
+    secret: SECYOUR_SECRET
+    message:
+      title: '{{ template "ding.link.title" . }}'
+      text: '{{ template "ding.link.content" . }}'
