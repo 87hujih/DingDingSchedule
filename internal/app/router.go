@@ -10,6 +10,7 @@ import (
 
 	goadmin "github.com/GoAdminGroup/go-admin/engine"
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var goAdminEng *goadmin.Engine
@@ -21,6 +22,9 @@ func setupRouter() *gin.Engine {
 	// 初始化中间件
 	middleware.Init(global.AppConfig.JWT)
 
+	// 注册 GORM metrics 回调
+	middleware.RegisterGORMCallbacks(global.DB)
+
 	// 依赖注入
 	repo := repository.NewRepository(global.DB)
 	dingMgr := service.NewDingTalkClientManager(repo.TenantRepo)
@@ -29,6 +33,7 @@ func setupRouter() *gin.Engine {
 
 	// 注册路由
 	r := gin.Default()
+	r.Use(middleware.Prometheus()) // HTTP metrics 中间件
 	registerRoutes(r, h, svc.AuditLogSrv, repo.UserRepo)
 
 	// GoAdmin 后台（可选）
@@ -45,6 +50,9 @@ func setupRouter() *gin.Engine {
 
 // registerRoutes 注册所有路由
 func registerRoutes(r *gin.Engine, h *handler.Handler, auditSvc *service.AuditLogService, userRepo repository.UserRepository) {
+	// Prometheus metrics 端点（无需鉴权）
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
+
 	// 健康检查
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})

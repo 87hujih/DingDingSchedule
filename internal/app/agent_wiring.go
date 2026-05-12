@@ -13,6 +13,7 @@ import (
 	"schedule_server/global"
 	"schedule_server/internal/agent"
 	agenttool "schedule_server/internal/agent/tools"
+	"schedule_server/internal/middleware"
 	"schedule_server/internal/dto"
 	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
@@ -654,6 +655,9 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 		Status:                  log.Status,
 		ErrorMsg:                log.ErrorMsg,
 	})
+
+	// 写入 Prometheus Agent 指标
+	middleware.ObserveAgentCall(log.RouteKind, log.Status, log.DurationMs, log.LLMDurationMs)
 }
 
 func joinIntList(values []int) string {
