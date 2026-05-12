@@ -199,6 +199,8 @@ deploy_stack() {
     fi
 
     remove_conflicting_container
+    log_info "清理旧的 compose 栈..."
+    compose down || true
     log_info "启动生产容器..."
     compose up -d
 }
