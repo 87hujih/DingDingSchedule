@@ -182,12 +182,39 @@ remove_conflicting_container() {
 
 MONITOR_PORTS="9090 3000 9093 8065"
 
+# 检查端口是否被占用
+port_in_use() {
+    local port="$1"
+    if command -v fuser >/dev/null 2>&1; then
+        fuser "${port}/tcp" >/dev/null 2>&1
+    elif command -v ss >/dev/null 2>&1; then
+        ss -tln "sport = :${port}" 2>/dev/null | grep -q ":${port}"
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -tlnp 2>/dev/null | grep -q ":${port} "
+    else
+        return 1
+    fi
+}
+
+# 杀掉占用指定端口的进程
+kill_port_process() {
+    local port="$1" pid=""
+    if command -v fuser >/dev/null 2>&1; then
+        fuser -k "${port}/tcp" 2>/dev/null || true
+    elif command -v ss >/dev/null 2>&1; then
+        pid="$(ss -tlnp "sport = :${port}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1 || true)"
+        if [ -n "${pid}" ] && [ "${pid}" -ne 1 ]; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+    fi
+}
+
 # 释放监控栈端口（不影响 API 端口 26665）
 free_monitor_ports() {
     local port cid
 
     for port in ${MONITOR_PORTS}; do
-        if fuser "${port}/tcp" >/dev/null 2>&1; then
+        if port_in_use "${port}"; then
             log_warn "端口 ${port} 被占用，尝试释放..."
 
             cid="$(docker ps --filter "publish=${port}" --format '{{.ID}}' | head -1 || true)"
@@ -195,8 +222,12 @@ free_monitor_ports() {
                 docker stop "${cid}" && docker rm "${cid}" || true
             fi
 
-            fuser -k "${port}/tcp" 2>/dev/null || true
+            kill_port_process "${port}"
             sleep 1
+
+            if port_in_use "${port}"; then
+                log_error "端口 ${port} 释放失败，可能需要手动处理"
+            fi
         fi
     done
 }
