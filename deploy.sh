@@ -180,18 +180,22 @@ remove_conflicting_container() {
     fi
 }
 
-# compose 栈使用的宿主机端口
-COMPOSE_HOST_PORTS="${COMPOSE_HOST_PORTS:-${HOST_PORT:-26665} 9090 3000 9093 8065}"
+MONITOR_PORTS="9090 3000 9093 8065"
 
-# 释放 compose 所需的宿主机端口，杀掉占用端口的非 compose 进程
-free_compose_ports() {
-    local port pid
+# 释放监控栈端口（不影响 API 端口 26665）
+free_monitor_ports() {
+    local port cid
 
-    for port in ${COMPOSE_HOST_PORTS}; do
-        pid="$(ss -tlnp "sport = :${port}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1)"
-        if [ -n "${pid}" ] && [ "${pid}" -ne 1 ]; then
-            log_warn "端口 ${port} 被进程 ${pid} 占用，正在释放..."
-            kill "${pid}" 2>/dev/null || true
+    for port in ${MONITOR_PORTS}; do
+        if fuser "${port}/tcp" >/dev/null 2>&1; then
+            log_warn "端口 ${port} 被占用，尝试释放..."
+
+            cid="$(docker ps --filter "publish=${port}" --format '{{.ID}}' | head -1 || true)"
+            if [ -n "${cid}" ]; then
+                docker stop "${cid}" && docker rm "${cid}" || true
+            fi
+
+            fuser -k "${port}/tcp" 2>/dev/null || true
             sleep 1
         fi
     done
@@ -216,13 +220,23 @@ deploy_stack() {
     fi
 
     remove_conflicting_container
-    log_info "清理旧的 compose 栈..."
-    compose down --timeout 10 --remove-orphans || true
-    free_compose_ports
+    log_info "清理监控栈..."
+    compose stop prometheus grafana alertmanager webhook-dingtalk 2>/dev/null || true
+    compose rm -f prometheus grafana alertmanager webhook-dingtalk 2>/dev/null || true
+    free_monitor_ports
     log_info "拉取监控栈镜像..."
     compose pull --ignore-pull-failures || true
-    log_info "启动生产容器..."
-    compose up -d
+    log_info "启动所有容器..."
+    if ! compose up -d; then
+        log_error "compose up 失败，尝试恢复 API 服务..."
+        compose up -d schedule-server || true
+        exit 1
+    fi
+
+    if ! curl -fsS --max-time 3 http://localhost:${HOST_PORT:-26665}/health >/dev/null 2>&1; then
+        log_warn "API 健康检查未通过，尝试重启 API 服务..."
+        compose restart schedule-server || true
+    fi
 }
 
 # 查看容器状态
