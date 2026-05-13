@@ -200,7 +200,9 @@ deploy_stack() {
 
     remove_conflicting_container
     log_info "清理旧的 compose 栈..."
-    compose down || true
+    compose down --timeout 10 --remove-orphans || true
+    log_info "拉取监控栈镜像..."
+    compose pull --ignore-pull-failures || true
     log_info "启动生产容器..."
     compose up -d
 }
