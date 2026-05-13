@@ -11,5 +11,5 @@ route:
 receivers:
   - name: dingtalk
     webhook_configs:
-      - url: 'http://webhook-dingtalk:8065/dingtalk/ops/send'
+      - url: 'http://webhook-dingtalk:8060/dingtalk/ops/send'
         send_resolved: true

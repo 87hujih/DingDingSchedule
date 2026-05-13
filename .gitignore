@@ -83,6 +83,9 @@ ehthumbs.db
 *.key
 *.pem
 *.crt
+
+# Build artifacts
+deploy/dingtalk-webhook/dingtalk-webhook
 *.p12
 *.bak
 *.backup
