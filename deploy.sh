@@ -180,6 +180,23 @@ remove_conflicting_container() {
     fi
 }
 
+# compose 栈使用的宿主机端口
+COMPOSE_HOST_PORTS="${COMPOSE_HOST_PORTS:-${HOST_PORT:-26665} 9090 3000 9093 8065}"
+
+# 释放 compose 所需的宿主机端口，杀掉占用端口的非 compose 进程
+free_compose_ports() {
+    local port pid
+
+    for port in ${COMPOSE_HOST_PORTS}; do
+        pid="$(ss -tlnp "sport = :${port}" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1)"
+        if [ -n "${pid}" ] && [ "${pid}" -ne 1 ]; then
+            log_warn "端口 ${port} 被进程 ${pid} 占用，正在释放..."
+            kill "${pid}" 2>/dev/null || true
+            sleep 1
+        fi
+    done
+}
+
 # 构建本地调试镜像
 build_local_image() {
     log_info "开始构建本地调试镜像..."
@@ -201,6 +218,7 @@ deploy_stack() {
     remove_conflicting_container
     log_info "清理旧的 compose 栈..."
     compose down --timeout 10 --remove-orphans || true
+    free_compose_ports
     log_info "拉取监控栈镜像..."
     compose pull --ignore-pull-failures || true
     log_info "启动生产容器..."
