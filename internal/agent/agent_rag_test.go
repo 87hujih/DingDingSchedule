@@ -334,6 +334,7 @@ func TestAgentChatUsesKnowledgeOnlyForLeaveSyncFailureQuestion(t *testing.T) {
 		LLMBaseURL:     server.URL,
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		Knowledge:      knowledge,
 		User:           testUserPort{},
 		Semester:       testSemesterPort{},
@@ -497,9 +498,9 @@ func TestAgentChatRejectsOutOfDomainBeforeRetrieval(t *testing.T) {
 	defer routerServer.Close()
 
 	a := NewAgent(Deps{
-		LLMBaseURL:     "http://127.0.0.1:0",
-		LLMAPIKey:      "test-key",
-		LLMModel:       "test-model",
+		LLMBaseURL:       "http://127.0.0.1:0",
+		LLMAPIKey:        "test-key",
+		LLMModel:         "test-model",
 		RouterLLMBaseURL: routerServer.URL + "/v1/chat/completions",
 		RouterLLMAPIKey:  "test-key",
 		RouterLLMModel:   "test-router",
@@ -678,6 +679,7 @@ func TestAgentChatUsesKnowledgeOnlyPathForRuleQuestions(t *testing.T) {
 		LLMBaseURL:     server.URL,
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		Knowledge:      knowledge,
 		User:           testUserPort{},
 		Semester:       testSemesterPort{},
@@ -757,6 +759,7 @@ func TestAgentChatWritesKnowledgeMetricsToCallLog(t *testing.T) {
 		LLMBaseURL:     server.URL,
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		Knowledge:      knowledge,
 		CallLog:        callLog,
 		User:           testUserPort{},
@@ -1000,6 +1003,7 @@ func TestAgentChatWritesConversationTaskMetricsToCallLog(t *testing.T) {
 		LLMBaseURL:     server.URL,
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		CallLog:        callLog,
 		GroupSub:       groupSub,
 		Dept:           testClarifyDeptPort{},
@@ -1230,6 +1234,7 @@ func TestAgentUsesRetrievalPrepassForNonObviousOutRequest(t *testing.T) {
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		Knowledge:      knowledge,
 		User:           testUserPort{},
 		Semester:       testSemesterPort{},
@@ -1352,6 +1357,7 @@ func TestAgentChatInjectsKnowledgeContextBeforeToolCallsForMixedQuestions(t *tes
 		LLMBaseURL:     server.URL,
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		Knowledge:      knowledge,
 		User:           testUserPort{},
 		Semester:       testSemesterPort{},
@@ -1443,6 +1449,7 @@ func TestAgentChatPromptsForSubscriptionScopeBeforeExecuting(t *testing.T) {
 		LLMBaseURL:     server.URL,
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		Knowledge:      knowledge,
 		GroupSub:       groupSub,
 		User:           testUserPort{},
@@ -1502,6 +1509,7 @@ func TestAgentChatAnswersCapabilityQuestionWithoutKnowledgeLookup(t *testing.T) 
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		Knowledge:      knowledge,
 		User:           testUserPort{},
 		Semester:       testSemesterPort{},
@@ -2264,6 +2272,7 @@ func TestAgentChatClarifiesDepartmentScopedSubscriptionByListingDepartmentsFirst
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		Knowledge:      knowledge,
 		User:           testUserPort{},
 		Semester:       testSemesterPort{},
@@ -2309,6 +2318,7 @@ func TestAgentChatChecksSubscriptionStatusDirectlyInGroup(t *testing.T) {
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		Knowledge:      knowledge,
 		User:           testUserPort{},
 		Semester:       testSemesterPort{},
@@ -2356,6 +2366,7 @@ func TestAgentChatAcceptsChineseNumeralDepartmentAliasDuringSubscriptionFollowUp
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		GroupSub:       groupSub,
 		Dept:           testFamilyDeptPort{},
 		User:           testUserPort{},
@@ -2413,6 +2424,7 @@ func TestAgentChatKeepsSubscriptionTaskAfterInvalidDepartmentAndListsDepartments
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		GroupSub:       groupSub,
 		Dept:           testFamilyDeptPort{},
 		User:           testUserPort{},
@@ -2502,6 +2514,7 @@ func TestAgentChatExplainsRetryableSubscriptionFailureAndKeepsTaskOpen(t *testin
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		GroupSub:       groupSub,
 		Dept:           testFamilyDeptPort{},
 		User:           testUserPort{},
@@ -3092,6 +3105,7 @@ func TestAgentChatRepliesPolitelyToGreetingWithoutDomainReject(t *testing.T) {
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
+		RouteMode:      string(RouteModeOff),
 		User:           testUserPort{},
 		Semester:       testSemesterPort{},
 		SchedulePeriod: testSchedulePeriodPort{},
@@ -3267,7 +3281,11 @@ func newRouteDecisionServer(t *testing.T, decisions ...RouteDecision) *httptest.
 			return
 		}
 
-		payload, err := json.Marshal(decisions[index])
+		decision := decisions[index]
+		if isTaskActionRoute(decision.Kind) && decision.Confidence == 0 {
+			decision.Confidence = 0.95
+		}
+		payload, err := json.Marshal(decision)
 		if err != nil {
 			t.Fatalf("marshal route decision: %v", err)
 		}

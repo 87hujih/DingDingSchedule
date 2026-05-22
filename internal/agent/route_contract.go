@@ -46,6 +46,32 @@ type RouteDecision struct {
 	ExtractedEntities *ExtractedEntities `json:"extracted_entities,omitempty"`
 }
 
+const routeTaskExecutionMinConfidence = 0.75
+
+// guardLowConfidenceRouteDecision 将低置信度任务动作降级为澄清，避免模型猜测触发写操作或改变任务状态。
+func guardLowConfidenceRouteDecision(decision RouteDecision) (RouteDecision, bool) {
+	if !isTaskActionRoute(decision.Kind) || decision.Confidence >= routeTaskExecutionMinConfidence {
+		return RouteDecision{}, false
+	}
+	return RouteDecision{
+		Kind:        RouteClarify,
+		Confidence:  decision.Confidence,
+		ReasonCode:  "low_confidence_task_action",
+		ClarifyCode: "ambiguous_intent",
+		RouteSource: decision.RouteSource,
+	}, true
+}
+
+// isTaskActionRoute 判断当前路由是否会启动、推进或取消任务状态。
+func isTaskActionRoute(kind RouteKind) bool {
+	switch kind {
+	case RouteTaskStart, RouteTaskContinue, RouteTaskCancel:
+		return true
+	default:
+		return false
+	}
+}
+
 // ExtractedEntities holds entities extracted by the semantic router.
 type ExtractedEntities struct {
 	Scope     string   `json:"scope,omitempty"`

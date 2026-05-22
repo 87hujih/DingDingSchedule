@@ -70,12 +70,11 @@ type Agent struct {
 	once         sync.Once
 }
 
-
 // NewAgent 创建 Agent
 func NewAgent(deps Deps) *Agent {
 	routeMode := strings.TrimSpace(deps.RouteMode)
 	if routeMode == "" {
-		routeMode = string(RouteModeOff)
+		routeMode = string(RouteModeLive)
 	}
 	protocolMode := normalizeProtocolMode(strings.TrimSpace(deps.ProtocolMode))
 
@@ -194,14 +193,12 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	userMsg := tools.Message{Role: "user", Content: msg.Content}
 	metrics := callMetrics{Proto: protocolMetrics{Mode: string(a.protocolMode)}}
 
-	// 2. protocol 模式优先
-	if a.protocolMode != ProtocolModeLegacy {
+	primaryChain := a.primaryDecisionChain()
+
+	// 2. protocol_live 作为独占主链。shadow 模式只记录协议草稿，不抢占 route / legacy 主流程。
+	if primaryChain == decisionChainProtocol {
 		_, activeWorkflow := a.sessions.getWorkflowState(sessionKey)
 		protocolWorkflow := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
-		if protocolWorkflow == nil && a.protocolMode == ProtocolModeShadow {
-			_, activeTask := a.sessions.getSessionState(sessionKey)
-			protocolWorkflow = protocolWorkflowContextFromActiveTask(activeTask)
-		}
 		var protocolDraft ProtocolDraft
 		var protocolValidation ProtocolValidationResult
 		protocolDraft = compileProtocol(protocolInput{
@@ -216,14 +213,30 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		if handled, reply, err := a.tryHandleProtocolPrimary(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, &metrics, activeWorkflow, protocolWorkflow); handled {
 			return reply, err
 		}
-		if a.protocolMode == ProtocolModeLive {
-			reply, err := a.handleProtocolFallback(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, &metrics, protocolDraft, protocolValidation, activeWorkflow)
-			return reply, err
+		reply, err := a.handleProtocolFallback(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, &metrics, protocolDraft, protocolValidation, activeWorkflow)
+		return reply, err
+	}
+
+	if a.protocolMode == ProtocolModeShadow {
+		_, activeWorkflow := a.sessions.getWorkflowState(sessionKey)
+		protocolWorkflow := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
+		if protocolWorkflow == nil {
+			_, activeTask := a.sessions.getSessionState(sessionKey)
+			protocolWorkflow = protocolWorkflowContextFromActiveTask(activeTask)
+		}
+		protocolDraft := compileProtocol(protocolInput{
+			Message:        msg.Content,
+			ActiveWorkflow: protocolWorkflow,
+		})
+		protocolValidation := validateProtocol(protocolDraft, protocolWorkflow)
+		applyProtocolMetrics(&metrics, protocolDraft, protocolValidation)
+		if activeWorkflow != nil {
+			metrics.Wf.IDBefore = activeWorkflow.ID
 		}
 	}
 
-	// 3. semantic router 为主决策入口（routeMode=live）
-	if a.routeMode == string(RouteModeLive) {
+	// 3. 语义路由器为主决策入口。
+	if primaryChain == decisionChainRoute {
 		return a.chatWithSemanticRouter(ctx, uctx, sessionKey, msg, userMsg, startTime, &metrics)
 	}
 
@@ -231,7 +244,26 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	return a.chatLegacy(ctx, uctx, sessionKey, msg, userMsg, startTime, &metrics)
 }
 
-// chatWithSemanticRouter 使用 semantic router 作为唯一决策入口的处理路径。
+type decisionChain string
+
+const (
+	decisionChainProtocol decisionChain = "protocol"
+	decisionChainRoute    decisionChain = "route"
+	decisionChainLegacy   decisionChain = "legacy"
+)
+
+// primaryDecisionChain 为当前轮次选择唯一的顶层决策主链。
+func (a *Agent) primaryDecisionChain() decisionChain {
+	if a.protocolMode == ProtocolModeLive {
+		return decisionChainProtocol
+	}
+	if a.routeMode == string(RouteModeLive) {
+		return decisionChainRoute
+	}
+	return decisionChainLegacy
+}
+
+// chatWithSemanticRouter 使用语义路由器作为唯一决策入口的处理路径。
 func (a *Agent) chatWithSemanticRouter(
 	ctx context.Context,
 	uctx *tools.UserContext,
@@ -266,7 +298,7 @@ func (a *Agent) chatWithSemanticRouter(
 		return reply, err
 	}
 
-	// fallback：semantic router 返回了 tryHandleRoutePrimary 无法处理的 kind
+	// 兜底：语义路由器返回了 tryHandleRoutePrimary 无法处理的 kind
 	// 先尝试规则匹配降级，再回退到 clarify
 	if kind := fallbackQueryKind(msg.Content); kind != "" {
 		fallback := RouteDecision{
@@ -632,6 +664,12 @@ func (a *Agent) tryHandlePlannerPrimary(ctx context.Context, uctx *tools.UserCon
 func (a *Agent) tryHandleRoutePrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, history []tools.Message, userMsg tools.Message, startTime time.Time, beforeTask *ActiveTask, metrics *callMetrics, decision RouteDecision) (bool, string, error) {
 	if a.routeMode != string(RouteModeLive) {
 		return false, "", nil
+	}
+	if guard, ok := guardLowConfidenceRouteDecision(decision); ok {
+		metrics.Route.Kind = string(guard.Kind)
+		metrics.Route.ReasonCode = guard.ReasonCode
+		metrics.Route.ClarifyCode = guard.ClarifyCode
+		decision = guard
 	}
 
 	switch decision.Kind {

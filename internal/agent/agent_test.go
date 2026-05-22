@@ -188,3 +188,91 @@ func TestNewAgentDefaultsToLegacyProtocolMode(t *testing.T) {
 		t.Fatalf("protocolMode = %q, want %q", a.protocolMode, ProtocolModeLegacy)
 	}
 }
+
+func TestNewAgentDefaultsToLiveRouteMode(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(Deps{
+		User:   testUserPort{},
+		Tenant: testTenantPort{},
+		Logger: zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	if a.routeMode != string(RouteModeLive) {
+		t.Fatalf("routeMode = %q，期望 %q", a.routeMode, RouteModeLive)
+	}
+}
+
+func TestChatUsesRouteAsSinglePrimaryChainWhenProtocolIsShadow(t *testing.T) {
+	t.Parallel()
+
+	requests := make(chan string, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("解析请求失败: %v", err)
+			http.Error(w, "解析请求失败: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		lastContent := ""
+		if len(req.Messages) > 0 {
+			lastContent = req.Messages[len(req.Messages)-1].Content
+		}
+		requests <- lastContent
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"kind\":\"social_refuse\",\"confidence\":0.91,\"reason_code\":\"test_route_primary\"}"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:       "http://unused-main-llm",
+		LLMAPIKey:        "test-key",
+		LLMModel:         "main-model",
+		RouterLLMBaseURL: server.URL,
+		RouterLLMAPIKey:  "test-key",
+		RouterLLMModel:   "router-model",
+		RouteMode:        string(RouteModeLive),
+		ProtocolMode:     string(ProtocolModeShadow),
+		Schedule:         testSchedulePort{},
+		User:             testUserPort{},
+		Semester:         testSemesterPort{},
+		SchedulePeriod:   testSchedulePeriodPort{},
+		Tenant:           testTenantPort{},
+		Logger:           zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "代签功能可以用吗",
+		ConversationID:   "conv-1",
+		ConversationType: "1",
+	})
+	if err != nil {
+		t.Fatalf("Chat() 返回错误: %v", err)
+	}
+	if reply != "我主要帮助处理课表、考勤、请假、补签和订阅相关事务，其他闲聊我就不展开了。" {
+		t.Fatalf("Chat() 回复 = %q，期望语义路由器的闲聊拒绝回复", reply)
+	}
+
+	select {
+	case <-requests:
+	default:
+		t.Fatalf("语义路由器未被调用")
+	}
+	select {
+	case extra := <-requests:
+		t.Fatalf("出现非预期的额外 LLM 调用，payload=%q", extra)
+	default:
+	}
+}
