@@ -173,7 +173,7 @@ retry_compose_pull() {
 }
 
 remove_conflicting_container() {
-    if docker inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
+    if docker container inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
         log_warn "发现已有同名容器 ${CONTAINER_NAME}，准备清理后再由 compose 接管..."
         docker stop "${CONTAINER_NAME}" || true
         docker rm "${CONTAINER_NAME}" || true
@@ -239,6 +239,30 @@ build_local_image() {
     log_info "镜像构建完成: ${LOCAL_IMAGE_TAG}"
 }
 
+start_api_service() {
+    remove_conflicting_container
+    log_info "启动 API 服务..."
+    compose up -d schedule-server
+
+    if ! curl -fsS --max-time 3 http://localhost:${HOST_PORT:-26665}/health >/dev/null 2>&1; then
+        log_warn "API 健康检查未通过，尝试重启 API 服务..."
+        compose restart schedule-server || true
+    fi
+}
+
+start_monitoring_stack() {
+    log_info "清理监控栈..."
+    compose stop prometheus grafana alertmanager webhook-dingtalk 2>/dev/null || true
+    compose rm -f prometheus grafana alertmanager webhook-dingtalk 2>/dev/null || true
+    free_monitor_ports
+    log_info "拉取监控栈镜像..."
+    compose pull prometheus grafana alertmanager webhook-dingtalk --ignore-pull-failures || true
+    log_info "启动监控栈..."
+    if ! compose up -d prometheus grafana alertmanager webhook-dingtalk; then
+        log_warn "监控栈启动失败，不影响 API 服务，请稍后单独排查监控组件。"
+    fi
+}
+
 # 拉取并启动生产镜像
 deploy_stack() {
     mkdir -p "${LOG_DIR:-./logs}" "${UPLOAD_DIR:-./uploads}" "${CONFIG_DIR:-./configs}"
@@ -250,24 +274,8 @@ deploy_stack() {
         retry_compose_pull
     fi
 
-    remove_conflicting_container
-    log_info "清理监控栈..."
-    compose stop prometheus grafana alertmanager webhook-dingtalk 2>/dev/null || true
-    compose rm -f prometheus grafana alertmanager webhook-dingtalk 2>/dev/null || true
-    free_monitor_ports
-    log_info "拉取监控栈镜像..."
-    compose pull --ignore-pull-failures || true
-    log_info "启动所有容器..."
-    if ! compose up -d; then
-        log_error "compose up 失败，尝试恢复 API 服务..."
-        compose up -d schedule-server || true
-        exit 1
-    fi
-
-    if ! curl -fsS --max-time 3 http://localhost:${HOST_PORT:-26665}/health >/dev/null 2>&1; then
-        log_warn "API 健康检查未通过，尝试重启 API 服务..."
-        compose restart schedule-server || true
-    fi
+    start_api_service
+    start_monitoring_stack
 }
 
 # 查看容器状态
@@ -320,7 +328,8 @@ main() {
             check_docker
             check_compose
             check_deploy_files
-            compose up -d
+            start_api_service
+            start_monitoring_stack
             log_info "容器已启动"
             ;;
         logs)

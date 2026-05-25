@@ -117,12 +117,75 @@ func TestDeployScriptRetriesImagePullsBeforeFailing(t *testing.T) {
 	}
 }
 
-func TestDeployScriptRemovesConflictingLegacyContainerBeforeComposeUp(t *testing.T) {
+func TestProductionComposeUsesPullableDingTalkWebhookImage(t *testing.T) {
+	composePath := filepath.Join("..", "..", "docker-compose.prod.yml")
+	content, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read docker-compose.prod.yml: %v", err)
+	}
+	compose := string(content)
+
+	requiredFragments := []string{
+		"image: timonwong/prometheus-webhook-dingtalk:v2.1.0",
+		"- '--config.file=/etc/webhook-dingtalk/config.yml'",
+		"- ./deploy/webhook-dingtalk.yml:/etc/webhook-dingtalk/config.yml:ro",
+		"- \"8065:8065\"",
+	}
+
+	for _, fragment := range requiredFragments {
+		if !strings.Contains(compose, fragment) {
+			t.Fatalf("production compose missing pullable webhook fragment: %s", fragment)
+		}
+	}
+
+	if strings.Contains(compose, "image: dingtalk-webhook:latest") {
+		t.Fatalf("production compose must not depend on an unbuilt local dingtalk-webhook image")
+	}
+}
+
+func TestDeployScriptStartsAPIBeforeOptionalMonitoringStack(t *testing.T) {
+	script := readScript(t, "deploy.sh")
+
+	requiredFragments := []string{
+		"start_api_service() {",
+		"compose up -d schedule-server",
+		"start_monitoring_stack() {",
+		"compose pull prometheus grafana alertmanager webhook-dingtalk --ignore-pull-failures",
+		"compose up -d prometheus grafana alertmanager webhook-dingtalk",
+		"监控栈启动失败，不影响 API 服务",
+	}
+
+	for _, fragment := range requiredFragments {
+		if !strings.Contains(script, fragment) {
+			t.Fatalf("deploy script missing API-first deployment fragment: %s", fragment)
+		}
+	}
+
+	deployStackPattern := regexp.MustCompile(`(?s)deploy_stack\(\) \{.*?\n\}`)
+	deployStack := deployStackPattern.FindString(script)
+	if deployStack == "" {
+		t.Fatalf("deploy script missing deploy_stack function")
+	}
+
+	apiIndex := strings.Index(deployStack, "start_api_service")
+	monitoringIndex := strings.Index(deployStack, "start_monitoring_stack")
+	if apiIndex == -1 {
+		t.Fatalf("deploy_stack must start API service")
+	}
+	if monitoringIndex == -1 {
+		t.Fatalf("deploy_stack must attempt monitoring stack startup")
+	}
+	if apiIndex > monitoringIndex {
+		t.Fatalf("deploy_stack must start API before optional monitoring stack")
+	}
+}
+
+func TestDeployScriptRemovesConflictingLegacyContainerBeforeAPIStart(t *testing.T) {
 	script := readScript(t, "deploy.sh")
 
 	requiredFragments := []string{
 		"remove_conflicting_container() {",
-		"docker inspect \"${CONTAINER_NAME}\" >/dev/null 2>&1",
+		"docker container inspect \"${CONTAINER_NAME}\" >/dev/null 2>&1",
 		"docker stop \"${CONTAINER_NAME}\" || true",
 		"docker rm \"${CONTAINER_NAME}\" || true",
 	}
@@ -133,22 +196,22 @@ func TestDeployScriptRemovesConflictingLegacyContainerBeforeComposeUp(t *testing
 		}
 	}
 
-	deployStackPattern := regexp.MustCompile(`(?s)deploy_stack\(\) \{.*?\n\}`)
-	deployStack := deployStackPattern.FindString(script)
-	if deployStack == "" {
-		t.Fatalf("deploy script missing deploy_stack function")
+	startAPIPattern := regexp.MustCompile(`(?s)start_api_service\(\) \{.*?\n\}`)
+	startAPI := startAPIPattern.FindString(script)
+	if startAPI == "" {
+		t.Fatalf("deploy script missing start_api_service function")
 	}
 
-	cleanupIndex := strings.Index(deployStack, "remove_conflicting_container")
-	upIndex := strings.Index(deployStack, "compose up -d")
+	cleanupIndex := strings.Index(startAPI, "remove_conflicting_container")
+	upIndex := strings.Index(startAPI, "compose up -d schedule-server")
 	if cleanupIndex == -1 {
-		t.Fatalf("deploy_stack must call remove_conflicting_container")
+		t.Fatalf("start_api_service must call remove_conflicting_container")
 	}
 	if upIndex == -1 {
-		t.Fatalf("deploy_stack must call compose up -d")
+		t.Fatalf("start_api_service must call compose up -d schedule-server")
 	}
 	if cleanupIndex > upIndex {
-		t.Fatalf("deploy_stack must remove conflicting container before compose up")
+		t.Fatalf("start_api_service must remove conflicting container before API compose up")
 	}
 }
 

@@ -75,14 +75,15 @@ services:
       - schedule-network
 
   webhook-dingtalk:
-    image: dingtalk-webhook:latest
+    image: timonwong/prometheus-webhook-dingtalk:v2.1.0
     container_name: webhook-dingtalk
     restart: unless-stopped
     ports:
-      - "8065:8060"
-    environment:
-      DINGTALK_URL: "https://oapi.dingtalk.com/robot/send?access_token=e17ec748de421f45395e623da8b23cd762834de1e1b90bce9a02ebfd6010fe7d"
-      DINGTALK_SECRET: "SEC2dceaf20f33052045188f391d2a66c4a5dd5747c30d329e2b81e3c9af3b9ad6a"
+      - "8065:8065"
+    command:
+      - '--config.file=/etc/webhook-dingtalk/config.yml'
+    volumes:
+      - ./deploy/webhook-dingtalk.yml:/etc/webhook-dingtalk/config.yml:ro
     networks:
       - schedule-network
 
