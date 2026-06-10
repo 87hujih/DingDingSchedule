@@ -61,6 +61,11 @@ type AttendancePort interface {
 	SignForUsersBySlot(ctx context.Context, date string, section int, userIDs []uint) error
 }
 
+// AttendanceUserDayStatusPort 查询指定用户某天各节次考勤状态。
+type AttendanceUserDayStatusPort interface {
+	GetUserDayAttendanceStatus(ctx context.Context, date string, userID uint) (*UserDayAttendanceStatus, error)
+}
+
 // LeavePort 请假能力
 type LeavePort interface {
 	GetRecentLeaves(ctx context.Context, userID uint, days int) ([]LeaveItem, error)
@@ -153,6 +158,22 @@ type AttendanceResult struct {
 	LeaveUsers   []AttendLeave `json:"leave_users"`
 	AbsentUsers  []string      `json:"absent_users"`
 	RestDayUsers []string      `json:"rest_day_users"`
+}
+
+// UserDayAttendanceStatus 指定用户某天各节次考勤状态。
+type UserDayAttendanceStatus struct {
+	Date     string                  `json:"date"`
+	UserID   uint                    `json:"user_id"`
+	UserName string                  `json:"user_name"`
+	Slots    []UserDayAttendanceSlot `json:"slots"`
+}
+
+// UserDayAttendanceSlot 指定用户某节次考勤状态。
+type UserDayAttendanceSlot struct {
+	Section   int    `json:"section"`
+	Status    string `json:"status"`
+	CheckTime string `json:"check_time,omitempty"`
+	LeaveType string `json:"leave_type,omitempty"`
 }
 
 // AttendLeave 请假用户信息
@@ -260,8 +281,13 @@ type CallLog struct {
 	ProtocolDomain          string
 	ProtocolOperation       string
 	ProtocolValidationCode  string
+	ProtocolBlockedReason   string
+	ProtocolResolvedSlots   string
+	ProtocolCandidateCount  int
 	WorkflowIDBefore        string
 	WorkflowIDAfter         string
+	WorkflowStateBefore     string
+	WorkflowStateAfter      string
 	ResponseKind            string
 	ExecutionAllowed        bool
 	AnswerMode              string

@@ -13,63 +13,86 @@ import (
 
 // EvalCase 表示一条离线评测样本。
 type EvalCase struct {
-	Name             string   `json:"name"`
-	Category         string   `json:"category"`
-	Question         string   `json:"question"`
-	ExpectedDomain   string   `json:"expected_domain,omitempty"`
-	ExpectedPlanKind string   `json:"expected_plan_kind,omitempty"`
-	ExpectedIntent   string   `json:"expected_intent,omitempty"`
-	ExpectedExecutor string   `json:"expected_executor,omitempty"`
-	ExpectedMode     string   `json:"expected_mode,omitempty"`
-	ExpectedRoute    string   `json:"expected_route,omitempty"`
-	ExpectedTools    []string `json:"expected_tools,omitempty"`
-	ExpectedSources  []string `json:"expected_sources,omitempty"`
-	ExpectedKeywords []string `json:"expected_keywords,omitempty"`
+	Name                      string   `json:"name"`
+	Category                  string   `json:"category"`
+	Question                  string   `json:"question"`
+	ExpectedDomain            string   `json:"expected_domain,omitempty"`
+	ExpectedPlanKind          string   `json:"expected_plan_kind,omitempty"`
+	ExpectedIntent            string   `json:"expected_intent,omitempty"`
+	ExpectedExecutor          string   `json:"expected_executor,omitempty"`
+	ExpectedMode              string   `json:"expected_mode,omitempty"`
+	ExpectedRoute             string   `json:"expected_route,omitempty"`
+	ExpectedProtocolAct       string   `json:"expected_protocol_act,omitempty"`
+	ExpectedProtocolDomain    string   `json:"expected_protocol_domain,omitempty"`
+	ExpectedProtocolOperation string   `json:"expected_protocol_operation,omitempty"`
+	ExpectedResponseKind      string   `json:"expected_response_kind,omitempty"`
+	ExpectedBlockedReason     string   `json:"expected_blocked_reason,omitempty"`
+	ConversationType          string   `json:"conversation_type,omitempty"`
+	ActiveWorkflowType        string   `json:"active_workflow_type,omitempty"`
+	ActiveWorkflowState       string   `json:"active_workflow_state,omitempty"`
+	ActiveWorkflowMissing     []string `json:"active_workflow_missing,omitempty"`
+	ExpectedTools             []string `json:"expected_tools,omitempty"`
+	ExpectedSources           []string `json:"expected_sources,omitempty"`
+	ExpectedKeywords          []string `json:"expected_keywords,omitempty"`
 }
 
 // EvalObservation 表示一次端到端问答观测结果。
 type EvalObservation struct {
-	Reply string
-	Tools []string
+	Reply                 string
+	Tools                 []string
+	ProtocolAct           string
+	ProtocolDomain        string
+	ProtocolOperation     string
+	ResponseKind          string
+	ProtocolBlockedReason string
 }
 
 // EvalObserver 执行真实问答并返回回复与工具调用信息。
-type EvalObserver func(ctx context.Context, question string) (EvalObservation, error)
+type EvalObserver func(ctx context.Context, tc EvalCase) (EvalObservation, error)
 
 // EvalCaseResult 表示一条样本的评测结果。
 type EvalCaseResult struct {
-	Name              string
-	Category          string
-	Question          string
-	DomainHint        string
-	DomainResult      string
-	DomainMatched     bool
-	PlanKind          string
-	PlanChecked       bool
-	PlanMatched       bool
-	KnowledgeStrength string
-	PlannerReason     string
-	Intent            string
-	IntentChecked     bool
-	IntentMatched     bool
-	Executor          string
-	ExecutorChecked   bool
-	ExecutorMatched   bool
-	AnswerMode        string
-	ModeMatched       bool
-	Route             string
-	RouteMatched      bool
-	RetrievalChecked  bool
-	RetrievalMatched  bool
-	RetrievedSources  []string
-	ToolsChecked      bool
-	ToolsMatched      bool
-	ActualTools       []string
-	KeywordsChecked   bool
-	KeywordsMatched   bool
-	Reply             string
-	DurationMs        int64
-	Error             string
+	Name                  string
+	Category              string
+	Question              string
+	DomainHint            string
+	DomainResult          string
+	DomainMatched         bool
+	PlanKind              string
+	PlanChecked           bool
+	PlanMatched           bool
+	KnowledgeStrength     string
+	PlannerReason         string
+	Intent                string
+	IntentChecked         bool
+	IntentMatched         bool
+	Executor              string
+	ExecutorChecked       bool
+	ExecutorMatched       bool
+	ProtocolAct           string
+	ProtocolDomain        string
+	ProtocolOperation     string
+	ResponseKind          string
+	ProtocolBlockedReason string
+	ProtocolChecked       bool
+	ProtocolMatched       bool
+	AnswerMode            string
+	ModeMatched           bool
+	Route                 string
+	RouteMatched          bool
+	RetrievalChecked      bool
+	RetrievalMatched      bool
+	RetrievedSources      []string
+	ToolsChecked          bool
+	ToolsMatched          bool
+	NoWriteToolsChecked   bool
+	NoWriteToolsMatched   bool
+	ActualTools           []string
+	KeywordsChecked       bool
+	KeywordsMatched       bool
+	Reply                 string
+	DurationMs            int64
+	Error                 string
 }
 
 // EvalSummary 表示整批样本的评测摘要。
@@ -86,6 +109,9 @@ type EvalSummary struct {
 	ExecutorCases     int
 	ExecutorPassed    int
 	ExecutorAccuracy  float64
+	ProtocolCases     int
+	ProtocolPassed    int
+	ProtocolAccuracy  float64
 	ModePassed        int
 	ModeAccuracy      float64
 	RoutePassed       int
@@ -134,7 +160,7 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 		normalized := normalizeQuery(tc.Question)
 		conversationDecision := interpretConversation(tc.Question, nil)
 
-		result.DomainResult = string(domainIn)
+		result.DomainResult = string(evalDomainResult(normalized))
 		expectedDomain := strings.TrimSpace(tc.ExpectedDomain)
 		if expectedDomain == "" {
 			expectedDomain = result.DomainResult
@@ -144,7 +170,7 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 			summary.DomainPassed++
 		}
 
-		userCtx := evalUserContext()
+		userCtx := evalUserContext(tenantID)
 		taskCandidate := buildTaskFromRequest(tc.Question, userCtx)
 
 		retrievalResult := RetrievalResult{}
@@ -194,6 +220,15 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 			}
 		}
 
+		if protocolExpectationPresent(tc) {
+			protocolEval := evaluateProtocolCase(ctx, tc, knowledge, tenantID)
+			result.ProtocolAct = protocolEval.Act
+			result.ProtocolDomain = protocolEval.Domain
+			result.ProtocolOperation = protocolEval.Operation
+			result.ResponseKind = protocolEval.ResponseKind
+			result.ProtocolBlockedReason = protocolEval.BlockedReason
+		}
+
 		result.AnswerMode = string(compat.AnswerMode)
 		expectedMode := strings.TrimSpace(tc.ExpectedMode)
 		if expectedMode == "" {
@@ -207,8 +242,10 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 		result.Route = string(compat.Route)
 		expectedRoute := strings.TrimSpace(tc.ExpectedRoute)
 		if expectedRoute == "" {
-			expectedRoute = string(modeToQueryKind(answerModeForExpectedMode(expectedMode)))
-			if expectedRoute == "" {
+			if protocolExpectationPresent(tc) {
+				// Protocol-only samples validate protocol act/domain/operation. Legacy route is checked only when explicit.
+				expectedRoute = result.Route
+			} else if expectedRoute = string(modeToQueryKind(answerModeForExpectedMode(expectedMode))); expectedRoute == "" {
 				expectedRoute = strings.TrimSpace(tc.Category)
 			}
 		}
@@ -230,7 +267,7 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 		}
 
 		if observer != nil {
-			observation, err := observer(ctx, tc.Question)
+			observation, err := observer(ctx, tc)
 			if err != nil {
 				if result.Error == "" {
 					result.Error = err.Error()
@@ -238,17 +275,51 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 			} else {
 				result.Reply = observation.Reply
 				result.ActualTools = observation.Tools
+				if observation.ProtocolAct != "" {
+					result.ProtocolAct = observation.ProtocolAct
+				}
+				if observation.ProtocolDomain != "" {
+					result.ProtocolDomain = observation.ProtocolDomain
+				}
+				if observation.ProtocolOperation != "" {
+					result.ProtocolOperation = observation.ProtocolOperation
+				}
+				if observation.ResponseKind != "" {
+					result.ResponseKind = observation.ResponseKind
+				}
+				if observation.ProtocolBlockedReason != "" {
+					result.ProtocolBlockedReason = observation.ProtocolBlockedReason
+				}
 			}
+		}
 
-			if len(tc.ExpectedTools) > 0 {
+		if protocolExpectationPresent(tc) {
+			result.ProtocolChecked = true
+			summary.ProtocolCases++
+			result.ProtocolMatched = protocolExpectationMatched(tc, result)
+			if result.ProtocolMatched {
+				summary.ProtocolPassed++
+			}
+		}
+
+		if tc.ExpectedTools != nil {
+			if len(tc.ExpectedTools) == 0 {
+				result.ToolsChecked = true
+				summary.ToolCases++
+				result.ToolsMatched = len(result.ActualTools) == 0
+				result.NoWriteToolsChecked = true
+				result.NoWriteToolsMatched = noWriteToolCalls(result.ActualTools)
+			} else if observer != nil {
 				result.ToolsChecked = true
 				summary.ToolCases++
 				result.ToolsMatched = containsAllNormalized(result.ActualTools, tc.ExpectedTools)
-				if result.ToolsMatched {
-					summary.ToolPassed++
-				}
 			}
+			if result.ToolsChecked && result.ToolsMatched {
+				summary.ToolPassed++
+			}
+		}
 
+		if observer != nil {
 			if len(tc.ExpectedKeywords) > 0 {
 				result.KeywordsChecked = true
 				summary.KeywordCases++
@@ -268,6 +339,7 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 	summary.PlanAccuracy = percent(summary.PlanPassed, summary.PlanCases)
 	summary.IntentAccuracy = percent(summary.IntentPassed, summary.IntentCases)
 	summary.ExecutorAccuracy = percent(summary.ExecutorPassed, summary.ExecutorCases)
+	summary.ProtocolAccuracy = percent(summary.ProtocolPassed, summary.ProtocolCases)
 	summary.ModeAccuracy = percent(summary.ModePassed, summary.TotalCases)
 	summary.RouteAccuracy = percent(summary.RoutePassed, summary.TotalCases)
 	summary.RetrievalAccuracy = percent(summary.RetrievalPassed, summary.RetrievalCases)
@@ -281,9 +353,12 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 }
 
 // evalUserContext handles eval user context.
-func evalUserContext() *tools.UserContext {
+func evalUserContext(tenantID uint) *tools.UserContext {
+	if tenantID == 0 {
+		tenantID = 1
+	}
 	return &tools.UserContext{
-		TenantID:          1,
+		TenantID:          tenantID,
 		UserID:            1,
 		UserRole:          1,
 		DingUserID:        "eval-user",
@@ -292,6 +367,111 @@ func evalUserContext() *tools.UserContext {
 		ConversationID:    "eval-conversation",
 		ConversationTitle: "评测群",
 	}
+}
+
+type evalProtocolResult struct {
+	Act           string
+	Domain        string
+	Operation     string
+	ResponseKind  string
+	BlockedReason string
+}
+
+type evalProtocolCompiler struct{}
+
+func (evalProtocolCompiler) Compile(_ context.Context, req IntentCompileRequest) (IntentDraft, error) {
+	normalized := normalizeQuery(req.Message)
+	if hasHelpIntent(normalized) {
+		return IntentDraft{
+			Act:        ActHelp,
+			Domain:     DomainSystem,
+			Operation:  "system.describe_capability",
+			Confidence: 1,
+		}, nil
+	}
+	var workflow *protocolWorkflowContext
+	if req.ActiveWorkflow != nil {
+		workflow = &protocolWorkflowContext{
+			Type:          req.ActiveWorkflow.Type,
+			MissingFields: append([]string(nil), req.ActiveWorkflow.MissingFields...),
+		}
+	}
+	return compileProtocol(protocolInput{
+		Message:        req.Message,
+		ActiveWorkflow: workflow,
+	}), nil
+}
+
+func evaluateProtocolCase(ctx context.Context, tc EvalCase, knowledge KnowledgePort, tenantID uint) evalProtocolResult {
+	uctx := evalUserContext(tenantID)
+	if conversationType := strings.TrimSpace(tc.ConversationType); conversationType != "" {
+		uctx.ConversationType = conversationType
+	}
+	var activeWorkflow *WorkflowSnapshot
+	if strings.TrimSpace(tc.ActiveWorkflowType) != "" {
+		activeWorkflow = &WorkflowSnapshot{
+			ID:           "eval-workflow",
+			Type:         WorkflowType(strings.TrimSpace(tc.ActiveWorkflowType)),
+			State:        WorkflowState(strings.TrimSpace(tc.ActiveWorkflowState)),
+			MissingSlots: append([]string(nil), tc.ActiveWorkflowMissing...),
+		}
+	}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: evalProtocolCompiler{},
+		Executor: newOperationExecutor(operationExecutorDeps{Knowledge: knowledge}),
+	})
+	outcome := pipeline.Handle(ctx, protocolLiveInput{
+		Message:        tc.Question,
+		User:           uctx,
+		ActiveWorkflow: activeWorkflow,
+	})
+	return evalProtocolResult{
+		Act:           string(outcome.Draft.Act),
+		Domain:        string(outcome.Draft.Domain),
+		Operation:     outcome.Draft.Operation,
+		ResponseKind:  string(outcome.Response.Kind),
+		BlockedReason: outcome.BlockedReason,
+	}
+}
+
+func protocolExpectationPresent(tc EvalCase) bool {
+	return strings.TrimSpace(tc.ExpectedProtocolAct) != "" ||
+		strings.TrimSpace(tc.ExpectedProtocolDomain) != "" ||
+		strings.TrimSpace(tc.ExpectedProtocolOperation) != "" ||
+		strings.TrimSpace(tc.ExpectedResponseKind) != "" ||
+		strings.TrimSpace(tc.ExpectedBlockedReason) != ""
+}
+
+func protocolExpectationMatched(tc EvalCase, result EvalCaseResult) bool {
+	checks := []struct {
+		expected string
+		actual   string
+	}{
+		{tc.ExpectedProtocolAct, result.ProtocolAct},
+		{tc.ExpectedProtocolDomain, result.ProtocolDomain},
+		{tc.ExpectedProtocolOperation, result.ProtocolOperation},
+		{tc.ExpectedResponseKind, result.ResponseKind},
+		{tc.ExpectedBlockedReason, result.ProtocolBlockedReason},
+	}
+	for _, check := range checks {
+		if strings.TrimSpace(check.expected) == "" {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(check.actual), strings.TrimSpace(check.expected)) {
+			return false
+		}
+	}
+	return true
+}
+
+func noWriteToolCalls(toolsCalled []string) bool {
+	for _, toolName := range toolsCalled {
+		switch strings.TrimSpace(toolName) {
+		case "sign_for_user", "subscribe_attendance_push", "unsubscribe_attendance_push":
+			return false
+		}
+	}
+	return true
 }
 
 // evalPlanDecision handles eval plan decision.
@@ -317,6 +497,13 @@ func evalPlanDecision(
 			KnowledgeStrength: knowledgeStrengthNone,
 		}
 	}
+	if evalDomainResult(normalized) == domainOut {
+		return PlanDecision{
+			Kind:              planKindObviousOut,
+			ClarifyReason:     "out_of_domain",
+			KnowledgeStrength: knowledgeStrengthNone,
+		}
+	}
 	return plan(PlanInput{
 		Question:          question,
 		UserContext:       userCtx,
@@ -331,6 +518,52 @@ func evalPlanDecision(
 		HasClarifyIntent:  hasClarifyIntent(normalized),
 		HasHelpIntent:     hasHelpIntent(normalized),
 	})
+}
+
+// evalDomainResult mirrors the semantic-router reject target for deterministic offline eval cases.
+func evalDomainResult(normalized string) domainResult {
+	if strings.TrimSpace(normalized) == "" {
+		return domainIn
+	}
+	if containsAny(normalized, []string{
+		"考勤",
+		"课表",
+		"课程",
+		"排课",
+		"请假",
+		"休息日",
+		"订阅",
+		"推送",
+		"补签",
+		"代签",
+		"部门",
+		"作息",
+		"节次",
+		"迟到",
+		"未到",
+		"缺勤",
+		"出勤",
+		"钉钉",
+	}) {
+		return domainIn
+	}
+	if containsAny(normalized, []string{
+		"天气",
+		"气温",
+		"下雨",
+		"空气质量",
+		"股票",
+		"新闻",
+		"二分查找",
+		"排序算法",
+		"写代码",
+		"写一个",
+		"编程",
+		"算法",
+	}) {
+		return domainOut
+	}
+	return domainIn
 }
 
 type evalCompatDecision struct {

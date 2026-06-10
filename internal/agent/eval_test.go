@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
+	"sync"
 	"testing"
 
 	agenttools "schedule_server/internal/agent/tools"
@@ -14,6 +16,25 @@ type evalKnowledgePort struct {
 // Search 按问题返回预置的评测知识命中结果。
 func (p evalKnowledgePort) Search(_ context.Context, _ uint, query string, _ int) ([]agenttools.KnowledgeHit, error) {
 	return p.hitsByQuery[query], nil
+}
+
+type tenantRecordingEvalKnowledgePort struct {
+	mu      sync.Mutex
+	tenants []uint
+	hits    []agenttools.KnowledgeHit
+}
+
+func (p *tenantRecordingEvalKnowledgePort) Search(_ context.Context, tenantID uint, _ string, _ int) ([]agenttools.KnowledgeHit, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.tenants = append(p.tenants, tenantID)
+	return append([]agenttools.KnowledgeHit(nil), p.hits...), nil
+}
+
+func (p *tenantRecordingEvalKnowledgePort) seenTenants() []uint {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]uint(nil), p.tenants...)
 }
 
 // TestEvaluateCasesAggregatesRouteRetrievalToolAndKeywordMatches 验证评测摘要会汇总多种命中结果。
@@ -51,8 +72,8 @@ func TestEvaluateCasesAggregatesRouteRetrievalToolAndKeywordMatches(t *testing.T
 		},
 	}
 
-	observer := func(_ context.Context, question string) (EvalObservation, error) {
-		if question == "如果请假信息没能同步到位，会出现什么情况" {
+	observer := func(_ context.Context, tc EvalCase) (EvalObservation, error) {
+		if tc.Question == "如果请假信息没能同步到位，会出现什么情况" {
 			return EvalObservation{
 				Reply: "同步失败不会直接覆盖已生成的考勤快照，排障后应重试同步。",
 			}, nil
@@ -223,9 +244,9 @@ func TestEvaluateCasesAggregatesPlannerDecisionMatches(t *testing.T) {
 			Name:             "reject-question",
 			Category:         "reject",
 			Question:         "今天上海天气怎么样？",
-			ExpectedDomain:   "in_domain",
-			ExpectedPlanKind: "tool",
-			ExpectedMode:     "tool-first",
+			ExpectedDomain:   "out_of_domain",
+			ExpectedPlanKind: "obvious_out",
+			ExpectedMode:     "reject",
 		},
 	}
 
@@ -253,7 +274,187 @@ func TestEvaluateCasesAggregatesPlannerDecisionMatches(t *testing.T) {
 	if results[1].PlanKind != "rag" || !results[1].PlanMatched {
 		t.Fatalf("second case should be rag: %+v", results[1])
 	}
-	if results[2].PlanKind != "tool" || !results[2].PlanMatched {
-		t.Fatalf("third case should be tool: %+v", results[2])
+	if results[2].PlanKind != "obvious_out" || !results[2].PlanMatched {
+		t.Fatalf("third case should be obvious_out: %+v", results[2])
+	}
+}
+
+func TestEvaluateCasesRejectsObviousOutOfDomainCases(t *testing.T) {
+	t.Parallel()
+
+	cases := []EvalCase{
+		{
+			Name:             "reject-weather",
+			Category:         "reject",
+			Question:         "今天上海天气怎么样？",
+			ExpectedDomain:   "out_of_domain",
+			ExpectedPlanKind: "obvious_out",
+			ExpectedMode:     "reject",
+			ExpectedRoute:    "tool",
+		},
+		{
+			Name:             "reject-code",
+			Category:         "reject",
+			Question:         "帮我写一个二分查找",
+			ExpectedDomain:   "out_of_domain",
+			ExpectedPlanKind: "obvious_out",
+			ExpectedMode:     "reject",
+			ExpectedRoute:    "tool",
+		},
+	}
+
+	summary, results, err := EvaluateCases(context.Background(), evalKnowledgePort{hitsByQuery: map[string][]agenttools.KnowledgeHit{}}, 42, cases, nil)
+	if err != nil {
+		t.Fatalf("EvaluateCases() error = %v", err)
+	}
+	if summary.DomainPassed != len(cases) || summary.PlanPassed != len(cases) || summary.ModePassed != len(cases) {
+		t.Fatalf("reject summary = %+v results=%+v", summary, results)
+	}
+	for _, result := range results {
+		if result.DomainResult != "out_of_domain" || result.PlanKind != "obvious_out" || result.AnswerMode != "reject" {
+			t.Fatalf("reject case result = %+v", result)
+		}
+	}
+}
+
+func TestEvaluateCasesDoesNotRequireLegacyRouteForProtocolOnlyCases(t *testing.T) {
+	t.Parallel()
+
+	cases := []EvalCase{
+		{
+			Name:                      "protocol-rule",
+			Category:                  "protocol",
+			Question:                  "迟到规则是什么",
+			ExpectedProtocolAct:       "rule_question",
+			ExpectedProtocolDomain:    "attendance",
+			ExpectedProtocolOperation: "attendance.rule_explain",
+			ExpectedResponseKind:      "answer",
+		},
+	}
+
+	knowledge := evalKnowledgePort{
+		hitsByQuery: map[string][]agenttools.KnowledgeHit{
+			"迟到规则是什么": {
+				{SourceRef: "考勤规则说明#1", Body: "上课开始后超过 10 分钟打卡视为迟到。", Score: 18},
+			},
+		},
+	}
+
+	summary, results, err := EvaluateCases(context.Background(), knowledge, 42, cases, nil)
+	if err != nil {
+		t.Fatalf("EvaluateCases() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("result count = %d, want 1", len(results))
+	}
+	if !results[0].ProtocolMatched {
+		t.Fatalf("protocol expectation should match: %+v", results[0])
+	}
+	if !results[0].RouteMatched || summary.RoutePassed != 1 {
+		t.Fatalf("protocol-only case should not fail legacy route: summary=%+v result=%+v", summary, results[0])
+	}
+}
+
+func TestEvaluateCasesAggregatesProtocolMatches(t *testing.T) {
+	t.Parallel()
+
+	cases := []EvalCase{
+		{
+			Name:                      "protocol-help-overview",
+			Category:                  "protocol",
+			Question:                  "你有什么功能",
+			ExpectedProtocolAct:       "help",
+			ExpectedProtocolDomain:    "system",
+			ExpectedProtocolOperation: "system.describe_capability",
+			ExpectedResponseKind:      "answer",
+			ExpectedTools:             []string{},
+		},
+		{
+			Name:                      "protocol-subscription-missing-scope",
+			Category:                  "protocol",
+			Question:                  "开启本群考勤订阅",
+			ExpectedProtocolAct:       "write_request",
+			ExpectedProtocolDomain:    "subscription",
+			ExpectedProtocolOperation: "subscription.start",
+			ExpectedResponseKind:      "clarify",
+			ExpectedBlockedReason:     "missing_scope",
+			ExpectedTools:             []string{},
+		},
+	}
+
+	summary, results, err := EvaluateCases(context.Background(), nil, 42, cases, nil)
+	if err != nil {
+		t.Fatalf("EvaluateCases() error = %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("result count = %d, want 2", len(results))
+	}
+	if summary.ProtocolCases != 2 || summary.ProtocolPassed != 2 || summary.ProtocolAccuracy != 100 {
+		t.Fatalf("protocol summary = %+v results=%+v", summary, results)
+	}
+	if results[0].ProtocolAct != "help" || !results[0].ProtocolMatched {
+		t.Fatalf("first protocol result = %+v", results[0])
+	}
+	if results[1].ProtocolBlockedReason != "missing_scope" || !results[1].ProtocolMatched {
+		t.Fatalf("second protocol result = %+v", results[1])
+	}
+	if !results[0].NoWriteToolsMatched || !results[1].NoWriteToolsMatched {
+		t.Fatalf("no-write-tool expectations should pass: %+v %+v", results[0], results[1])
+	}
+}
+
+func TestEvaluateCasesProtocolUsesTargetTenantForKnowledge(t *testing.T) {
+	t.Parallel()
+
+	knowledge := &tenantRecordingEvalKnowledgePort{
+		hits: []agenttools.KnowledgeHit{{Heading: "迟到规则", Body: "迟到规则说明", SourceRef: "attendance#late"}},
+	}
+	cases := []EvalCase{{
+		Name:                      "protocol-rule-tenant",
+		Category:                  "protocol",
+		Question:                  "迟到规则是什么",
+		ExpectedProtocolAct:       "rule_question",
+		ExpectedProtocolDomain:    "attendance",
+		ExpectedProtocolOperation: "attendance.rule_explain",
+		ExpectedResponseKind:      "answer",
+	}}
+
+	_, results, err := EvaluateCases(context.Background(), knowledge, 77, cases, nil)
+	if err != nil {
+		t.Fatalf("EvaluateCases() error = %v", err)
+	}
+	if len(results) != 1 || !results[0].ProtocolMatched {
+		t.Fatalf("protocol result = %+v", results)
+	}
+	for _, tenantID := range knowledge.seenTenants() {
+		if tenantID != 77 {
+			t.Fatalf("knowledge tenantID = %d, want 77; all calls=%v", tenantID, knowledge.seenTenants())
+		}
+	}
+}
+
+func TestEvaluateCasesProtocolFixturePasses(t *testing.T) {
+	t.Parallel()
+
+	allCases, err := LoadEvalCases(filepath.Join("testdata", "eval_cases.json"))
+	if err != nil {
+		t.Fatalf("LoadEvalCases() error = %v", err)
+	}
+	protocolCases := make([]EvalCase, 0)
+	for _, tc := range allCases {
+		if protocolExpectationPresent(tc) {
+			protocolCases = append(protocolCases, tc)
+		}
+	}
+	if len(protocolCases) == 0 {
+		t.Fatalf("protocol fixture cases = 0, want at least one")
+	}
+
+	summary, results, err := EvaluateCases(context.Background(), evalKnowledgePort{hitsByQuery: map[string][]agenttools.KnowledgeHit{}}, 42, protocolCases, nil)
+	if err != nil {
+		t.Fatalf("EvaluateCases() error = %v", err)
+	}
+	if summary.ProtocolCases != len(protocolCases) || summary.ProtocolPassed != summary.ProtocolCases {
+		t.Fatalf("protocol fixture summary = %+v results = %+v", summary, results)
 	}
 }

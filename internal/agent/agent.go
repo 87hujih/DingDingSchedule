@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,40 +35,43 @@ type Deps struct {
 	RouterLLMModel   string
 	RouteMode        string
 	ProtocolMode     string
+	IntentCompiler   IntentCompiler
 
-	Schedule        SchedulePort
-	Attendance      AttendancePort
-	Leave           LeavePort
-	User            UserPort
-	Semester        SemesterPort
-	SchedulePeriod  SchedulePeriodPort
-	RestDay         RestDayPort
-	GroupSub        GroupSubPort
-	Dept            DeptPort
-	Knowledge       KnowledgePort
-	CallLog         CallLogPort
-	AttendanceStats AttendanceStatsPort
-	UserCross       UserCrossPort
-	Tenant          TenantPort
+	Schedule                SchedulePort
+	Attendance              AttendancePort
+	AttendanceUserDayStatus AttendanceUserDayStatusPort
+	Leave                   LeavePort
+	User                    UserPort
+	Semester                SemesterPort
+	SchedulePeriod          SchedulePeriodPort
+	RestDay                 RestDayPort
+	GroupSub                GroupSubPort
+	Dept                    DeptPort
+	Knowledge               KnowledgePort
+	CallLog                 CallLogPort
+	AttendanceStats         AttendanceStatsPort
+	UserCross               UserCrossPort
+	Tenant                  TenantPort
 
 	Logger *zap.SugaredLogger
 }
 
 // Agent AI 助手
 type Agent struct {
-	deps         Deps
-	llmClient    *LLMClient
-	routerClient *LLMClient
-	routeMode    string
-	protocolMode ProtocolMode
-	registry     *tools.Registry
-	runtime      *taskRuntime
-	taskCatalog  *taskCatalog
-	sessions     *sessionManager
-	limiter      *rateLimiter
-	logWriter    *callLogWriter
-	stopCleanup  chan struct{}
-	once         sync.Once
+	deps           Deps
+	llmClient      *LLMClient
+	routerClient   *LLMClient
+	routeMode      string
+	protocolMode   ProtocolMode
+	intentCompiler IntentCompiler
+	registry       *tools.Registry
+	runtime        *taskRuntime
+	taskCatalog    *taskCatalog
+	sessions       *sessionManager
+	limiter        *rateLimiter
+	logWriter      *callLogWriter
+	stopCleanup    chan struct{}
+	once           sync.Once
 }
 
 // NewAgent 创建 Agent
@@ -95,16 +99,21 @@ func NewAgent(deps Deps) *Agent {
 		}
 		routerClient = NewLLMClient(routerBaseURL, routerAPIKey, routerModel)
 	}
+	intentCompiler := deps.IntentCompiler
+	if intentCompiler == nil && protocolMode == ProtocolModeLive && protocolLLMCompilerAvailable(mainClient) {
+		intentCompiler = newLLMIntentCompiler(mainClient, intentCompilerOptions{})
+	}
 
 	a := &Agent{
-		deps:         deps,
-		llmClient:    mainClient,
-		routerClient: routerClient,
-		routeMode:    routeMode,
-		protocolMode: protocolMode,
-		sessions:     newSessionManager(),
-		limiter:      newRateLimiter(),
-		stopCleanup:  make(chan struct{}),
+		deps:           deps,
+		llmClient:      mainClient,
+		routerClient:   routerClient,
+		routeMode:      routeMode,
+		protocolMode:   protocolMode,
+		intentCompiler: intentCompiler,
+		sessions:       newSessionManager(),
+		limiter:        newRateLimiter(),
+		stopCleanup:    make(chan struct{}),
 	}
 
 	handlers := []TaskHandler{
@@ -198,23 +207,19 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	// 2. protocol_live 作为独占主链。shadow 模式只记录协议草稿，不抢占 route / legacy 主流程。
 	if primaryChain == decisionChainProtocol {
 		_, activeWorkflow := a.sessions.getWorkflowState(sessionKey)
-		protocolWorkflow := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
-		var protocolDraft ProtocolDraft
-		var protocolValidation ProtocolValidationResult
-		protocolDraft = compileProtocol(protocolInput{
-			Message:        msg.Content,
-			ActiveWorkflow: protocolWorkflow,
-		})
-		protocolValidation = validateProtocol(protocolDraft, protocolWorkflow)
-		applyProtocolMetrics(&metrics, protocolDraft, protocolValidation)
 		if activeWorkflow != nil {
 			metrics.Wf.IDBefore = activeWorkflow.ID
 		}
-		if handled, reply, err := a.tryHandleProtocolPrimary(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, &metrics, activeWorkflow, protocolWorkflow); handled {
-			return reply, err
-		}
-		reply, err := a.handleProtocolFallback(ctx, uctx, sessionKey, msg.Content, userMsg, startTime, &metrics, protocolDraft, protocolValidation, activeWorkflow)
-		return reply, err
+		outcome := a.protocolLivePipeline().Handle(ctx, protocolLiveInput{
+			Message:        msg.Content,
+			User:           uctx,
+			ActiveWorkflow: activeWorkflow,
+		})
+		a.applyProtocolLiveOutcome(sessionKey, &metrics, outcome)
+		reply := renderProtocolResponse(outcome.Response)
+		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return reply, nil
 	}
 
 	if a.protocolMode == ProtocolModeShadow {
@@ -261,6 +266,27 @@ func (a *Agent) primaryDecisionChain() decisionChain {
 		return decisionChainRoute
 	}
 	return decisionChainLegacy
+}
+
+func protocolLLMCompilerAvailable(client *LLMClient) bool {
+	if client == nil {
+		return false
+	}
+	baseURL := strings.TrimSpace(client.baseURL)
+	if baseURL == "" || strings.TrimSpace(client.model) == "" {
+		return false
+	}
+	trimmed := strings.TrimRight(baseURL, "/")
+	parsed, err := url.Parse(trimmed)
+	if err == nil {
+		if parsed.Port() == "0" {
+			return false
+		}
+		if parsed.Host != "" {
+			return !strings.HasSuffix(parsed.Host, ":0")
+		}
+	}
+	return !strings.HasSuffix(trimmed, ":0")
 }
 
 // chatWithSemanticRouter 使用语义路由器作为唯一决策入口的处理路径。
@@ -1203,8 +1229,13 @@ func (a *Agent) writeCallLog(_ context.Context, uctx *tools.UserContext, questio
 		ProtocolDomain:          metrics.Proto.Domain,
 		ProtocolOperation:       metrics.Proto.Operation,
 		ProtocolValidationCode:  metrics.Proto.ValidationCode,
+		ProtocolBlockedReason:   metrics.Proto.BlockedReason,
+		ProtocolResolvedSlots:   metrics.Proto.ResolvedSlots,
+		ProtocolCandidateCount:  metrics.Proto.CandidateCount,
 		WorkflowIDBefore:        metrics.Wf.IDBefore,
 		WorkflowIDAfter:         metrics.Wf.IDAfter,
+		WorkflowStateBefore:     metrics.Wf.StateBefore,
+		WorkflowStateAfter:      metrics.Wf.StateAfter,
 		ResponseKind:            metrics.ResponseKind,
 		ExecutionAllowed:        metrics.Proto.ExecutionAllowed,
 		AnswerMode:              string(metrics.AnswerMode),
@@ -1265,6 +1296,17 @@ func applyProtocolMetrics(metrics *callMetrics, draft ProtocolDraft, validation 
 	metrics.Proto.ExecutionAllowed = validation.AllowExecution
 }
 
+// protocolPrimaryDispatchAllowed reports whether the protocol primary path may dispatch to a handler.
+func protocolPrimaryDispatchAllowed(_ ProtocolDraft, validation ProtocolValidationResult) bool {
+	if validation.AllowExecution {
+		return true
+	}
+	if validation.UseActiveWorkflow && validation.ResponseKind == ResponseResult {
+		return true
+	}
+	return validation.ResponseKind == ResponseAnswer
+}
+
 // tryHandleProtocolPrimary attempts to answer through the protocol-primary path.
 func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, activeWorkflow *WorkflowSnapshot, workflowCtx *protocolWorkflowContext) (bool, string, error) {
 	if a.protocolMode != ProtocolModeLive {
@@ -1280,37 +1322,76 @@ func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserCo
 	if activeWorkflow != nil {
 		metrics.Wf.IDBefore = activeWorkflow.ID
 	}
+	if blocked, reply := a.protocolRoleRefusal(uctx, draft); blocked {
+		metrics.Proto.ExecutionAllowed = false
+		metrics.Proto.BlockedReason = "role_denied"
+		metrics.ResponseKind = string(ResponseRefuse)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		metrics.Route.ExecutorName = "protocol_live_role_gate"
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	}
+
+	if !protocolPrimaryDispatchAllowed(draft, validation) {
+		return false, "", nil
+	}
+	if draft.Act == ActWorkflowCancel {
+		if activeWorkflow == nil {
+			return false, "", nil
+		}
+		result := continueWorkflow(*activeWorkflow, draft, trustedEntities{})
+		a.sessions.applyWorkflowResult(sessionKey, result)
+		metrics.Wf.IDAfter = ""
+		metrics.ResponseKind = string(ResponseResult)
+		metrics.AnswerMode = answerModeToolFirst
+		metrics.QueryType = queryKindTool
+		metrics.Route.ExecutorName = "protocol_live_workflow"
+		reply := "已取消当前任务。如需继续，请重新告诉我。"
+		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+		return true, reply, nil
+	}
+	if validation.InterruptActiveWorkflow {
+		interruptActiveWorkflow(a.sessions, sessionKey, activeWorkflow, draft)
+		activeWorkflow = nil
+		metrics.Wf.IDAfter = ""
+	}
 
 	switch draft.Operation {
+	case "subscription.query_status":
+		if !validation.AllowExecution {
+			return false, "", nil
+		}
+		params := map[string]any{}
+		if uctx != nil {
+			params["conversation_id"] = uctx.ConversationID
+		}
+		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
+			Operation:     draft.Operation,
+			TrustedParams: params,
+		})
 	case "subscription.cancel":
 		if !validation.AllowExecution || uctx == nil || uctx.ConversationType != "2" || a.deps.GroupSub == nil {
 			return false, "", nil
 		}
-		if err := a.deps.GroupSub.Unsubscribe(ctx, uctx.TenantID, uctx.ConversationID); err != nil {
-			return false, "", nil
-		}
-		reply := "已取消此群的考勤自动推送"
-		metrics.ResponseKind = string(ResponseResult)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
-		metrics.Route.ExecutorName = "protocol_live_write"
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
+		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
+			Operation: draft.Operation,
+			TrustedParams: map[string]any{
+				"conversation_id": uctx.ConversationID,
+			},
+		})
 	case "subscription.start", "subscription.list_departments":
 		return a.handleProtocolSubscriptionPrimary(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, draft, activeWorkflow)
 	case "manual_sign.create":
 		return a.handleProtocolManualSignPrimary(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, draft, activeWorkflow)
 	case "manual_sign.describe_capability":
-		reply := buildManualSignCapabilityReply(uctx)
-		metrics.ResponseKind = string(ResponseAnswer)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
+		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
+			Operation: draft.Operation,
+		})
 	case "attendance.query_status":
-		if !validation.AllowExecution || a.deps.Attendance == nil || a.deps.Semester == nil {
+		if !validation.AllowExecution || a.deps.Attendance == nil {
 			return false, "", nil
 		}
 
@@ -1342,38 +1423,149 @@ func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserCo
 			return true, reply, nil
 		}
 
-		week, _, err := a.deps.Semester.GetCurrentWeek(ctx)
-		if err != nil {
-			return false, "", nil
-		}
-		dateStr, ok := extractParamString(req.TrustedParams, "date")
-		if !ok {
-			return false, "", nil
-		}
-		sectionInt, ok := extractParamInt(req.TrustedParams, "section")
-		if !ok {
-			return false, "", nil
-		}
-		result, err := a.deps.Attendance.GetAttendanceDetail(ctx, tools.AttendanceQuery{
-			Date:    dateStr,
-			Week:    week,
-			Section: sectionInt,
-		})
-		if err != nil {
-			return false, "", nil
-		}
-
-		reply := buildAttendanceStatusReply(result)
-		metrics.ResponseKind = string(ResponseResult)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
-		metrics.Route.ExecutorName = "protocol_live_read"
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
+		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, req)
 	default:
 		return false, "", nil
 	}
+}
+
+func (a *Agent) executeProtocolOperation(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, req OperationRequest) (bool, string, error) {
+	result := a.operationExecutor().Execute(ctx, uctx, req)
+	applyOperationExecutionMetrics(metrics, result)
+	reply := renderProtocolResponse(result.Response)
+	a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
+	a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
+	return true, reply, nil
+}
+
+func (a *Agent) operationExecutor() operationExecutor {
+	return newOperationExecutor(operationExecutorDeps{
+		Schedule:                a.deps.Schedule,
+		Attendance:              a.deps.Attendance,
+		AttendanceUserDayStatus: a.deps.AttendanceUserDayStatus,
+		Semester:                a.deps.Semester,
+		GroupSub:                a.deps.GroupSub,
+		Dept:                    a.deps.Dept,
+		Knowledge:               a.deps.Knowledge,
+	})
+}
+
+func (a *Agent) protocolLivePipeline() protocolLivePipeline {
+	return newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler:       a.intentCompiler,
+		Executor:       a.operationExecutor(),
+		User:           a.deps.User,
+		Dept:           a.deps.Dept,
+		Semester:       a.deps.Semester,
+		SchedulePeriod: a.deps.SchedulePeriod,
+	})
+}
+
+func (a *Agent) applyProtocolLiveOutcome(sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome) {
+	var workflowBefore *WorkflowSnapshot
+	if a != nil && a.sessions != nil {
+		_, workflowBefore = a.sessions.getWorkflowState(sessionKey)
+	}
+
+	if outcome.ClearWorkflow {
+		a.sessions.clearWorkflowState(sessionKey)
+	}
+	if outcome.WorkflowAfter != nil {
+		a.sessions.setWorkflowState(sessionKey, outcome.WorkflowAfter)
+	}
+
+	applyProtocolMetrics(metrics, outcome.Draft, outcome.Validation)
+	if metrics == nil {
+		return
+	}
+	if workflowBefore != nil {
+		if metrics.Wf.IDBefore == "" {
+			metrics.Wf.IDBefore = workflowBefore.ID
+		}
+		metrics.Wf.StateBefore = string(workflowBefore.State)
+	}
+	metrics.Proto.BlockedReason = outcome.BlockedReason
+	metrics.Proto.ResolvedSlots = compactProtocolResolvedSlots(outcome.ResolvedSlots)
+	metrics.Proto.CandidateCount = outcome.CandidateCount
+	if outcome.ExecutionMetrics.ExecutorName != "" {
+		applyOperationExecutionMetrics(metrics, OperationExecutionResult{
+			Response: outcome.Response,
+			Metrics:  outcome.ExecutionMetrics,
+		})
+	} else {
+		metrics.ResponseKind = string(outcome.Response.Kind)
+		metrics.AnswerMode = outcome.AnswerMode
+		metrics.QueryType = modeToQueryKind(outcome.AnswerMode)
+		if outcome.WorkflowDecision != "" {
+			metrics.Route.ExecutorName = "protocol_live_workflow"
+		} else {
+			metrics.Route.ExecutorName = "protocol_live_guardrail"
+		}
+	}
+	if outcome.WorkflowAfter != nil {
+		metrics.Wf.IDAfter = outcome.WorkflowAfter.ID
+		metrics.Wf.StateAfter = string(outcome.WorkflowAfter.State)
+	} else if outcome.ClearWorkflow {
+		metrics.Wf.IDAfter = ""
+		metrics.Wf.StateAfter = workflowStateAfterFromDecision(outcome.WorkflowDecision)
+	}
+}
+
+func workflowStateAfterFromDecision(decision WorkflowDecision) string {
+	switch decision {
+	case WorkflowCompletedDecision:
+		return string(WorkflowCompleted)
+	case WorkflowCanceled:
+		return string(WorkflowCancelled)
+	case WorkflowInterrupted:
+		return string(WorkflowInterruptedState)
+	default:
+		return ""
+	}
+}
+
+func compactProtocolResolvedSlots(slots map[string]any) string {
+	if len(slots) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(slots)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func applyOperationExecutionMetrics(metrics *callMetrics, result OperationExecutionResult) {
+	if metrics == nil {
+		return
+	}
+	metrics.ResponseKind = string(result.Response.Kind)
+	metrics.AnswerMode = result.Metrics.AnswerMode
+	metrics.QueryType = modeToQueryKind(result.Metrics.AnswerMode)
+	metrics.Route.ExecutorName = result.Metrics.ExecutorName
+	metrics.Route.ToolPool = result.Metrics.ToolPool
+	metrics.Retrieval.HitCount = result.Metrics.RetrievalHitCount
+	metrics.Retrieval.CandidateCount = result.Metrics.RetrievalCandidateCount
+	metrics.Retrieval.TopRefs = append([]string(nil), result.Metrics.SourceRefs...)
+	metrics.SourceRefs = append([]string(nil), result.Metrics.SourceRefs...)
+}
+
+// protocolRoleRefusal blocks protocol operations when the current user role is below catalog metadata.
+func (a *Agent) protocolRoleRefusal(uctx *tools.UserContext, draft ProtocolDraft) (bool, string) {
+	if draft.Act == ActWorkflowCancel {
+		return false, ""
+	}
+	metadata, ok := lookupOperation(draft.Operation)
+	if !ok || metadata.MinRole <= 0 {
+		return false, ""
+	}
+	if uctx != nil && uctx.UserRole >= metadata.MinRole {
+		return false, ""
+	}
+	return true, renderProtocolResponse(ResponseModel{
+		Kind:          ResponseRefuse,
+		RefusalReason: "该操作需要管理员权限。",
+	})
 }
 
 // legacyTaskPlannerAction maps legacy task transitions to a planner action label.
@@ -1565,9 +1757,9 @@ func buildAttendanceStatusReply(result *tools.AttendanceResult) string {
 // buildManualSignCapabilityReply builds the capability-only reply for manual sign questions.
 func buildManualSignCapabilityReply(uctx *tools.UserContext) string {
 	if uctx != nil && uctx.UserRole >= 1 {
-		return "可以。你当前可以为指定用户代签某节次考勤，我需要明确的姓名、日期和节次。"
+		return "代签（补签）属于管理员能力；当前聊天路径只说明权限、规则和所需信息，不直接执行代签。"
 	}
-	return "代签属于管理员能力，只有管理员可以为指定用户代签某节次考勤。"
+	return "代签（补签）属于管理员能力；普通用户不能通过当前聊天路径执行代签。"
 }
 
 // handleProtocolFallback returns a safe fallback reply when protocol primary cannot execute.
@@ -1620,6 +1812,18 @@ func (a *Agent) handleProtocolFallback(ctx context.Context, uctx *tools.UserCont
 
 // buildProtocolCapabilityReply builds the capability reply for a protocol domain question.
 func buildProtocolCapabilityReply(domain BusinessDomain, uctx *tools.UserContext) string {
+	if entry, ok := lookupCapability(capabilityOperationForDomain(domain)); ok {
+		if domain == DomainSubscription && (uctx == nil || uctx.ConversationType != "2") {
+			return "群考勤订阅只能在群聊中使用；在群聊里管理员可以开启、取消或查询考勤推送订阅。"
+		}
+		if domain == DomainSubscription && uctx != nil && uctx.UserRole < 1 {
+			return "你可以在群聊里查询当前群的考勤订阅状态；开启、取消或按部门管理订阅需要管理员权限。"
+		}
+		if domain == DomainManualSign {
+			return buildManualSignCapabilityReply(uctx)
+		}
+		return entry.Description
+	}
 	switch domain {
 	case DomainManualSign:
 		return buildManualSignCapabilityReply(uctx)
@@ -1635,6 +1839,23 @@ func buildProtocolCapabilityReply(domain BusinessDomain, uctx *tools.UserContext
 		return "我可以帮助查询考勤统计分析。"
 	default:
 		return buildHelpReply(uctx)
+	}
+}
+
+func capabilityOperationForDomain(domain BusinessDomain) string {
+	switch domain {
+	case DomainSystem:
+		return "system.describe_capability"
+	case DomainAttendance:
+		return "attendance.describe_capability"
+	case DomainSchedule:
+		return "schedule.describe_capability"
+	case DomainSubscription:
+		return "subscription.describe_capability"
+	case DomainManualSign:
+		return "manual_sign.describe_capability"
+	default:
+		return ""
 	}
 }
 
@@ -1865,17 +2086,10 @@ func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *too
 	}
 
 	if draft.Operation == "subscription.list_departments" {
-		reply, err := a.buildProtocolDepartmentOptionsReply(ctx)
-		if err != nil {
-			return false, "", nil
-		}
 		metrics.Wf.IDAfter = activeWorkflow.ID
-		metrics.ResponseKind = string(ResponseSelectOptions)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
+		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
+			Operation: "subscription.list_departments",
+		})
 	}
 
 	if draft.Act != ActWorkflowContinue {
@@ -1905,33 +2119,34 @@ func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *too
 		}
 		a.sessions.setWorkflowState(sessionKey, result.Workflow)
 		metrics.Wf.IDAfter = result.Workflow.ID
-		metrics.ResponseKind = string(ResponseClarify)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
-		reply, err := a.buildProtocolDepartmentOptionsReply(ctx)
-		if err != nil {
-			reply = "请告诉我需要订阅哪些部门。"
-		}
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
+		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
+			Operation: "subscription.list_departments",
+		})
 	case WorkflowReadyToExecute:
 		if result.Workflow == nil {
 			return false, "", nil
 		}
-		deptIDs := []int64(nil)
-		if result.Workflow.Trusted.Scope == "department" && result.Workflow.Trusted.DepartmentID != 0 {
-			deptIDs = []int64{result.Workflow.Trusted.DepartmentID}
+		deptIDs := subscriptionDeptIDsFromTrusted(result.Workflow.Trusted)
+		params := map[string]any{
+			"conversation_id": uctx.ConversationID,
+			"scope":           result.Workflow.Trusted.Scope,
 		}
-		if err := a.deps.GroupSub.Subscribe(ctx, uctx.TenantID, uctx.ConversationID, uctx.ConversationTitle, uctx.UserID, deptIDs); err != nil {
-			return false, "", nil
+		if len(deptIDs) > 0 {
+			params["dept_ids"] = deptIDs
 		}
-		a.sessions.clearWorkflowState(sessionKey)
-		reply := "已为此群开启考勤推送"
-		metrics.Wf.IDAfter = ""
-		metrics.ResponseKind = string(ResponseResult)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
+		execResult := a.operationExecutor().Execute(ctx, uctx, OperationRequest{
+			Operation:     "subscription.start",
+			TrustedParams: params,
+		})
+		applyOperationExecutionMetrics(metrics, execResult)
+		if execResult.Response.Kind == ResponseResult {
+			a.sessions.applyWorkflowResult(sessionKey, completeWorkflow(*result.Workflow))
+			metrics.Wf.IDAfter = ""
+		} else {
+			a.sessions.setWorkflowState(sessionKey, result.Workflow)
+			metrics.Wf.IDAfter = result.Workflow.ID
+		}
+		reply := renderProtocolResponse(execResult.Response)
 		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return true, reply, nil
@@ -1948,6 +2163,16 @@ func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *too
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
 		return true, reply, nil
 	}
+}
+
+func subscriptionDeptIDsFromTrusted(trusted trustedEntities) []int64 {
+	if len(trusted.DeptIDs) > 0 {
+		return append([]int64(nil), trusted.DeptIDs...)
+	}
+	if trusted.Scope == "department" && trusted.DepartmentID != 0 {
+		return []int64{trusted.DepartmentID}
+	}
+	return nil
 }
 
 // buildProtocolDepartmentOptionsReply builds the reply that lists selectable departments.
@@ -2131,18 +2356,22 @@ func buildClarifyReply(plan clarifyPlan, toolResult string) (string, error) {
 		if err := json.Unmarshal([]byte(toolResult), &info); err != nil {
 			return "", err
 		}
-		if info == nil || !info.Subscribed {
-			return "当前群还没有订阅考勤推送。", nil
-		}
-
-		reply := "当前群已订阅考勤推送。"
-		if len(info.DeptIDs) > 0 {
-			reply += "目前是按指定部门范围推送。"
-		}
-		return reply, nil
+		return buildSubscriptionStatusReply(info), nil
 	default:
 		return plan.FollowUpPrompt, nil
 	}
+}
+
+func buildSubscriptionStatusReply(info *tools.GroupSubInfo) string {
+	if info == nil || !info.Subscribed {
+		return "当前群还没有订阅考勤推送。"
+	}
+
+	reply := "当前群已订阅考勤推送。"
+	if len(info.DeptIDs) > 0 {
+		reply += "目前是按指定部门范围推送。"
+	}
+	return reply
 }
 
 // extractToolError extracts a structured tool error payload from a tool result.

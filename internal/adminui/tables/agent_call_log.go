@@ -127,9 +127,17 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
 	info.AddField("协议校验", "protocol_validation_code", db.Varchar).
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("阻断原因", "protocol_blocked_reason", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("已解析槽位", "protocol_resolved_slots", db.Text)
+	info.AddField("协议候选数", "protocol_candidate_count", db.Int).FieldSortable()
 	info.AddField("前置 workflow", "workflow_id_before", db.Varchar).
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
 	info.AddField("后置 workflow", "workflow_id_after", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("前置状态", "workflow_state_before", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("后置状态", "workflow_state_after", db.Varchar).
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
 	info.AddField("回复类型", "response_kind", db.Varchar).
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})

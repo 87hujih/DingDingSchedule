@@ -151,6 +151,85 @@ func TestAttendanceAdapterSignForUsersBySlotUsesDateAndSection(t *testing.T) {
 	}
 }
 
+func TestAttendanceAdapterUserDayStatusUsesUserIDFromDateRecords(t *testing.T) {
+	service := &fakeAttendanceDetailService{
+		recordsByDateResp: []*dto.AttendanceDetailResponse{
+			{
+				Date:    "2026-06-06",
+				Section: 1,
+				Users: dto.AttendanceUserLists{
+					Late: []dto.AttendanceUserCheck{{
+						ID:        9,
+						Name:      "张三",
+						CheckTime: time.Date(2026, 6, 6, 8, 5, 0, 0, time.Local),
+					}},
+				},
+			},
+			{
+				Date:    "2026-06-06",
+				Section: 2,
+				Users: dto.AttendanceUserLists{
+					OnTime: []dto.AttendanceUserCheck{{
+						ID:        10,
+						Name:      "张三",
+						CheckTime: time.Date(2026, 6, 6, 10, 0, 0, 0, time.Local),
+					}},
+				},
+			},
+			{
+				Date:    "2026-06-06",
+				Section: 3,
+				Users: dto.AttendanceUserLists{
+					Leave: []dto.AttendanceUserLeave{{
+						ID:        9,
+						Name:      "张三",
+						LeaveType: "事假",
+					}},
+				},
+			},
+			{
+				Date:    "2026-06-06",
+				Section: 4,
+				Users: dto.AttendanceUserLists{
+					NotArrived: []dto.AttendanceUserBasic{{
+						ID:   9,
+						Name: "张三",
+					}},
+				},
+			},
+		},
+	}
+	adapter := &attendanceAdapter{srv: service}
+
+	result, err := adapter.GetUserDayAttendanceStatus(context.Background(), "2026-06-06", 9)
+	if err != nil {
+		t.Fatalf("GetUserDayAttendanceStatus() error = %v", err)
+	}
+
+	if service.recordsByDateCalls != 1 {
+		t.Fatalf("records by date calls = %d, want 1", service.recordsByDateCalls)
+	}
+	if service.lastRecordsDate.Format("2006-01-02") != "2026-06-06" {
+		t.Fatalf("last records date = %s, want 2026-06-06", service.lastRecordsDate.Format("2006-01-02"))
+	}
+	if result.UserID != 9 || result.UserName != "张三" {
+		t.Fatalf("result user = %d/%q, want 9/张三", result.UserID, result.UserName)
+	}
+	if len(result.Slots) != 3 {
+		t.Fatalf("slots = %+v, want only target user statuses", result.Slots)
+	}
+	statusBySection := make(map[int]string)
+	for _, slot := range result.Slots {
+		statusBySection[slot.Section] = slot.Status
+	}
+	if statusBySection[1] != "late" || statusBySection[3] != "leave" || statusBySection[4] != "not_arrived" {
+		t.Fatalf("statusBySection = %+v", statusBySection)
+	}
+	if _, ok := statusBySection[2]; ok {
+		t.Fatalf("section 2 belongs to same-name different user and should not be included: %+v", result.Slots)
+	}
+}
+
 func TestScheduleAdapterListUserScheduleByWeekUsesViewerAndTargetIDs(t *testing.T) {
 	service := &fakeScheduleService{
 		listByWeekResp: &service.WeekScheduleResult{
@@ -255,8 +334,13 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 		ProtocolDomain:          "attendance",
 		ProtocolOperation:       "attendance.query_status",
 		ProtocolValidationCode:  "allowed_read_query",
+		ProtocolBlockedReason:   "missing_scope",
+		ProtocolResolvedSlots:   `{"date":"2026-06-06","section":2}`,
+		ProtocolCandidateCount:  2,
 		WorkflowIDBefore:        "wf-before",
 		WorkflowIDAfter:         "wf-after",
+		WorkflowStateBefore:     "collect_scope",
+		WorkflowStateAfter:      "ready",
 		ResponseKind:            "clarify",
 		ExecutionAllowed:        false,
 		AnswerMode:              "knowledge-only",
@@ -376,11 +460,26 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	if row.ProtocolValidationCode != "allowed_read_query" {
 		t.Fatalf("ProtocolValidationCode = %q, want allowed_read_query", row.ProtocolValidationCode)
 	}
+	if row.ProtocolBlockedReason != "missing_scope" {
+		t.Fatalf("ProtocolBlockedReason = %q, want missing_scope", row.ProtocolBlockedReason)
+	}
+	if row.ProtocolResolvedSlots != `{"date":"2026-06-06","section":2}` {
+		t.Fatalf("ProtocolResolvedSlots = %q, want compact resolved slot JSON", row.ProtocolResolvedSlots)
+	}
+	if row.ProtocolCandidateCount != 2 {
+		t.Fatalf("ProtocolCandidateCount = %d, want 2", row.ProtocolCandidateCount)
+	}
 	if row.WorkflowIDBefore != "wf-before" {
 		t.Fatalf("WorkflowIDBefore = %q, want wf-before", row.WorkflowIDBefore)
 	}
 	if row.WorkflowIDAfter != "wf-after" {
 		t.Fatalf("WorkflowIDAfter = %q, want wf-after", row.WorkflowIDAfter)
+	}
+	if row.WorkflowStateBefore != "collect_scope" {
+		t.Fatalf("WorkflowStateBefore = %q, want collect_scope", row.WorkflowStateBefore)
+	}
+	if row.WorkflowStateAfter != "ready" {
+		t.Fatalf("WorkflowStateAfter = %q, want ready", row.WorkflowStateAfter)
 	}
 	if row.ResponseKind != "clarify" {
 		t.Fatalf("ResponseKind = %q, want clarify", row.ResponseKind)
@@ -421,18 +520,23 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 }
 
 type fakeAttendanceDetailService struct {
-	detailResp  *dto.AttendanceDetailResponse
-	detailErr   error
-	textResp    *dto.AttendanceTextResponse
-	textErr     error
-	rankingResp *dto.WeeklyAttendanceRankingResponse
-	rankingErr  error
-	rateResp    *dto.WeeklyAttendanceRateRankingResponse
-	rateErr     error
-	signErr     error
-	detailCalls int
-	lastReq     *dto.AttendanceDetailRequest
-	lastSignReq *dto.SignForUserRequest
+	detailResp         *dto.AttendanceDetailResponse
+	detailErr          error
+	textResp           *dto.AttendanceTextResponse
+	textErr            error
+	rankingResp        *dto.WeeklyAttendanceRankingResponse
+	rankingErr         error
+	rateResp           *dto.WeeklyAttendanceRateRankingResponse
+	rateErr            error
+	signErr            error
+	detailCalls        int
+	recordsByDateCalls int
+	lastReq            *dto.AttendanceDetailRequest
+	lastSignReq        *dto.SignForUserRequest
+	lastRecordsDate    time.Time
+	lastRecordsDeptIDs []int64
+	recordsByDateResp  []*dto.AttendanceDetailResponse
+	recordsByDateErr   error
 }
 
 type fakeScheduleService struct {
@@ -501,6 +605,16 @@ func (f *fakeAttendanceDetailService) SignForUsers(_ context.Context, req *dto.S
 		return nil, f.signErr
 	}
 	return &dto.SignForUserResponse{}, nil
+}
+
+func (f *fakeAttendanceDetailService) GetAttendanceRecordsByDate(_ context.Context, date time.Time, deptIDs []int64) ([]*dto.AttendanceDetailResponse, error) {
+	f.recordsByDateCalls++
+	f.lastRecordsDate = date
+	f.lastRecordsDeptIDs = append([]int64(nil), deptIDs...)
+	if f.recordsByDateErr != nil {
+		return nil, f.recordsByDateErr
+	}
+	return f.recordsByDateResp, nil
 }
 
 type fakeAttendanceRecordRepo struct {

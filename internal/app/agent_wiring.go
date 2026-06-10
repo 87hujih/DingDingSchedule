@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,8 +14,8 @@ import (
 	"schedule_server/global"
 	"schedule_server/internal/agent"
 	agenttool "schedule_server/internal/agent/tools"
-	"schedule_server/internal/middleware"
 	"schedule_server/internal/dto"
+	"schedule_server/internal/middleware"
 	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
 	"schedule_server/internal/service"
@@ -44,6 +45,8 @@ func BuildAgent(
 		callLog = &callLogAdapter{db: global.DB}
 	}
 
+	attendance := &attendanceAdapter{srv: attendanceSrv, repo: repo.AttendanceRecordRepo}
+
 	return agent.NewAgent(agent.Deps{
 		LLMBaseURL:       cfg.BaseURL,
 		LLMAPIKey:        cfg.APIKey,
@@ -54,20 +57,21 @@ func BuildAgent(
 		RouteMode:        cfg.RouteMode,
 		ProtocolMode:     cfg.ProtocolMode,
 
-		Schedule:        &scheduleAdapter{srv: scheduleSrv, schedulePeriodSrv: schedulePeriodSrv},
-		Attendance:      &attendanceAdapter{srv: attendanceSrv, repo: repo.AttendanceRecordRepo},
-		Leave:           &leaveAdapter{srv: leaveSyncSrv},
-		User:            &userAdapter{repo: repo.UserRepo},
-		Semester:        &semesterAdapter{srv: semesterSrv},
-		SchedulePeriod:  &schedulePeriodAdapter{srv: schedulePeriodSrv},
-		RestDay:         &restDayAdapter{srv: restDaySrv},
-		GroupSub:        &groupSubAdapter{repo: repo.GroupSubRepo},
-		Dept:            &deptAdapter{repo: repo.DeptRepo},
-		Knowledge:       &knowledgeAdapter{srv: knowledgeSrv},
-		CallLog:         callLog,
-		AttendanceStats: attendanceSrv,
-		UserCross:       attendanceSrv,
-		Tenant:          &tenantAdapter{repo: repo.TenantRepo},
+		Schedule:                &scheduleAdapter{srv: scheduleSrv, schedulePeriodSrv: schedulePeriodSrv},
+		Attendance:              attendance,
+		AttendanceUserDayStatus: attendance,
+		Leave:                   &leaveAdapter{srv: leaveSyncSrv},
+		User:                    &userAdapter{repo: repo.UserRepo},
+		Semester:                &semesterAdapter{srv: semesterSrv},
+		SchedulePeriod:          &schedulePeriodAdapter{srv: schedulePeriodSrv},
+		RestDay:                 &restDayAdapter{srv: restDaySrv},
+		GroupSub:                &groupSubAdapter{repo: repo.GroupSubRepo},
+		Dept:                    &deptAdapter{repo: repo.DeptRepo},
+		Knowledge:               &knowledgeAdapter{srv: knowledgeSrv},
+		CallLog:                 callLog,
+		AttendanceStats:         attendanceSrv,
+		UserCross:               attendanceSrv,
+		Tenant:                  &tenantAdapter{repo: repo.TenantRepo},
 
 		Logger: global.Log,
 	})
@@ -161,6 +165,7 @@ type attendanceAdapter struct {
 
 type attendanceDetailService interface {
 	GetAttendanceDetail(ctx context.Context, req *dto.AttendanceDetailRequest) (*dto.AttendanceDetailResponse, error)
+	GetAttendanceRecordsByDate(ctx context.Context, date time.Time, deptIDs []int64) ([]*dto.AttendanceDetailResponse, error)
 	GetAttendanceText(ctx context.Context, req *dto.AttendanceTextRequest) (*dto.AttendanceTextResponse, error)
 	GetWeeklyRanking(ctx context.Context, req *dto.WeeklyAttendanceRankingRequest) (*dto.WeeklyAttendanceRankingResponse, error)
 	GetWeeklyAttendanceRateRanking(ctx context.Context, req *dto.WeeklyAttendanceRankingRequest) (*dto.WeeklyAttendanceRateRankingResponse, error)
@@ -235,6 +240,110 @@ func (a *attendanceAdapter) GetAttendanceDetail(ctx context.Context, req agentto
 		AbsentUsers:  absentNames,
 		RestDayUsers: restDayNames,
 	}, nil
+}
+
+// GetUserDayAttendanceStatus 查询指定用户某天各节次考勤状态，并保留按用户 ID 匹配的确定性口径。
+func (a *attendanceAdapter) GetUserDayAttendanceStatus(ctx context.Context, date string, userID uint) (*agenttool.UserDayAttendanceStatus, error) {
+	parsedDate, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return nil, err
+	}
+	records, err := a.srv.GetAttendanceRecordsByDate(ctx, parsedDate, nil)
+	if err != nil {
+		return nil, err
+	}
+	result := &agenttool.UserDayAttendanceStatus{
+		Date:   date,
+		UserID: userID,
+		Slots:  make([]agenttool.UserDayAttendanceSlot, 0, len(records)),
+	}
+	for _, record := range records {
+		slot, name, ok := userDaySlotFromDetail(record, userID)
+		if !ok {
+			continue
+		}
+		if result.UserName == "" {
+			result.UserName = name
+		}
+		result.Slots = append(result.Slots, slot)
+	}
+	sort.Slice(result.Slots, func(i, j int) bool {
+		return result.Slots[i].Section < result.Slots[j].Section
+	})
+	return result, nil
+}
+
+func userDaySlotFromDetail(record *dto.AttendanceDetailResponse, userID uint) (agenttool.UserDayAttendanceSlot, string, bool) {
+	if record == nil {
+		return agenttool.UserDayAttendanceSlot{}, "", false
+	}
+	for _, user := range record.Users.OnTime {
+		if user.ID == userID {
+			return agenttool.UserDayAttendanceSlot{
+				Section:   record.Section,
+				Status:    "on_time",
+				CheckTime: formatAgentCheckTime(user.CheckTime),
+			}, user.Name, true
+		}
+	}
+	for _, user := range record.Users.Late {
+		if user.ID == userID {
+			return agenttool.UserDayAttendanceSlot{
+				Section:   record.Section,
+				Status:    "late",
+				CheckTime: formatAgentCheckTime(user.CheckTime),
+			}, user.Name, true
+		}
+	}
+	for _, user := range record.Users.Leave {
+		if user.ID == userID {
+			return agenttool.UserDayAttendanceSlot{
+				Section:   record.Section,
+				Status:    "leave",
+				LeaveType: user.LeaveType,
+			}, user.Name, true
+		}
+	}
+	for _, user := range record.Users.NotArrived {
+		if user.ID == userID {
+			return agenttool.UserDayAttendanceSlot{
+				Section: record.Section,
+				Status:  "not_arrived",
+			}, user.Name, true
+		}
+	}
+	for _, user := range record.Users.RestDay {
+		if user.ID == userID {
+			return agenttool.UserDayAttendanceSlot{
+				Section: record.Section,
+				Status:  "rest_day",
+			}, user.Name, true
+		}
+	}
+	for _, user := range record.Users.HasCourse {
+		if user.ID == userID {
+			return agenttool.UserDayAttendanceSlot{
+				Section: record.Section,
+				Status:  "has_course",
+			}, user.Name, true
+		}
+	}
+	for _, user := range record.Users.ShouldAttend {
+		if user.ID == userID {
+			return agenttool.UserDayAttendanceSlot{
+				Section: record.Section,
+				Status:  "should_attend",
+			}, user.Name, true
+		}
+	}
+	return agenttool.UserDayAttendanceSlot{}, "", false
+}
+
+func formatAgentCheckTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.Format("15:04")
 }
 
 // GetAttendanceText 查询指定条件下的考勤文本摘要。
@@ -631,8 +740,13 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 		ProtocolDomain:          log.ProtocolDomain,
 		ProtocolOperation:       log.ProtocolOperation,
 		ProtocolValidationCode:  log.ProtocolValidationCode,
+		ProtocolBlockedReason:   log.ProtocolBlockedReason,
+		ProtocolResolvedSlots:   log.ProtocolResolvedSlots,
+		ProtocolCandidateCount:  log.ProtocolCandidateCount,
 		WorkflowIDBefore:        log.WorkflowIDBefore,
 		WorkflowIDAfter:         log.WorkflowIDAfter,
+		WorkflowStateBefore:     log.WorkflowStateBefore,
+		WorkflowStateAfter:      log.WorkflowStateAfter,
 		ResponseKind:            log.ResponseKind,
 		ExecutionAllowed:        log.ExecutionAllowed,
 		AnswerMode:              log.AnswerMode,

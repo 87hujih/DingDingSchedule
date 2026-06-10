@@ -15,13 +15,6 @@ func startWorkflow(draft ProtocolDraft) (WorkflowSnapshot, bool) {
 			State:        WorkflowCollectScope,
 			MissingSlots: []string{"scope"},
 		}, true
-	case "manual_sign.create":
-		return WorkflowSnapshot{
-			ID:           fmt.Sprintf("wf-%d", time.Now().UnixNano()),
-			Type:         WorkflowManualSignCreate,
-			State:        WorkflowCollectUser,
-			MissingSlots: []string{"user_id", "date", "section"},
-		}, true
 	default:
 		return WorkflowSnapshot{}, false
 	}
@@ -29,14 +22,22 @@ func startWorkflow(draft ProtocolDraft) (WorkflowSnapshot, bool) {
 
 // continueWorkflow continues a workflow snapshot with trusted entities.
 func continueWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft, trusted trustedEntities) WorkflowResult {
+	if draft.Act == ActWorkflowCancel {
+		workflow.State = WorkflowCancelled
+		workflow.MissingSlots = nil
+		return WorkflowResult{Decision: WorkflowCanceled, Workflow: &workflow}
+	}
+
 	if isExplicitNewRequest(draft.Act) {
-		return WorkflowResult{Decision: WorkflowSuspendForNewRequest, Workflow: &workflow}
+		workflow.State = WorkflowInterruptedState
+		workflow.MissingSlots = nil
+		return WorkflowResult{Decision: WorkflowInterrupted, Workflow: &workflow}
 	}
 
 	next := workflow
 	switch workflow.Type {
 	case WorkflowSubscriptionStart:
-		return continueSubscriptionWorkflow(next, trusted)
+		return continueSubscriptionWorkflow(next, draft, trusted)
 	case WorkflowManualSignCreate:
 		return continueManualSignWorkflow(next, trusted)
 	default:
@@ -44,8 +45,40 @@ func continueWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft, trusted tr
 	}
 }
 
+// completeWorkflow marks an executed workflow as completed.
+func completeWorkflow(workflow WorkflowSnapshot) WorkflowResult {
+	workflow.State = WorkflowCompleted
+	workflow.MissingSlots = nil
+	return WorkflowResult{Decision: WorkflowCompletedDecision, Workflow: &workflow}
+}
+
+// interruptActiveWorkflow applies interrupted lifecycle to an active workflow.
+func interruptActiveWorkflow(sessions *sessionManager, sessionKey string, workflow *WorkflowSnapshot, draft ProtocolDraft) WorkflowResult {
+	if workflow == nil {
+		return WorkflowResult{Decision: WorkflowInterrupted}
+	}
+	result := continueWorkflow(*workflow, draft, trustedEntities{})
+	if result.Decision != WorkflowInterrupted {
+		next := cloneWorkflowSnapshot(workflow)
+		next.State = WorkflowInterruptedState
+		next.MissingSlots = nil
+		result = WorkflowResult{Decision: WorkflowInterrupted, Workflow: next}
+	}
+	if sessions != nil {
+		sessions.applyWorkflowResult(sessionKey, result)
+	}
+	return result
+}
+
 // continueSubscriptionWorkflow continues subscription workflow.
-func continueSubscriptionWorkflow(workflow WorkflowSnapshot, trusted trustedEntities) WorkflowResult {
+func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft, trusted trustedEntities) WorkflowResult {
+	if draft.Operation == "subscription.list_departments" && workflow.State == WorkflowCollectDepartments {
+		return WorkflowResult{Decision: WorkflowMetaResult, Workflow: &workflow}
+	}
+	if draft.Operation != "subscription.start" {
+		return WorkflowResult{Decision: WorkflowRejectInvalidShape, Workflow: &workflow}
+	}
+
 	switch workflow.State {
 	case WorkflowCollectScope:
 		switch trusted.Scope {
@@ -63,10 +96,15 @@ func continueSubscriptionWorkflow(workflow WorkflowSnapshot, trusted trustedEnti
 			return WorkflowResult{Decision: WorkflowRejectInvalidShape, Workflow: &workflow}
 		}
 	case WorkflowCollectDepartments:
-		if trusted.DepartmentID == 0 {
+		deptIDs := trusted.DeptIDs
+		if len(deptIDs) == 0 && trusted.DepartmentID != 0 {
+			deptIDs = []int64{trusted.DepartmentID}
+		}
+		if len(deptIDs) == 0 {
 			return WorkflowResult{Decision: WorkflowRejectInvalidShape, Workflow: &workflow}
 		}
-		workflow.Trusted.DepartmentID = trusted.DepartmentID
+		workflow.Trusted.DepartmentID = deptIDs[0]
+		workflow.Trusted.DeptIDs = append([]int64(nil), deptIDs...)
 		workflow.State = WorkflowReady
 		workflow.MissingSlots = nil
 		return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}
@@ -132,7 +170,7 @@ func nextManualSignState(slot string) WorkflowState {
 // isExplicitNewRequest reports whether it is explicit new request.
 func isExplicitNewRequest(act UserAct) bool {
 	switch act {
-	case ActCapabilityQuestion, ActRuleQuestion, ActReadQuery, ActHelp:
+	case ActCapabilityQuestion, ActRuleQuestion, ActReadQuery, ActWriteRequest, ActHelp:
 		return true
 	default:
 		return false

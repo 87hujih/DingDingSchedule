@@ -17,6 +17,7 @@ const (
 )
 
 const (
+	DomainSystem       BusinessDomain = "system"
 	DomainAttendance   BusinessDomain = "attendance"
 	DomainSubscription BusinessDomain = "subscription"
 	DomainManualSign   BusinessDomain = "manual_sign"
@@ -34,22 +35,30 @@ const (
 
 const (
 	ResponseAnswer        ResponseKind = "answer"
+	ResponseResult        ResponseKind = "result"
 	ResponseClarify       ResponseKind = "clarify"
 	ResponseSelectOptions ResponseKind = "select_options"
-	ResponseConfirm       ResponseKind = "confirm"
-	ResponseResult        ResponseKind = "result"
 	ResponseRefuse        ResponseKind = "refuse"
 )
 
-type ProtocolDraft struct {
+type SlotDraft struct {
+	Field string
+	Raw   string
+}
+
+type IntentDraft struct {
 	Act           UserAct
 	Domain        BusinessDomain
 	Operation     string
 	Confidence    float64
+	Slots         map[string]SlotDraft
+	Reason        string
 	Params        map[string]any
 	MissingFields []string
 	ClarifyReason string
 }
+
+type ProtocolDraft = IntentDraft
 
 type OperationRequest struct {
 	Operation     string
@@ -74,4 +83,15 @@ func normalizeProtocolMode(value string) ProtocolMode {
 		}
 	}
 	return ProtocolModeLegacy
+}
+
+// responseKinds returns response kinds approved for protocol replies.
+func responseKinds() []ResponseKind {
+	return []ResponseKind{
+		ResponseAnswer,
+		ResponseResult,
+		ResponseClarify,
+		ResponseSelectOptions,
+		ResponseRefuse,
+	}
 }

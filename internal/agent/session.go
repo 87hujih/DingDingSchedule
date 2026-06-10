@@ -217,6 +217,34 @@ func (sm *sessionManager) clearWorkflowState(key string) {
 	s.updatedAt = time.Now()
 }
 
+// applyWorkflowResult applies workflow lifecycle result to session state.
+func (sm *sessionManager) applyWorkflowResult(key string, result WorkflowResult) {
+	if workflowResultTerminal(result) {
+		sm.clearWorkflowState(key)
+		return
+	}
+	if result.Workflow != nil {
+		sm.setWorkflowState(key, result.Workflow)
+	}
+}
+
+// workflowResultTerminal reports whether a workflow result should clear active workflow state.
+func workflowResultTerminal(result WorkflowResult) bool {
+	switch result.Decision {
+	case WorkflowCompletedDecision, WorkflowCanceled, WorkflowInterrupted:
+		return true
+	}
+	if result.Workflow == nil {
+		return false
+	}
+	switch result.Workflow.State {
+	case WorkflowCompleted, WorkflowCancelled, WorkflowInterruptedState:
+		return true
+	default:
+		return false
+	}
+}
+
 // purgeExpired 清理过期 session
 func (sm *sessionManager) purgeExpired() {
 	sm.mu.Lock()

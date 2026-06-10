@@ -44,8 +44,13 @@ type AgentCallLog struct {
 	ProtocolDomain          string `gorm:"size:32"`
 	ProtocolOperation       string `gorm:"size:64"`
 	ProtocolValidationCode  string `gorm:"size:64"`
+	ProtocolBlockedReason   string `gorm:"size:64"`
+	ProtocolResolvedSlots   string `gorm:"type:text"`
+	ProtocolCandidateCount  int
 	WorkflowIDBefore        string `gorm:"size:64"`
 	WorkflowIDAfter         string `gorm:"size:64"`
+	WorkflowStateBefore     string `gorm:"size:32"`
+	WorkflowStateAfter      string `gorm:"size:32"`
 	ResponseKind            string `gorm:"size:32"`
 	ExecutionAllowed        bool
 	AnswerMode              string `gorm:"size:32"`

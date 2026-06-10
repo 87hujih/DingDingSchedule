@@ -103,25 +103,43 @@ func buildHelpReply(uctx *tools.UserContext) string {
 		convType = uctx.ConversationType
 	}
 
+	protocolCaps := capabilityEntriesFor(capabilityContext{
+		UserRole:         role,
+		ConversationType: convType,
+	})
 	currentCaps := filterCapabilities(listCapabilities(), role, convType)
 
 	var b strings.Builder
 	b.WriteString("我可以帮助处理这些系统能力：\n")
-	for _, cap := range currentCaps {
-		b.WriteString(fmt.Sprintf("- %s：%s\n", cap.Title, cap.Description))
+	for _, entry := range protocolCaps {
+		b.WriteString(fmt.Sprintf("- %s：%s\n", entry.Title, entry.Description))
+	}
+	if len(protocolCaps) == 0 {
+		for _, cap := range currentCaps {
+			b.WriteString(fmt.Sprintf("- %s：%s\n", cap.Title, cap.Description))
+		}
 	}
 
 	b.WriteString("\n你当前在这个会话里可直接使用：\n")
-	if len(currentCaps) == 0 {
+	if len(protocolCaps) == 0 {
 		b.WriteString("- 当前没有可直接执行的聊天能力\n")
 		return strings.TrimSpace(b.String())
 	}
 
-	for _, cap := range currentCaps {
-		b.WriteString(fmt.Sprintf("- %s：%s\n", cap.Title, cap.Description))
-		if cap.FollowUpHint != "" {
-			b.WriteString(fmt.Sprintf("  提示：%s\n", cap.FollowUpHint))
+	wroteDirect := false
+	for _, entry := range protocolCaps {
+		if !directlyUsableCapability(entry) {
+			continue
 		}
+		b.WriteString(fmt.Sprintf("- %s：%s\n", entry.Title, entry.Description))
+		wroteDirect = true
+	}
+	if !wroteDirect {
+		b.WriteString("- 当前没有可直接执行的聊天能力\n")
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func directlyUsableCapability(entry CapabilityEntry) bool {
+	return entry.OperationScope != "manual_sign.describe_capability"
 }

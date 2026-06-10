@@ -31,8 +31,8 @@ type callMetrics struct {
 	ResponseKind string
 
 	// 知识检索
-	Retrieval retrievalMetrics
-	SourceRefs        []string
+	Retrieval            retrievalMetrics
+	SourceRefs           []string
 	FollowUpMatchedSlots []string
 
 	// LLM
@@ -63,30 +63,35 @@ type shadowMetrics struct {
 }
 
 type routeMetrics struct {
-	Kind           string
-	Confidence     float64
-	ReasonCode     string
-	Source         string
-	ClarifyCode    string
-	SoftNoticeCode string
-	ExecutorName   string
-	ToolPool       string
-	RouterLatencyMs  int64
+	Kind              string
+	Confidence        float64
+	ReasonCode        string
+	Source            string
+	ClarifyCode       string
+	SoftNoticeCode    string
+	ExecutorName      string
+	ToolPool          string
+	RouterLatencyMs   int64
 	ExecutorLatencyMs int64
 }
 
 type protocolMetrics struct {
-	Mode            string
-	Act             string
-	Domain          string
-	Operation       string
-	ValidationCode  string
+	Mode             string
+	Act              string
+	Domain           string
+	Operation        string
+	ValidationCode   string
+	BlockedReason    string
+	ResolvedSlots    string
+	CandidateCount   int
 	ExecutionAllowed bool
 }
 
 type workflowMetrics struct {
-	IDBefore string
-	IDAfter  string
+	IDBefore    string
+	IDAfter     string
+	StateBefore string
+	StateAfter  string
 }
 
 type retrievalMetrics struct {

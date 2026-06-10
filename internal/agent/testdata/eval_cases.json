@@ -146,7 +146,7 @@
     "expected_plan_kind": "rag",
     "expected_mode": "knowledge-only",
     "expected_route": "rag",
-    "expected_sources": ["请假同步说明#3"],
+    "expected_sources": ["请假同步说明#7"],
     "expected_keywords": ["不会直接覆盖", "重试"]
   },
   {
@@ -157,7 +157,7 @@
     "expected_plan_kind": "rag",
     "expected_mode": "knowledge-only",
     "expected_route": "rag",
-    "expected_sources": ["作息模式使用说明#3"],
+    "expected_sources": ["休息日规则说明#4"],
     "expected_keywords": ["休息日", "优先级"]
   },
   {
@@ -207,6 +207,111 @@
     "expected_tools": ["generate_attendance_text"],
     "expected_sources": ["考勤规则说明#3"],
     "expected_keywords": ["30分钟", "最终结算"]
+  },
+  {
+    "name": "protocol-help-overview",
+    "category": "protocol",
+    "question": "你有什么功能",
+    "expected_protocol_act": "help",
+    "expected_protocol_domain": "system",
+    "expected_protocol_operation": "system.describe_capability",
+    "expected_response_kind": "answer",
+    "expected_tools": []
+  },
+  {
+    "name": "protocol-attendance-slot-status",
+    "category": "protocol",
+    "question": "查询今天第二节考勤状态",
+    "expected_protocol_act": "read_query",
+    "expected_protocol_domain": "attendance",
+    "expected_protocol_operation": "attendance.query_status",
+    "expected_tools": []
+  },
+  {
+    "name": "protocol-my-schedule",
+    "category": "protocol",
+    "question": "查我的本周课表",
+    "expected_protocol_act": "read_query",
+    "expected_protocol_domain": "schedule",
+    "expected_protocol_operation": "schedule.query_my_schedule",
+    "expected_tools": []
+  },
+  {
+    "name": "protocol-manual-sign-capability",
+    "category": "protocol",
+    "question": "可以补签吗",
+    "expected_protocol_act": "capability_question",
+    "expected_protocol_domain": "manual_sign",
+    "expected_protocol_operation": "manual_sign.describe_capability",
+    "expected_response_kind": "answer",
+    "expected_tools": []
+  },
+  {
+    "name": "protocol-rule-no-hit",
+    "category": "protocol",
+    "question": "迟到规则是什么",
+    "expected_protocol_act": "rule_question",
+    "expected_protocol_domain": "attendance",
+    "expected_protocol_operation": "attendance.rule_explain",
+    "expected_response_kind": "answer",
+    "expected_tools": []
+  },
+  {
+    "name": "protocol-subscription-missing-scope",
+    "category": "protocol",
+    "question": "开启本群考勤订阅",
+    "expected_protocol_act": "write_request",
+    "expected_protocol_domain": "subscription",
+    "expected_protocol_operation": "subscription.start",
+    "expected_response_kind": "clarify",
+    "expected_blocked_reason": "missing_scope",
+    "expected_tools": []
+  },
+  {
+    "name": "protocol-subscription-first-turn-all",
+    "category": "protocol",
+    "question": "开启本群全部人员考勤订阅",
+    "expected_protocol_act": "write_request",
+    "expected_protocol_domain": "subscription",
+    "expected_protocol_operation": "subscription.start",
+    "expected_tools": []
+  },
+  {
+    "name": "protocol-subscription-list-departments-workflow-meta",
+    "category": "protocol",
+    "question": "有哪些部门",
+    "active_workflow_type": "subscription.start",
+    "active_workflow_state": "collect_scope",
+    "active_workflow_missing": ["scope"],
+    "expected_protocol_act": "workflow_continue",
+    "expected_protocol_domain": "subscription",
+    "expected_protocol_operation": "subscription.list_departments",
+    "expected_tools": []
+  },
+  {
+    "name": "protocol-workflow-interrupted-by-capability",
+    "category": "protocol",
+    "question": "可以补签吗",
+    "active_workflow_type": "subscription.start",
+    "active_workflow_state": "collect_departments",
+    "active_workflow_missing": ["dept_names"],
+    "expected_protocol_act": "capability_question",
+    "expected_protocol_domain": "manual_sign",
+    "expected_protocol_operation": "manual_sign.describe_capability",
+    "expected_response_kind": "answer",
+    "expected_tools": []
+  },
+  {
+    "name": "protocol-subscription-single-chat-refuse",
+    "category": "protocol",
+    "question": "开启本群考勤订阅",
+    "conversation_type": "1",
+    "expected_protocol_act": "write_request",
+    "expected_protocol_domain": "subscription",
+    "expected_protocol_operation": "subscription.start",
+    "expected_response_kind": "refuse",
+    "expected_blocked_reason": "group_chat_required",
+    "expected_tools": []
   },
   {
     "name": "reject-weather",

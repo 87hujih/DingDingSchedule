@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"schedule_server/internal/agent"
 	agenttool "schedule_server/internal/agent/tools"
 	"schedule_server/internal/app"
+	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
 	"schedule_server/internal/service"
 	"schedule_server/pkg/dingtalk"
@@ -27,14 +29,20 @@ func main() {
 	casesPath := flag.String("cases", "./internal/agent/testdata/eval_cases.json", "评测样本 JSON 路径")
 	syncKnowledgeRoot := flag.String("sync-knowledge-root", "", "评测前可选同步的知识目录，例如 ./docs/agent-knowledge")
 	syncKnowledgeInclude := flag.String("sync-knowledge-include", "", "逗号分隔的 Markdown 相对路径白名单；为空时同步 root 下全部 .md")
+	allActiveTenants := flag.Bool("all-active-tenants", false, "是否对所有启用租户运行评测和知识审计")
+	requireKnowledgeIntents := flag.String("require-knowledge-intents", "", "逗号分隔的必需知识 intent，例如 attendance,schedule,subscription")
 	withAgent := flag.Bool("with-agent", false, "是否启用真实 Agent 问答，统计工具命中与回复关键词")
 	corpID := flag.String("corp-id", "", "端到端评测所需的企业 corpID")
 	senderID := flag.String("sender-id", "", "端到端评测所需的钉钉用户 ID")
 	senderName := flag.String("sender-name", "EvalUser", "端到端评测展示用用户名")
 	flag.Parse()
 
-	if *tenantID == 0 {
+	if !*allActiveTenants && *tenantID == 0 {
 		fmt.Println("tenant-id 必须大于 0")
+		os.Exit(1)
+	}
+	if *allActiveTenants && *withAgent {
+		fmt.Println("all-active-tenants 暂不支持 with-agent 端到端模式")
 		os.Exit(1)
 	}
 
@@ -42,6 +50,20 @@ func main() {
 
 	repo := repository.NewRepository(global.DB)
 	knowledgeSrv := service.NewAgentKnowledgeService(repo.AgentKnowledgeRepo, global.Log)
+	activeTenants := []model.Tenant(nil)
+	if *allActiveTenants {
+		var err error
+		activeTenants, err = repo.TenantRepo.ListActive(context.Background())
+		if err != nil {
+			fmt.Printf("读取启用租户失败: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	targets, err := resolveEvalTenantTargets(uint(*tenantID), *allActiveTenants, activeTenants)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 
 	if root := strings.TrimSpace(*syncKnowledgeRoot); root != "" {
 		docs, err := loadMarkdownDocuments(root, splitIncludeList(*syncKnowledgeInclude))
@@ -49,12 +71,32 @@ func main() {
 			fmt.Printf("加载知识文档失败: %v\n", err)
 			os.Exit(1)
 		}
-		result, err := knowledgeSrv.SyncMarkdownDocuments(context.Background(), uint(*tenantID), docs)
-		if err != nil {
-			fmt.Printf("同步知识失败: %v\n", err)
+		for _, target := range targets {
+			result, err := knowledgeSrv.SyncMarkdownDocuments(context.Background(), target.ID, docs)
+			if err != nil {
+				fmt.Printf("同步知识失败 tenant=%d: %v\n", target.ID, err)
+				os.Exit(1)
+			}
+			fmt.Printf("租户 %d 知识同步完成：文档 %d，切片 %d，跳过 %d\n", target.ID, result.DocumentsSynced, result.ChunksCreated, result.Skipped)
+		}
+	}
+
+	requiredIntents := splitIncludeList(*requireKnowledgeIntents)
+	if len(requiredIntents) > 0 {
+		chunksByTenant := make(map[uint][]repository.AgentKnowledgeSearchRow, len(targets))
+		for _, target := range targets {
+			rows, err := repo.AgentKnowledgeRepo.ListChunksByTenant(context.Background(), target.ID)
+			if err != nil {
+				fmt.Printf("读取知识切片失败 tenant=%d: %v\n", target.ID, err)
+				os.Exit(1)
+			}
+			chunksByTenant[target.ID] = rows
+		}
+		auditResults := auditRequiredKnowledgeIntents(targets, chunksByTenant, requiredIntents)
+		printKnowledgeAuditResults(auditResults, requiredIntents)
+		if knowledgeAuditHasFailures(auditResults) {
 			os.Exit(1)
 		}
-		fmt.Printf("知识同步完成：文档 %d，切片 %d，跳过 %d\n", result.DocumentsSynced, result.ChunksCreated, result.Skipped)
 	}
 
 	cases, err := agent.LoadEvalCases(*casesPath)
@@ -127,16 +169,28 @@ func main() {
 		}, *corpID, *senderID, *senderName)
 	}
 
-	summary, results, err := agent.EvaluateCases(context.Background(), knowledge, uint(*tenantID), cases, observer)
-	if err != nil {
-		fmt.Printf("执行评测失败: %v\n", err)
-		os.Exit(1)
+	anyFailures := false
+	for _, target := range targets {
+		if len(targets) > 1 {
+			fmt.Printf("租户 %d", target.ID)
+			if strings.TrimSpace(target.Name) != "" {
+				fmt.Printf("（%s）", target.Name)
+			}
+			fmt.Println("评测结果:")
+		}
+		summary, results, err := agent.EvaluateCases(context.Background(), knowledge, target.ID, cases, observer)
+		if err != nil {
+			fmt.Printf("执行评测失败 tenant=%d: %v\n", target.ID, err)
+			os.Exit(1)
+		}
+
+		printSummary(summary, *withAgent)
+		printFailures(results)
+		if hasFailures(results) {
+			anyFailures = true
+		}
 	}
-
-	printSummary(summary, *withAgent)
-	printFailures(results)
-
-	if hasFailures(results) {
+	if anyFailures {
 		os.Exit(1)
 	}
 }
@@ -164,7 +218,7 @@ func validateWithAgentPrerequisites(apiKey, corpID, senderID string) error {
 
 // newCaseScopedObserver 为每条样本创建独立的 Agent runner，避免 session 和限流串样本。
 func newCaseScopedObserver(factory evalRunnerFactory, corpID, senderID, senderName string) agent.EvalObserver {
-	return func(ctx context.Context, question string) (agent.EvalObservation, error) {
+	return func(ctx context.Context, tc agent.EvalCase) (agent.EvalObservation, error) {
 		runner, recorder, err := factory()
 		if err != nil {
 			return agent.EvalObservation{}, err
@@ -182,9 +236,9 @@ func newCaseScopedObserver(factory evalRunnerFactory, corpID, senderID, senderNa
 			CorpID:           corpID,
 			SenderID:         senderID,
 			SenderNick:       senderName,
-			Content:          question,
+			Content:          tc.Question,
 			ConversationID:   fmt.Sprintf("agent-eval-%d", time.Now().UnixNano()),
-			ConversationType: "1",
+			ConversationType: evalCaseConversationType(tc),
 		})
 		if err != nil {
 			return agent.EvalObservation{}, err
@@ -198,10 +252,22 @@ func newCaseScopedObserver(factory evalRunnerFactory, corpID, senderID, senderNa
 			return agent.EvalObservation{Reply: reply}, nil
 		}
 		return agent.EvalObservation{
-			Reply: reply,
-			Tools: append([]string(nil), callLog.ToolsCalled...),
+			Reply:                 reply,
+			Tools:                 append([]string(nil), callLog.ToolsCalled...),
+			ProtocolAct:           callLog.ProtocolAct,
+			ProtocolDomain:        callLog.ProtocolDomain,
+			ProtocolOperation:     callLog.ProtocolOperation,
+			ResponseKind:          callLog.ResponseKind,
+			ProtocolBlockedReason: callLog.ProtocolBlockedReason,
 		}, nil
 	}
+}
+
+func evalCaseConversationType(tc agent.EvalCase) string {
+	if conversationType := strings.TrimSpace(tc.ConversationType); conversationType != "" {
+		return conversationType
+	}
+	return "2"
 }
 
 type knowledgePortAdapter struct {
@@ -294,6 +360,11 @@ func (r *recordingCallLog) Wait(timeout time.Duration) (agenttool.CallLog, bool)
 
 // loadMarkdownDocuments 按目录和白名单加载待同步的 Markdown 文档。
 func loadMarkdownDocuments(root string, include []string) ([]service.MarkdownKnowledgeDocument, error) {
+	manifest, err := service.LoadKnowledgeManifest(root)
+	if err != nil {
+		return nil, err
+	}
+
 	relPaths := include
 	if len(relPaths) == 0 {
 		var discovered []string
@@ -331,9 +402,134 @@ func loadMarkdownDocuments(root string, include []string) ([]service.MarkdownKno
 			Title:      deriveTitle(rel, string(data)),
 			SourcePath: filepath.ToSlash(filepath.Join(filepath.Base(root), rel)),
 			Content:    string(data),
+			Metadata:   manifest.MetadataFor(filepath.ToSlash(filepath.Join(filepath.Base(root), rel))),
 		})
 	}
 	return docs, nil
+}
+
+type evalTenantTarget struct {
+	ID   uint
+	Name string
+}
+
+func resolveEvalTenantTargets(tenantID uint, allActive bool, tenants []model.Tenant) ([]evalTenantTarget, error) {
+	if !allActive {
+		if tenantID == 0 {
+			return nil, fmt.Errorf("tenant-id 必须大于 0")
+		}
+		return []evalTenantTarget{{ID: tenantID}}, nil
+	}
+	if len(tenants) == 0 {
+		return nil, fmt.Errorf("没有可评测的启用租户")
+	}
+	targets := make([]evalTenantTarget, 0, len(tenants))
+	for _, tenant := range tenants {
+		if tenant.ID == 0 {
+			continue
+		}
+		targets = append(targets, evalTenantTarget{ID: tenant.ID, Name: tenant.Name})
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("没有可评测的启用租户")
+	}
+	return targets, nil
+}
+
+type knowledgeIntentAuditResult struct {
+	TenantID       uint
+	TenantName     string
+	IntentCounts   map[string]int
+	MissingIntents []string
+	Passed         bool
+}
+
+func auditRequiredKnowledgeIntents(targets []evalTenantTarget, chunksByTenant map[uint][]repository.AgentKnowledgeSearchRow, required []string) []knowledgeIntentAuditResult {
+	required = normalizeRequiredIntents(required)
+	results := make([]knowledgeIntentAuditResult, 0, len(targets))
+	for _, target := range targets {
+		counts := make(map[string]int)
+		for _, chunk := range chunksByTenant[target.ID] {
+			intent := strings.ToLower(strings.TrimSpace(chunk.Intent))
+			if intent == "" {
+				intent = "unknown"
+			}
+			counts[intent]++
+		}
+		missing := make([]string, 0)
+		for _, intent := range required {
+			if counts[intent] == 0 {
+				missing = append(missing, intent)
+			}
+		}
+		results = append(results, knowledgeIntentAuditResult{
+			TenantID:       target.ID,
+			TenantName:     target.Name,
+			IntentCounts:   counts,
+			MissingIntents: missing,
+			Passed:         len(missing) == 0,
+		})
+	}
+	return results
+}
+
+func printKnowledgeAuditResults(results []knowledgeIntentAuditResult, required []string) {
+	fmt.Printf("知识 intent 审计：required=%s\n", strings.Join(normalizeRequiredIntents(required), ","))
+	for _, result := range results {
+		status := "PASS"
+		if !result.Passed {
+			status = "FAIL"
+		}
+		fmt.Printf("- tenant=%d name=%s status=%s counts=%s missing=%s\n",
+			result.TenantID,
+			result.TenantName,
+			status,
+			formatIntentCounts(result.IntentCounts),
+			strings.Join(result.MissingIntents, ","),
+		)
+	}
+}
+
+func knowledgeAuditHasFailures(results []knowledgeIntentAuditResult) bool {
+	for _, result := range results {
+		if !result.Passed {
+			return true
+		}
+	}
+	return false
+}
+
+func formatIntentCounts(counts map[string]int) string {
+	if len(counts) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s:%d", key, counts[key]))
+	}
+	return strings.Join(parts, ",")
+}
+
+func normalizeRequiredIntents(required []string) []string {
+	seen := make(map[string]struct{}, len(required))
+	out := make([]string, 0, len(required))
+	for _, raw := range required {
+		intent := strings.ToLower(strings.TrimSpace(raw))
+		if intent == "" {
+			continue
+		}
+		if _, ok := seen[intent]; ok {
+			continue
+		}
+		seen[intent] = struct{}{}
+		out = append(out, intent)
+	}
+	return out
 }
 
 // splitIncludeList 解析逗号分隔的知识文档相对路径白名单。
@@ -375,6 +571,9 @@ func printSummary(summary agent.EvalSummary, withAgent bool) {
 	if summary.RetrievalCases > 0 {
 		fmt.Printf("知识命中率: %.1f%% (%d/%d)\n", summary.RetrievalAccuracy, summary.RetrievalPassed, summary.RetrievalCases)
 	}
+	if summary.ProtocolCases > 0 {
+		fmt.Printf("协议准确率: %.1f%% (%d/%d)\n", summary.ProtocolAccuracy, summary.ProtocolPassed, summary.ProtocolCases)
+	}
 	if withAgent && summary.ToolCases > 0 {
 		fmt.Printf("工具命中率: %.1f%% (%d/%d)\n", summary.ToolAccuracy, summary.ToolPassed, summary.ToolCases)
 	}
@@ -415,6 +614,16 @@ func printFailures(results []agent.EvalCaseResult) {
 		if result.ToolsChecked {
 			fmt.Printf(" | tools=%t actual=%v", result.ToolsMatched, result.ActualTools)
 		}
+		if result.ProtocolChecked {
+			fmt.Printf(" | protocol=%t act=%s domain=%s operation=%s response=%s blocked=%s",
+				result.ProtocolMatched,
+				result.ProtocolAct,
+				result.ProtocolDomain,
+				result.ProtocolOperation,
+				result.ResponseKind,
+				result.ProtocolBlockedReason,
+			)
+		}
 		if result.KeywordsChecked {
 			fmt.Printf(" | keywords=%t", result.KeywordsMatched)
 		}
@@ -444,6 +653,9 @@ func caseFailed(result agent.EvalCaseResult) bool {
 		return true
 	}
 	if result.ToolsChecked && !result.ToolsMatched {
+		return true
+	}
+	if result.ProtocolChecked && !result.ProtocolMatched {
 		return true
 	}
 	if result.KeywordsChecked && !result.KeywordsMatched {

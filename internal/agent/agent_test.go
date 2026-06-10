@@ -204,6 +204,138 @@ func TestNewAgentDefaultsToLiveRouteMode(t *testing.T) {
 	}
 }
 
+func TestNewAgentCreatesProtocolLiveIntentCompilerWhenLLMConfigured(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:   "http://llm.example.test/v1/chat/completions",
+		LLMModel:     "intent-model",
+		ProtocolMode: string(ProtocolModeLive),
+		User:         testUserPort{},
+		Tenant:       testTenantPort{},
+		Logger:       zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	if a.intentCompiler == nil {
+		t.Fatalf("intentCompiler = nil, want protocol-live compiler")
+	}
+}
+
+func TestNewAgentDoesNotCreateProtocolLiveIntentCompilerForPortZeroURLWithPath(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:   "http://127.0.0.1:0/v1/chat/completions",
+		LLMModel:     "intent-model",
+		ProtocolMode: string(ProtocolModeLive),
+		User:         testUserPort{},
+		Tenant:       testTenantPort{},
+		Logger:       zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	if a.intentCompiler != nil {
+		t.Fatalf("intentCompiler = %T, want nil for port-zero LLM URL", a.intentCompiler)
+	}
+}
+
+func TestApplyProtocolLiveOutcomeRecordsDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{sessions: newSessionManager()}
+	sessionKey := "corp:user:conv"
+	a.sessions.setWorkflowState(sessionKey, &WorkflowSnapshot{
+		ID:           "wf-before",
+		Type:         WorkflowSubscriptionStart,
+		State:        WorkflowCollectScope,
+		MissingSlots: []string{"scope"},
+	})
+
+	metrics := callMetrics{}
+	a.applyProtocolLiveOutcome(sessionKey, &metrics, protocolLiveOutcome{
+		Draft: ProtocolDraft{
+			Act:       ActWorkflowContinue,
+			Domain:    DomainSubscription,
+			Operation: "subscription.start",
+		},
+		Validation: ProtocolValidationResult{
+			AllowExecution: true,
+			ValidationCode: "workflow_continue_allowed",
+			ResponseKind:   ResponseClarify,
+		},
+		Response:         ResponseModel{Kind: ResponseClarify, Operation: "subscription.start", MissingFields: []string{"dept_names"}},
+		AnswerMode:       answerModeToolFirst,
+		BlockedReason:    "missing_dept_names",
+		ResolvedSlots:    map[string]any{"scope": "department", "dept_ids": []int64{101, 102}},
+		CandidateCount:   2,
+		WorkflowDecision: WorkflowContinueDecision,
+		WorkflowAfter: &WorkflowSnapshot{
+			ID:           "wf-after",
+			Type:         WorkflowSubscriptionStart,
+			State:        WorkflowCollectDepartments,
+			MissingSlots: []string{"dept_names"},
+		},
+	})
+
+	if metrics.Proto.BlockedReason != "missing_dept_names" {
+		t.Fatalf("BlockedReason = %q, want missing_dept_names", metrics.Proto.BlockedReason)
+	}
+	if metrics.Proto.ResolvedSlots != `{"dept_ids":[101,102],"scope":"department"}` {
+		t.Fatalf("ResolvedSlots = %q, want compact JSON", metrics.Proto.ResolvedSlots)
+	}
+	if metrics.Proto.CandidateCount != 2 {
+		t.Fatalf("CandidateCount = %d, want 2", metrics.Proto.CandidateCount)
+	}
+	if metrics.Wf.StateBefore != string(WorkflowCollectScope) {
+		t.Fatalf("WorkflowStateBefore = %q, want %q", metrics.Wf.StateBefore, WorkflowCollectScope)
+	}
+	if metrics.Wf.StateAfter != string(WorkflowCollectDepartments) {
+		t.Fatalf("WorkflowStateAfter = %q, want %q", metrics.Wf.StateAfter, WorkflowCollectDepartments)
+	}
+}
+
+func TestApplyProtocolLiveOutcomeRecordsTerminalWorkflowState(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{sessions: newSessionManager()}
+	sessionKey := "corp:user:terminal"
+	a.sessions.setWorkflowState(sessionKey, &WorkflowSnapshot{
+		ID:    "wf-ready",
+		Type:  WorkflowSubscriptionStart,
+		State: WorkflowReady,
+	})
+
+	metrics := callMetrics{}
+	a.applyProtocolLiveOutcome(sessionKey, &metrics, protocolLiveOutcome{
+		Draft: ProtocolDraft{
+			Act:       ActWorkflowContinue,
+			Domain:    DomainSubscription,
+			Operation: "subscription.start",
+		},
+		Validation: ProtocolValidationResult{
+			AllowExecution: true,
+			ValidationCode: "workflow_continue_allowed",
+			ResponseKind:   ResponseResult,
+		},
+		Response:         ResponseModel{Kind: ResponseResult, ResultText: "已完成"},
+		AnswerMode:       answerModeToolFirst,
+		WorkflowDecision: WorkflowCompletedDecision,
+		ClearWorkflow:    true,
+	})
+
+	if metrics.Wf.StateBefore != string(WorkflowReady) {
+		t.Fatalf("WorkflowStateBefore = %q, want %q", metrics.Wf.StateBefore, WorkflowReady)
+	}
+	if metrics.Wf.StateAfter != string(WorkflowCompleted) {
+		t.Fatalf("WorkflowStateAfter = %q, want %q", metrics.Wf.StateAfter, WorkflowCompleted)
+	}
+	_, active := a.sessions.getWorkflowState(sessionKey)
+	if active != nil {
+		t.Fatalf("active workflow = %+v, want cleared", active)
+	}
+}
+
 func TestChatUsesRouteAsSinglePrimaryChainWhenProtocolIsShadow(t *testing.T) {
 	t.Parallel()
 

@@ -4,20 +4,21 @@ import "schedule_server/internal/agent/tools"
 
 // Port 接口类型别名，便于外部引用 agent.SchedulePort 等
 type (
-	SchedulePort        = tools.SchedulePort
-	AttendancePort      = tools.AttendancePort
-	LeavePort           = tools.LeavePort
-	UserPort            = tools.UserPort
-	SemesterPort        = tools.SemesterPort
-	SchedulePeriodPort  = tools.SchedulePeriodPort
-	RestDayPort         = tools.RestDayPort
-	GroupSubPort        = tools.GroupSubPort
-	DeptPort            = tools.DeptPort
-	KnowledgePort       = tools.KnowledgePort
-	CallLogPort         = tools.CallLogPort
-	AttendanceStatsPort = tools.AttendanceStatsPort
-	UserCrossPort       = tools.UserCrossPort
-	TenantPort          = tools.TenantPort
+	SchedulePort                = tools.SchedulePort
+	AttendancePort              = tools.AttendancePort
+	AttendanceUserDayStatusPort = tools.AttendanceUserDayStatusPort
+	LeavePort                   = tools.LeavePort
+	UserPort                    = tools.UserPort
+	SemesterPort                = tools.SemesterPort
+	SchedulePeriodPort          = tools.SchedulePeriodPort
+	RestDayPort                 = tools.RestDayPort
+	GroupSubPort                = tools.GroupSubPort
+	DeptPort                    = tools.DeptPort
+	KnowledgePort               = tools.KnowledgePort
+	CallLogPort                 = tools.CallLogPort
+	AttendanceStatsPort         = tools.AttendanceStatsPort
+	UserCrossPort               = tools.UserCrossPort
+	TenantPort                  = tools.TenantPort
 )
 
 // 数据类型别名，便于外部引用 agent.CourseItem 等

@@ -16,6 +16,9 @@ const (
 	WorkflowCollectDate        WorkflowState = "collect_date"
 	WorkflowCollectSection     WorkflowState = "collect_section"
 	WorkflowReady              WorkflowState = "ready"
+	WorkflowCompleted          WorkflowState = "completed"
+	WorkflowCancelled          WorkflowState = "cancelled"
+	WorkflowInterruptedState   WorkflowState = "interrupted"
 )
 
 const (
@@ -23,7 +26,10 @@ const (
 	WorkflowReadyToExecute       WorkflowDecision = "ready_to_execute"
 	WorkflowSuspendForNewRequest WorkflowDecision = "suspend_for_new_request"
 	WorkflowRejectInvalidShape   WorkflowDecision = "reject_invalid_shape"
+	WorkflowMetaResult           WorkflowDecision = "meta_result"
+	WorkflowCompletedDecision    WorkflowDecision = "completed"
 	WorkflowCanceled             WorkflowDecision = "canceled"
+	WorkflowInterrupted          WorkflowDecision = "interrupted"
 )
 
 type WorkflowSnapshot struct {
