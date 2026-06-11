@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -516,6 +517,31 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	}
 	if row.KnowledgeDocTypes != "rule,overview" {
 		t.Fatalf("KnowledgeDocTypes = %q, want rule,overview", row.KnowledgeDocTypes)
+	}
+}
+
+func TestCallLogAdapterBoundsProtocolBlockedReason(t *testing.T) {
+	db := newCallLogTestDB(t)
+	adapter := &callLogAdapter{db: db}
+
+	longReason := strings.Repeat("unknown-intent-reason-", 6)
+	adapter.Write(context.Background(), agenttool.CallLog{
+		TenantID:              1,
+		UserID:                7,
+		ProtocolMode:          "protocol_live",
+		ProtocolBlockedReason: longReason,
+		Status:                "success",
+	})
+
+	var row model.AgentCallLog
+	if err := db.First(&row).Error; err != nil {
+		t.Fatalf("query call log: %v", err)
+	}
+	if len([]rune(row.ProtocolBlockedReason)) > 64 {
+		t.Fatalf("ProtocolBlockedReason length = %d, want <= 64", len([]rune(row.ProtocolBlockedReason)))
+	}
+	if row.ProtocolBlockedReason == longReason {
+		t.Fatalf("ProtocolBlockedReason was not bounded")
 	}
 }
 

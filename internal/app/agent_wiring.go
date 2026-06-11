@@ -700,7 +700,7 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 	}
 	// 使用 WithSkipTenantScope 跳过租户插件，TenantID 已在结构体中显式设置
 	ctx := tenantctx.WithSkipTenantScope(context.Background())
-	a.db.WithContext(ctx).Create(&model.AgentCallLog{
+	if err := a.db.WithContext(ctx).Create(&model.AgentCallLog{
 		TenantID:                log.TenantID,
 		UserID:                  log.UserID,
 		UserName:                log.UserName,
@@ -740,7 +740,7 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 		ProtocolDomain:          log.ProtocolDomain,
 		ProtocolOperation:       log.ProtocolOperation,
 		ProtocolValidationCode:  log.ProtocolValidationCode,
-		ProtocolBlockedReason:   log.ProtocolBlockedReason,
+		ProtocolBlockedReason:   boundedAgentCallLogCode(log.ProtocolBlockedReason, 64),
 		ProtocolResolvedSlots:   log.ProtocolResolvedSlots,
 		ProtocolCandidateCount:  log.ProtocolCandidateCount,
 		WorkflowIDBefore:        log.WorkflowIDBefore,
@@ -768,10 +768,30 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 		DurationMs:              log.DurationMs,
 		Status:                  log.Status,
 		ErrorMsg:                log.ErrorMsg,
-	})
+	}).Error; err != nil && global.Log != nil {
+		global.Log.Warnw("写入 Agent 调用日志失败",
+			"tenantID", log.TenantID,
+			"userID", log.UserID,
+			"protocolMode", log.ProtocolMode,
+			"protocolOperation", log.ProtocolOperation,
+			"err", err,
+		)
+	}
 
 	// 写入 Prometheus Agent 指标
 	middleware.ObserveAgentCall(log.RouteKind, log.Status, log.DurationMs, log.LLMDurationMs)
+}
+
+func boundedAgentCallLogCode(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes])
 }
 
 func joinIntList(values []int) string {

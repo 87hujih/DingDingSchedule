@@ -384,7 +384,7 @@ func TestProtocolLivePipelineUnsupportedExplicitWriteInterruptsActiveWorkflow(t 
 	}
 }
 
-func TestProtocolLivePipelineDepartmentListMetaKeepsCollectScopeWorkflow(t *testing.T) {
+func TestProtocolLivePipelineDepartmentListChoosesDepartmentScopeDuringScopeCollection(t *testing.T) {
 	t.Parallel()
 
 	dept := executorFakeDeptPort{depts: []tools.DeptItem{{DeptID: 101, Name: "信工24级"}}}
@@ -413,11 +413,97 @@ func TestProtocolLivePipelineDepartmentListMetaKeepsCollectScopeWorkflow(t *test
 	if outcome.Response.Kind != ResponseSelectOptions {
 		t.Fatalf("Response = %+v, want select options", outcome.Response)
 	}
-	if outcome.WorkflowDecision != WorkflowMetaResult {
-		t.Fatalf("WorkflowDecision = %q, want %q", outcome.WorkflowDecision, WorkflowMetaResult)
+	if outcome.WorkflowDecision != WorkflowContinueDecision {
+		t.Fatalf("WorkflowDecision = %q, want %q", outcome.WorkflowDecision, WorkflowContinueDecision)
 	}
-	if outcome.WorkflowAfter == nil || outcome.WorkflowAfter.ID != "wf-sub" || outcome.WorkflowAfter.State != WorkflowCollectScope {
-		t.Fatalf("WorkflowAfter = %+v, want collect_scope retained", outcome.WorkflowAfter)
+	if outcome.WorkflowAfter == nil || outcome.WorkflowAfter.ID != "wf-sub" || outcome.WorkflowAfter.State != WorkflowCollectDepartments {
+		t.Fatalf("WorkflowAfter = %+v, want collect_departments", outcome.WorkflowAfter)
+	}
+	if len(outcome.WorkflowAfter.MissingSlots) != 1 || outcome.WorkflowAfter.MissingSlots[0] != "dept_names" {
+		t.Fatalf("MissingSlots = %v, want [dept_names]", outcome.WorkflowAfter.MissingSlots)
+	}
+	if outcome.WorkflowAfter.Trusted.Scope != "department" {
+		t.Fatalf("Trusted.Scope = %q, want department", outcome.WorkflowAfter.Trusted.Scope)
+	}
+	if outcome.ResolvedSlots["scope"] != "department" {
+		t.Fatalf("ResolvedSlots = %#v, want department scope", outcome.ResolvedSlots)
+	}
+}
+
+func TestProtocolLivePipelineDepartmentNameChoosesDepartmentScopeDuringScopeCollection(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{{DeptID: 125, Name: "信工25级"}}}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.9,
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+		Dept:     dept,
+	})
+	workflow := &WorkflowSnapshot{
+		ID:           "wf-sub",
+		Type:         WorkflowSubscriptionStart,
+		State:        WorkflowCollectScope,
+		MissingSlots: []string{"scope"},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "信工25级",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if outcome.Response.Kind != ResponseResult {
+		t.Fatalf("Response = %+v, want result", outcome.Response)
+	}
+	if outcome.WorkflowDecision != WorkflowCompletedDecision || !outcome.ClearWorkflow {
+		t.Fatalf("WorkflowDecision=%q ClearWorkflow=%v, want completed and clear", outcome.WorkflowDecision, outcome.ClearWorkflow)
+	}
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 125 {
+		t.Fatalf("lastDeptIDs = %v, want [125]", groupSub.lastDeptIDs)
+	}
+	if outcome.ResolvedSlots["scope"] != "department" {
+		t.Fatalf("ResolvedSlots = %#v, want department scope", outcome.ResolvedSlots)
+	}
+}
+
+func TestProtocolLivePipelineUnknownIntentUsesShortBlockedReason(t *testing.T) {
+	t.Parallel()
+
+	longReason := strings.Repeat("输入是可能的部门标识片段但当前上下文无法执行", 8)
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:    ActUnknown,
+			Domain: DomainUnknown,
+			Reason: longReason,
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{}),
+	})
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message: "信工25级",
+		User:    executorUserContext(),
+	})
+
+	if outcome.Response.Kind != ResponseClarify {
+		t.Fatalf("Response = %+v, want clarify", outcome.Response)
+	}
+	if outcome.Response.ClarifyReason != "unknown_intent" {
+		t.Fatalf("ClarifyReason = %q, want unknown_intent", outcome.Response.ClarifyReason)
+	}
+	if outcome.BlockedReason != "unknown_intent" {
+		t.Fatalf("BlockedReason = %q, want unknown_intent", outcome.BlockedReason)
+	}
+	if len([]rune(outcome.BlockedReason)) > 64 {
+		t.Fatalf("BlockedReason length = %d, want <= 64", len([]rune(outcome.BlockedReason)))
 	}
 }
 

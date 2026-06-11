@@ -148,6 +148,11 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 func (p protocolLivePipeline) handleSubscription(ctx context.Context, input protocolLiveInput, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot, outcome protocolLiveOutcome) protocolLiveOutcome {
 	if draft.Operation == "subscription.list_departments" {
 		if activeWorkflow != nil {
+			if activeWorkflow.Type == WorkflowSubscriptionStart && activeWorkflow.State == WorkflowCollectScope {
+				continueDraft := draft
+				continueDraft.Operation = "subscription.start"
+				return p.continueSubscription(ctx, input, continueDraft, activeWorkflow, trustedEntities{Scope: "department"}, outcome)
+			}
 			outcome.WorkflowAfter = cloneWorkflowSnapshot(activeWorkflow)
 			outcome.WorkflowDecision = WorkflowMetaResult
 		}
@@ -491,30 +496,35 @@ func (p protocolLivePipeline) resolveSubscriptionTrustedEntities(ctx context.Con
 		case containsAny(normalized, []string{"指定部门", "部分部门"}):
 			return trustedEntities{Scope: "department"}, true
 		default:
-			return trustedEntities{}, false
+			return p.resolveSubscriptionDepartmentSelection(ctx, message)
 		}
 	case WorkflowCollectDepartments:
-		if p.deps.Dept == nil {
-			return trustedEntities{}, false
-		}
-		depts, err := p.deps.Dept.ListDepts(ctx)
-		if err != nil {
-			return trustedEntities{}, false
-		}
-		resolved := resolveDepartment(entityContext{
-			Raw:         message,
-			Departments: depts,
-		})
-		if resolved.Status != ResolveResolved || resolved.Department == nil {
-			return trustedEntities{}, false
-		}
-		return trustedEntities{
-			Scope:        "department",
-			DepartmentID: resolved.Department.DeptID,
-		}, true
+		return p.resolveSubscriptionDepartmentSelection(ctx, message)
 	default:
 		return trustedEntities{}, false
 	}
+}
+
+func (p protocolLivePipeline) resolveSubscriptionDepartmentSelection(ctx context.Context, message string) (trustedEntities, bool) {
+	if p.deps.Dept == nil {
+		return trustedEntities{}, false
+	}
+	depts, err := p.deps.Dept.ListDepts(ctx)
+	if err != nil {
+		return trustedEntities{}, false
+	}
+	resolved := resolveDepartment(entityContext{
+		Raw:         message,
+		Departments: depts,
+	})
+	if resolved.Status != ResolveResolved || resolved.Department == nil {
+		return trustedEntities{}, false
+	}
+	return trustedEntities{
+		Scope:        "department",
+		DepartmentID: resolved.Department.DeptID,
+		DeptIDs:      []int64{resolved.Department.DeptID},
+	}, true
 }
 
 func (p protocolLivePipeline) resolveInitialSubscriptionTrustedEntities(ctx context.Context, message string, draft ProtocolDraft) (trustedEntities, bool) {
@@ -588,14 +598,7 @@ func protocolLiveGuardrailResponse(draft ProtocolDraft, validation ProtocolValid
 	case ActHelp:
 		return ResponseModel{Kind: ResponseAnswer, Answer: buildHelpReply(uctx)}, answerModeToolFirst
 	case ActUnknown:
-		reason := strings.TrimSpace(draft.ClarifyReason)
-		if reason == "" {
-			reason = strings.TrimSpace(draft.Reason)
-		}
-		if reason == "" {
-			reason = "unknown_intent"
-		}
-		return ResponseModel{Kind: ResponseClarify, ClarifyReason: reason}, answerModeReject
+		return ResponseModel{Kind: ResponseClarify, ClarifyReason: protocolUnknownIntentReasonCode(draft)}, answerModeReject
 	default:
 		switch validation.ValidationCode {
 		case "operation_not_allowed", "act_operation_mismatch", "read_query_cannot_write", "unsupported_act", "domain_operation_mismatch", "workflow_operation_mismatch":
@@ -605,6 +608,21 @@ func protocolLiveGuardrailResponse(draft ProtocolDraft, validation ProtocolValid
 		default:
 			return ResponseModel{Kind: ResponseClarify, ClarifyReason: "unknown_intent"}, answerModeReject
 		}
+	}
+}
+
+func protocolUnknownIntentReasonCode(draft ProtocolDraft) string {
+	switch strings.TrimSpace(firstNonEmpty(draft.ClarifyReason, draft.Reason)) {
+	case "empty_message":
+		return "empty_message"
+	case "intent_parse_failed":
+		return "intent_parse_failed"
+	case "intent_compiler_unavailable":
+		return "intent_compiler_unavailable"
+	case "operation_not_allowed":
+		return "operation_not_allowed"
+	default:
+		return "unknown_intent"
 	}
 }
 

@@ -89,6 +89,17 @@ func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft
 			return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}
 		case "department":
 			workflow.Trusted.Scope = trusted.Scope
+			deptIDs := trusted.DeptIDs
+			if len(deptIDs) == 0 && trusted.DepartmentID != 0 {
+				deptIDs = []int64{trusted.DepartmentID}
+			}
+			if len(deptIDs) > 0 {
+				workflow.Trusted.DepartmentID = deptIDs[0]
+				workflow.Trusted.DeptIDs = append([]int64(nil), deptIDs...)
+				workflow.State = WorkflowReady
+				workflow.MissingSlots = nil
+				return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}
+			}
 			workflow.State = WorkflowCollectDepartments
 			workflow.MissingSlots = []string{"dept_names"}
 			return WorkflowResult{Decision: WorkflowContinueDecision, Workflow: &workflow}
