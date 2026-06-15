@@ -135,20 +135,21 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 	case "subscription.query_status", "subscription.cancel":
 		req := OperationRequest{
 			Operation: draft.Operation,
-			TrustedParams: map[string]any{
-				"conversation_id": userConversationID(input.User),
-			},
+			TrustedParams: trustedParamsFromValues(userTenantID(input.User), TrustedParamSource{
+				Kind:     TrustedParamSourceRuntime,
+				Resolver: "conversation_runtime",
+			}, map[string]any{"conversation_id": userConversationID(input.User)}),
 		}
 		return p.execute(ctx, input.User, req, outcome)
 	case "attendance.query_status":
-		req, response, ok := p.attendanceRequest(ctx, input.Message, draft)
+		req, response, ok := p.attendanceRequest(ctx, input.Message, draft, userTenantID(input.User))
 		if !ok {
 			setProtocolOutcomeResponse(&outcome, response, answerModeToolFirst)
 			return outcome
 		}
 		return p.execute(ctx, input.User, req, outcome)
 	case "schedule.query_my_schedule", "schedule.query_user_schedule":
-		req, response, ok := p.scheduleRequest(ctx, input.Message, draft)
+		req, response, ok := p.scheduleRequest(ctx, input.Message, draft, userTenantID(input.User))
 		if !ok {
 			setProtocolOutcomeResponse(&outcome, response, answerModeToolFirst)
 			return outcome
@@ -157,9 +158,12 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 	case "attendance.rule_explain", "schedule.rule_explain", "subscription.rule_explain":
 		req, blocked := buildOperationRequest(draft, trustedEntities{
 			UserRole: inputUserRole(input.User),
-			TrustedParams: map[string]any{
-				"rule_topic": protocolRuleTopic(input.Message, draft),
-			},
+			TenantID: userTenantID(input.User),
+			TrustedParams: trustedParamsFromValues(userTenantID(input.User), TrustedParamSource{
+				Kind:     TrustedParamSourceRawSlot,
+				Raw:      protocolRuleTopic(input.Message, draft),
+				Resolver: "rule_topic_slot",
+			}, map[string]any{"rule_topic": protocolRuleTopic(input.Message, draft)}),
 		})
 		if blocked {
 			setProtocolOutcomeResponse(&outcome, missingOperationParamsResponse(draft.Operation, []string{"rule_topic"}), answerModeToolFirst)
@@ -185,7 +189,7 @@ func (p protocolLivePipeline) handleSubscription(ctx context.Context, input prot
 			outcome.WorkflowDecision = WorkflowMetaResult
 		}
 		executed := p.execute(ctx, input.User, OperationRequest{Operation: "subscription.list_departments"}, outcome)
-		persistWorkflowCandidatesFromResponse(executed.WorkflowAfter, "dept_ids", executed.Response.Options)
+		persistWorkflowCandidatesFromResponse(executed.WorkflowAfter, "dept_ids", executed.Response.Options, userTenantID(input.User))
 		return executed
 	}
 
@@ -207,7 +211,7 @@ func (p protocolLivePipeline) handleSubscription(ctx context.Context, input prot
 			setProtocolOutcomeResponse(&outcome, response, mode)
 			return outcome
 		}
-		if trusted, ok := p.resolveInitialSubscriptionTrustedEntities(ctx, input.Message, draft); ok {
+		if trusted, ok := p.resolveInitialSubscriptionTrustedEntities(ctx, input.Message, draft, userTenantID(input.User)); ok {
 			continueDraft := draft
 			continueDraft.Act = ActWorkflowContinue
 			return p.continueSubscription(ctx, input, continueDraft, &workflow, trusted, outcome)
@@ -231,9 +235,14 @@ func (p protocolLivePipeline) handleSubscription(ctx context.Context, input prot
 		return outcome
 	}
 
-	trusted, ok := p.resolveSubscriptionTrustedEntities(ctx, input.Message, activeWorkflow)
+	trusted, resolved, ok := p.resolveSubscriptionTrustedEntities(ctx, input.Message, activeWorkflow, userTenantID(input.User))
 	if !ok {
 		outcome.WorkflowAfter = cloneWorkflowSnapshot(activeWorkflow)
+		if resolved.Status == ResolveAmbiguous {
+			persistWorkflowCandidatesFromEntityCandidates(outcome.WorkflowAfter, "dept_ids", resolved.Candidates)
+			setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseSelectOptions, Options: responseOptionsFromEntityCandidates(resolved.Candidates)}, answerModeToolFirst)
+			return outcome
+		}
 		setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseClarify, ClarifyReason: "subscription_missing_fields"}, answerModeToolFirst)
 		if len(activeWorkflow.MissingSlots) > 0 {
 			outcome.BlockedReason = "missing_" + activeWorkflow.MissingSlots[0]
@@ -257,7 +266,7 @@ func (p protocolLivePipeline) continueSubscription(ctx context.Context, input pr
 		outcome.WorkflowAfter = result.Workflow
 		outcome.ResolvedSlots = protocolResolvedSlotsFromTrusted(result.Workflow.Trusted)
 		executed := p.execute(ctx, input.User, OperationRequest{Operation: "subscription.list_departments"}, outcome)
-		persistWorkflowCandidatesFromResponse(executed.WorkflowAfter, "dept_ids", executed.Response.Options)
+		persistWorkflowCandidatesFromResponse(executed.WorkflowAfter, "dept_ids", executed.Response.Options, userTenantID(input.User))
 		return executed
 	case WorkflowReadyToExecute:
 		if result.Workflow == nil {
@@ -266,16 +275,9 @@ func (p protocolLivePipeline) continueSubscription(ctx context.Context, input pr
 			return outcome
 		}
 		deptIDs := subscriptionDeptIDsFromTrusted(result.Workflow.Trusted)
-		params := map[string]any{
-			"conversation_id": userConversationID(input.User),
-			"scope":           result.Workflow.Trusted.Scope,
-		}
-		if len(deptIDs) > 0 {
-			params["dept_ids"] = deptIDs
-		}
 		executed := p.execute(ctx, input.User, OperationRequest{
 			Operation:     "subscription.start",
-			TrustedParams: params,
+			TrustedParams: subscriptionStartTrustedParams(input.User, result.Workflow.Trusted, deptIDs),
 		}, outcome)
 		if executed.Response.Kind == ResponseResult {
 			completed := completeWorkflow(*result.Workflow)
@@ -352,18 +354,18 @@ func mergeProtocolResolvedSlots(base map[string]any, next map[string]any) map[st
 	return merged
 }
 
-func protocolResolvedSlotsFromParams(params map[string]any) map[string]any {
+func protocolResolvedSlotsFromParams(params map[string]TrustedParam) map[string]any {
 	if len(params) == 0 {
 		return nil
 	}
 	slots := make(map[string]any)
-	for key, value := range params {
+	for key, param := range params {
 		if key == "conversation_id" {
 			continue
 		}
 		switch key {
 		case "date", "week", "section", "user_id", "scope", "dept_ids", "rule_topic", "query_shape":
-			slots[key] = value
+			slots[key] = param.Value
 		}
 	}
 	if len(slots) == 0 {
@@ -403,26 +405,60 @@ func protocolResolvedSlotsFromTrusted(trusted trustedEntities) map[string]any {
 	return slots
 }
 
-func (p protocolLivePipeline) attendanceRequest(ctx context.Context, message string, draft ProtocolDraft) (OperationRequest, ResponseModel, bool) {
-	trusted := trustedEntities{UserRole: 0}
+func subscriptionStartTrustedParams(uctx *tools.UserContext, trusted trustedEntities, deptIDs []int64) map[string]TrustedParam {
+	tenantID := userTenantID(uctx)
+	params := trustedParamsFromValues(tenantID, TrustedParamSource{Kind: TrustedParamSourceRuntime, Resolver: "conversation_runtime"}, map[string]any{
+		"conversation_id": userConversationID(uctx),
+	})
+	for field, param := range trusted.TrustedParams {
+		if param.TenantID == 0 {
+			param.TenantID = tenantID
+		}
+		params[field] = param
+	}
+	if _, ok := params["scope"]; !ok && trusted.Scope != "" {
+		params["scope"] = trustedParam("scope", trusted.Scope, tenantID, TrustedParamSource{
+			Kind:     TrustedParamSourceWorkflow,
+			Resolver: "subscription_workflow",
+		})
+	}
+	if _, ok := params["dept_ids"]; !ok && len(deptIDs) > 0 {
+		params["dept_ids"] = trustedParam("dept_ids", deptIDs, tenantID, TrustedParamSource{
+			Kind:     TrustedParamSourceWorkflow,
+			Resolver: "subscription_workflow",
+		})
+	}
+	return params
+}
+
+func (p protocolLivePipeline) attendanceRequest(ctx context.Context, message string, draft ProtocolDraft, tenantID uint) (OperationRequest, ResponseModel, bool) {
+	resolveCtx := EntityResolveContext{TenantID: tenantID}
+	trusted := trustedEntities{UserRole: 0, TenantID: tenantID, TrustedParams: map[string]TrustedParam{}}
 	if raw := draftSlotRaw(draft, "query_shape"); raw != "" {
 		trusted.QueryShape = raw
+		trusted.TrustedParams["query_shape"] = trustedParamFromContext(resolveCtx.RawSlot("query_shape", raw), "query_shape", raw, "query_shape_slot")
 	}
 	now := p.now()
 	dateRaw := firstNonEmpty(draftSlotRaw(draft, "date"), extractDateToken(message))
 	if dateRaw == "" && hasDateSignal(message) {
 		dateRaw = messageDateSignal(message)
 	}
-	date := resolveDateSlot(dateRaw, SlotDefaultToday, func() time.Time { return now })
+	dateInput := resolveCtx.RawSlot("date", dateRaw)
+	if dateRaw == "" {
+		dateInput = resolveCtx.Default("date")
+	}
+	date := resolveDateParam(dateInput, SlotDefaultToday, func() time.Time { return now })
 	if date.Status == ResolveResolved {
 		trusted.Date = fmt.Sprint(date.Value)
+		trusted.TrustedParams["date"] = date.Param
 	}
 
 	sectionRaw := firstNonEmpty(draftSlotRaw(draft, "section"), extractSectionToken(message))
-	section := resolveSectionSlot(sectionRaw, p.schedulePeriods(ctx), func() time.Time { return now })
+	section := resolveSectionParam(resolveCtx.RawSlot("section", sectionRaw), p.schedulePeriods(ctx), func() time.Time { return now })
 	if section.Status == ResolveResolved {
 		if value, ok := section.Value.(int); ok {
 			trusted.Section = value
+			trusted.TrustedParams["section"] = section.Param
 		}
 	}
 
@@ -430,12 +466,17 @@ func (p protocolLivePipeline) attendanceRequest(ctx context.Context, message str
 	if userRaw != "" && p.deps.User != nil {
 		users, err := p.deps.User.SearchByName(ctx, userRaw)
 		if err == nil {
-			resolved := resolveUserSlot(userRaw, users)
+			resolved := resolveUserParam(resolveCtx.RawSlot("user_id", userRaw), users)
 			switch resolved.Status {
 			case ResolveResolved:
 				if userID, ok := resolved.Value.(uint); ok {
 					trusted.UserID = userID
 					trusted.QueryShape = "user_day_status"
+					trusted.TrustedParams["user_id"] = resolved.Param
+					trusted.TrustedParams["query_shape"] = trustedParam("query_shape", "user_day_status", tenantID, TrustedParamSource{
+						Kind:     TrustedParamSourceDerived,
+						Resolver: "attendance_user_resolver",
+					})
 				}
 			case ResolveAmbiguous:
 				return OperationRequest{}, ResponseModel{Kind: ResponseSelectOptions, Options: responseOptionsFromEntityCandidates(resolved.Candidates)}, false
@@ -449,7 +490,10 @@ func (p protocolLivePipeline) attendanceRequest(ctx context.Context, message str
 	}
 	if _, ok := req.TrustedParams["week"]; !ok && p.deps.Semester != nil {
 		if week, _, err := p.deps.Semester.GetCurrentWeek(ctx); err == nil && week > 0 {
-			req.TrustedParams["week"] = week
+			req.TrustedParams["week"] = trustedParam("week", week, tenantID, TrustedParamSource{
+				Kind:     TrustedParamSourceDefault,
+				Resolver: "semester_default",
+			})
 		}
 	}
 	return req, ResponseModel{}, true
@@ -473,13 +517,19 @@ func (p protocolLivePipeline) schedulePeriods(ctx context.Context) []tools.Perio
 	return periods
 }
 
-func (p protocolLivePipeline) scheduleRequest(ctx context.Context, message string, draft ProtocolDraft) (OperationRequest, ResponseModel, bool) {
-	trusted := trustedEntities{UserRole: 0}
+func (p protocolLivePipeline) scheduleRequest(ctx context.Context, message string, draft ProtocolDraft, tenantID uint) (OperationRequest, ResponseModel, bool) {
+	resolveCtx := EntityResolveContext{TenantID: tenantID}
+	trusted := trustedEntities{UserRole: 0, TenantID: tenantID, TrustedParams: map[string]TrustedParam{}}
 	weekRaw := firstNonEmpty(draftSlotRaw(draft, "week"), extractWeekToken(message))
-	week := resolveWeekSlot(ctx, weekRaw, SlotDefaultCurrentWeek, p.deps.Semester)
+	weekInput := resolveCtx.RawSlot("week", weekRaw)
+	if weekRaw == "" {
+		weekInput = resolveCtx.Default("week")
+	}
+	week := resolveWeekParam(ctx, weekInput, SlotDefaultCurrentWeek, p.deps.Semester)
 	if week.Status == ResolveResolved {
 		if value, ok := week.Value.(int); ok {
 			trusted.Week = value
+			trusted.TrustedParams["week"] = week.Param
 		}
 	}
 
@@ -492,11 +542,12 @@ func (p protocolLivePipeline) scheduleRequest(ctx context.Context, message strin
 		if err != nil {
 			return OperationRequest{}, operationErrorResponse(), false
 		}
-		resolved := resolveUserSlot(userRaw, users)
+		resolved := resolveUserParam(resolveCtx.RawSlot("user_id", userRaw), users)
 		switch resolved.Status {
 		case ResolveResolved:
 			if userID, ok := resolved.Value.(uint); ok {
 				trusted.UserID = userID
+				trusted.TrustedParams["user_id"] = resolved.Param
 			}
 		case ResolveAmbiguous:
 			return OperationRequest{}, ResponseModel{Kind: ResponseSelectOptions, Options: responseOptionsFromEntityCandidates(resolved.Candidates)}, false
@@ -512,32 +563,33 @@ func (p protocolLivePipeline) scheduleRequest(ctx context.Context, message strin
 	return req, ResponseModel{}, true
 }
 
-func (p protocolLivePipeline) resolveSubscriptionTrustedEntities(ctx context.Context, message string, workflow *WorkflowSnapshot) (trustedEntities, bool) {
+func (p protocolLivePipeline) resolveSubscriptionTrustedEntities(ctx context.Context, message string, workflow *WorkflowSnapshot, tenantID uint) (trustedEntities, ResolveResult, bool) {
 	if workflow == nil {
-		return trustedEntities{}, false
+		return trustedEntities{}, ResolveResult{}, false
 	}
 	switch workflow.State {
 	case WorkflowCollectScope:
 		normalized := normalizeQuery(message)
 		switch {
 		case containsAny(normalized, []string{"全部人员", "全部"}):
-			return trustedEntities{Scope: "all"}, true
+			return trustedEntities{TenantID: tenantID, Scope: "all"}, ResolveResult{}, true
 		case containsAny(normalized, []string{"指定部门", "部分部门"}):
-			return trustedEntities{Scope: "department"}, true
+			return trustedEntities{TenantID: tenantID, Scope: "department"}, ResolveResult{}, true
 		default:
-			return p.resolveSubscriptionDepartmentSelection(ctx, message)
+			return p.resolveSubscriptionDepartmentSelection(ctx, message, tenantID)
 		}
 	case WorkflowCollectDepartments:
-		if trusted, handled, ok := workflowDepartmentCandidateSelection(workflow, message); handled {
-			return trusted, ok
+		if trusted, handled, ok := workflowDepartmentCandidateSelection(workflow, message, tenantID); handled {
+			trusted.TenantID = tenantID
+			return trusted, ResolveResult{}, ok
 		}
-		return p.resolveSubscriptionDepartmentSelection(ctx, message)
+		return p.resolveSubscriptionDepartmentSelection(ctx, message, tenantID)
 	default:
-		return trustedEntities{}, false
+		return trustedEntities{}, ResolveResult{}, false
 	}
 }
 
-func persistWorkflowCandidatesFromResponse(workflow *WorkflowSnapshot, field string, options []ResponseOption) {
+func persistWorkflowCandidatesFromResponse(workflow *WorkflowSnapshot, field string, options []ResponseOption, tenantID uint) {
 	if workflow == nil || len(options) == 0 {
 		return
 	}
@@ -549,9 +601,10 @@ func persistWorkflowCandidatesFromResponse(workflow *WorkflowSnapshot, field str
 			continue
 		}
 		candidates = append(candidates, Candidate{
-			ID:    id,
-			Label: firstNonEmpty(label, id),
-			Value: id,
+			ID:       id,
+			Label:    firstNonEmpty(label, id),
+			Value:    id,
+			TenantID: tenantID,
 		})
 	}
 	if len(candidates) == 0 {
@@ -563,7 +616,34 @@ func persistWorkflowCandidatesFromResponse(workflow *WorkflowSnapshot, field str
 	workflow.Candidates[field] = candidates
 }
 
-func workflowDepartmentCandidateSelection(workflow *WorkflowSnapshot, message string) (trustedEntities, bool, bool) {
+func persistWorkflowCandidatesFromEntityCandidates(workflow *WorkflowSnapshot, field string, options []EntityCandidate) {
+	if workflow == nil || len(options) == 0 {
+		return
+	}
+	candidates := make([]Candidate, 0, len(options))
+	for _, option := range options {
+		id := strings.TrimSpace(option.ID)
+		label := strings.TrimSpace(option.Label)
+		if id == "" && label == "" {
+			continue
+		}
+		candidates = append(candidates, Candidate{
+			ID:       id,
+			Label:    firstNonEmpty(label, id),
+			Value:    option.Value,
+			TenantID: option.TenantID,
+		})
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	if workflow.Candidates == nil {
+		workflow.Candidates = make(map[string][]Candidate)
+	}
+	workflow.Candidates[field] = candidates
+}
+
+func workflowDepartmentCandidateSelection(workflow *WorkflowSnapshot, message string, tenantID uint) (trustedEntities, bool, bool) {
 	ordinal, ok := parseCandidateOrdinal(message)
 	if !ok {
 		return trustedEntities{}, false, false
@@ -572,6 +652,9 @@ func workflowDepartmentCandidateSelection(workflow *WorkflowSnapshot, message st
 		return trustedEntities{}, true, false
 	}
 	candidate := workflow.Candidates["dept_ids"][ordinal-1]
+	if tenantID != 0 && candidate.TenantID != tenantID {
+		return trustedEntities{}, true, false
+	}
 	deptID, ok := candidateInt64(candidate)
 	if !ok || deptID == 0 {
 		return trustedEntities{}, true, false
@@ -580,6 +663,18 @@ func workflowDepartmentCandidateSelection(workflow *WorkflowSnapshot, message st
 		Scope:        "department",
 		DepartmentID: deptID,
 		DeptIDs:      []int64{deptID},
+		TrustedParams: map[string]TrustedParam{
+			"scope": trustedParam("scope", "department", candidate.TenantID, TrustedParamSource{
+				Kind:     TrustedParamSourceCandidate,
+				Raw:      message,
+				Resolver: "workflow_candidate",
+			}),
+			"dept_ids": trustedParam("dept_ids", []int64{deptID}, candidate.TenantID, TrustedParamSource{
+				Kind:     TrustedParamSourceCandidate,
+				Raw:      message,
+				Resolver: "workflow_candidate",
+			}),
+		},
 	}, true, true
 }
 
@@ -624,34 +719,39 @@ func candidateInt64(candidate Candidate) (int64, bool) {
 	}
 }
 
-func (p protocolLivePipeline) resolveSubscriptionDepartmentSelection(ctx context.Context, message string) (trustedEntities, bool) {
+func (p protocolLivePipeline) resolveSubscriptionDepartmentSelection(ctx context.Context, message string, tenantID uint) (trustedEntities, ResolveResult, bool) {
 	if p.deps.Dept == nil {
-		return trustedEntities{}, false
+		return trustedEntities{}, ResolveResult{}, false
 	}
 	depts, err := p.deps.Dept.ListDepts(ctx)
 	if err != nil {
-		return trustedEntities{}, false
+		return trustedEntities{}, ResolveResult{}, false
 	}
-	resolved := resolveDepartment(entityContext{
-		Raw:         message,
-		Departments: depts,
-	})
-	if resolved.Status != ResolveResolved || resolved.Department == nil {
-		return trustedEntities{}, false
+	resolved := resolveDepartmentParam(EntityResolveContext{TenantID: tenantID}.RawSlot("dept_ids", message), depts)
+	if resolved.Status != ResolveResolved {
+		return trustedEntities{}, resolved, false
+	}
+	deptIDs, _ := resolved.Value.([]int64)
+	if len(deptIDs) == 0 {
+		return trustedEntities{}, resolved, false
 	}
 	return trustedEntities{
+		TenantID:     tenantID,
 		Scope:        "department",
-		DepartmentID: resolved.Department.DeptID,
-		DeptIDs:      []int64{resolved.Department.DeptID},
-	}, true
+		DepartmentID: deptIDs[0],
+		DeptIDs:      deptIDs,
+		TrustedParams: map[string]TrustedParam{
+			"dept_ids": resolved.Param,
+		},
+	}, resolved, true
 }
 
-func (p protocolLivePipeline) resolveInitialSubscriptionTrustedEntities(ctx context.Context, message string, draft ProtocolDraft) (trustedEntities, bool) {
+func (p protocolLivePipeline) resolveInitialSubscriptionTrustedEntities(ctx context.Context, message string, draft ProtocolDraft, tenantID uint) (trustedEntities, bool) {
 	scope := normalizeSubscriptionScope(firstNonEmpty(draftSlotRaw(draft, "scope"), message))
 	if scope == "" {
 		return trustedEntities{}, false
 	}
-	trusted := trustedEntities{Scope: scope}
+	trusted := trustedEntities{TenantID: tenantID, Scope: scope}
 	if scope == "all" {
 		return trusted, true
 	}
@@ -669,15 +769,17 @@ func (p protocolLivePipeline) resolveInitialSubscriptionTrustedEntities(ctx cont
 	if err != nil {
 		return trusted, true
 	}
-	resolved := resolveDepartment(entityContext{
-		Raw:         deptName,
-		Departments: depts,
-	})
-	if resolved.Status != ResolveResolved || resolved.Department == nil {
+	resolved := resolveDepartmentParam(EntityResolveContext{TenantID: tenantID}.RawSlot("dept_ids", deptName), depts)
+	if resolved.Status != ResolveResolved {
 		return trusted, true
 	}
-	trusted.DepartmentID = resolved.Department.DeptID
-	trusted.DeptIDs = []int64{resolved.Department.DeptID}
+	deptIDs, _ := resolved.Value.([]int64)
+	if len(deptIDs) == 0 {
+		return trusted, true
+	}
+	trusted.DepartmentID = deptIDs[0]
+	trusted.DeptIDs = deptIDs
+	trusted.TrustedParams = map[string]TrustedParam{"dept_ids": resolved.Param}
 	return trusted, true
 }
 
@@ -770,6 +872,13 @@ func inputUserRole(uctx *tools.UserContext) int {
 		return 0
 	}
 	return uctx.UserRole
+}
+
+func userTenantID(uctx *tools.UserContext) uint {
+	if uctx == nil {
+		return 0
+	}
+	return uctx.TenantID
 }
 
 func userConversationID(uctx *tools.UserContext) string {

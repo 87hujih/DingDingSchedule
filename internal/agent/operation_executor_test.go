@@ -27,12 +27,12 @@ func TestOperationExecutorAttendanceSlotStatusUsesAttendancePort(t *testing.T) {
 
 	result := executor.Execute(context.Background(), executorUserContext(), OperationRequest{
 		Operation: "attendance.query_status",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"query_shape": "slot_status",
 			"date":        "2026-06-06",
 			"week":        10,
 			"section":     2,
-		},
+		}),
 	})
 
 	if result.Response.Kind != ResponseResult {
@@ -52,7 +52,7 @@ func TestOperationExecutorAttendanceSlotStatusUsesAttendancePort(t *testing.T) {
 	}
 }
 
-func TestOperationExecutorAttendanceSlotStatusDefaultsWeekFromSemester(t *testing.T) {
+func TestOperationExecutorAttendanceSlotStatusRequiresTrustedWeek(t *testing.T) {
 	t.Parallel()
 
 	attendance := &executorFakeAttendancePort{
@@ -72,21 +72,21 @@ func TestOperationExecutorAttendanceSlotStatusDefaultsWeekFromSemester(t *testin
 
 	result := executor.Execute(context.Background(), executorUserContext(), OperationRequest{
 		Operation: "attendance.query_status",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"query_shape": "slot_status",
 			"date":        "2026-06-06",
 			"section":     2,
-		},
+		}),
 	})
 
-	if result.Response.Kind != ResponseResult {
-		t.Fatalf("Kind = %q, want %q; reply=%q", result.Response.Kind, ResponseResult, renderProtocolResponse(result.Response))
+	if result.Response.Kind != ResponseClarify {
+		t.Fatalf("Kind = %q, want %q; reply=%q", result.Response.Kind, ResponseClarify, renderProtocolResponse(result.Response))
 	}
-	if semester.calls != 1 {
-		t.Fatalf("semester calls = %d, want 1", semester.calls)
+	if semester.calls != 0 {
+		t.Fatalf("semester calls = %d, want 0 because defaults must be resolver trusted params", semester.calls)
 	}
-	if attendance.lastQuery.Week != 3 {
-		t.Fatalf("attendance week = %d, want current week 3", attendance.lastQuery.Week)
+	if attendance.detailCalls != 0 {
+		t.Fatalf("detailCalls = %d, want 0 without trusted week", attendance.detailCalls)
 	}
 }
 
@@ -112,11 +112,11 @@ func TestOperationExecutorAttendanceUserDayStatusUsesUserDayPort(t *testing.T) {
 
 	result := executor.Execute(context.Background(), executorUserContext(), OperationRequest{
 		Operation: "attendance.query_status",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"query_shape": "user_day_status",
 			"date":        "2026-06-06",
 			"user_id":     uint(9),
-		},
+		}),
 	})
 
 	if result.Response.Kind != ResponseResult {
@@ -147,9 +147,9 @@ func TestOperationExecutorScheduleQueriesUseSchedulePort(t *testing.T) {
 
 	myResult := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "schedule.query_my_schedule",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"week": 6,
-		},
+		}),
 	})
 	if myResult.Response.Kind != ResponseResult {
 		t.Fatalf("my schedule Kind = %q, want %q", myResult.Response.Kind, ResponseResult)
@@ -163,10 +163,10 @@ func TestOperationExecutorScheduleQueriesUseSchedulePort(t *testing.T) {
 
 	userResult := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "schedule.query_user_schedule",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"user_id": uint(9),
 			"week":    6,
-		},
+		}),
 	})
 	if userResult.Response.Kind != ResponseResult {
 		t.Fatalf("user schedule Kind = %q, want %q", userResult.Response.Kind, ResponseResult)
@@ -192,10 +192,10 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 
 	startAll := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "subscription.start",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-runtime",
 			"scope":           "all",
-		},
+		}),
 	})
 	if startAll.Response.Kind != ResponseResult {
 		t.Fatalf("startAll Kind = %q, want %q", startAll.Response.Kind, ResponseResult)
@@ -206,11 +206,11 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 
 	startDept := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "subscription.start",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-runtime",
 			"scope":           "department",
 			"dept_ids":        []int64{101, 102},
-		},
+		}),
 	})
 	if startDept.Response.Kind != ResponseResult {
 		t.Fatalf("startDept Kind = %q, want %q", startDept.Response.Kind, ResponseResult)
@@ -221,9 +221,9 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 
 	status := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "subscription.query_status",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-runtime",
-		},
+		}),
 	})
 	if status.Response.Kind != ResponseResult || !strings.Contains(renderProtocolResponse(status.Response), "已订阅") {
 		t.Fatalf("status = %+v reply=%q, want subscribed result", status, renderProtocolResponse(status.Response))
@@ -242,9 +242,9 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 
 	cancel := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "subscription.cancel",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-runtime",
-		},
+		}),
 	})
 	if cancel.Response.Kind != ResponseResult {
 		t.Fatalf("cancel Kind = %q, want %q", cancel.Response.Kind, ResponseResult)
@@ -263,10 +263,10 @@ func TestOperationExecutorSubscriptionStartRejectsInvalidScope(t *testing.T) {
 
 	result := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "subscription.start",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": uctx.ConversationID,
 			"scope":           "everyone",
-		},
+		}),
 	})
 
 	if result.Response.Kind != ResponseRefuse {
@@ -287,10 +287,10 @@ func TestOperationExecutorSubscriptionOperationsBindConversationIDToRuntimeGroup
 
 	start := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "subscription.start",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-other",
 			"scope":           "all",
-		},
+		}),
 	})
 	if start.Response.Kind != ResponseRefuse {
 		t.Fatalf("start Kind = %q, want %q", start.Response.Kind, ResponseRefuse)
@@ -301,9 +301,9 @@ func TestOperationExecutorSubscriptionOperationsBindConversationIDToRuntimeGroup
 
 	status := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "subscription.query_status",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-other",
-		},
+		}),
 	})
 	if status.Response.Kind != ResponseRefuse {
 		t.Fatalf("status Kind = %q, want %q", status.Response.Kind, ResponseRefuse)
@@ -314,9 +314,9 @@ func TestOperationExecutorSubscriptionOperationsBindConversationIDToRuntimeGroup
 
 	cancel := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "subscription.cancel",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-other",
-		},
+		}),
 	})
 	if cancel.Response.Kind != ResponseRefuse {
 		t.Fatalf("cancel Kind = %q, want %q", cancel.Response.Kind, ResponseRefuse)
@@ -337,9 +337,9 @@ func TestOperationExecutorSubscriptionCancelRequiresGroupChat(t *testing.T) {
 
 	result := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "subscription.cancel",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "single-conv",
-		},
+		}),
 	})
 
 	if result.Response.Kind != ResponseRefuse {
@@ -361,10 +361,10 @@ func TestOperationExecutorSubscriptionStartRequiresGroupChat(t *testing.T) {
 
 	result := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "subscription.start",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "single-conv",
 			"scope":           "all",
-		},
+		}),
 	})
 
 	if result.Response.Kind != ResponseRefuse {
@@ -398,9 +398,9 @@ func TestOperationExecutorCapabilityAndRuleAnswersDoNotUseBusinessTools(t *testi
 
 	rule := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "attendance.rule_explain",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"rule_topic": "迟到规则",
-		},
+		}),
 	})
 	if rule.Response.Kind != ResponseAnswer || !strings.Contains(renderProtocolResponse(rule.Response), "迟到按上课开始时间判定") {
 		t.Fatalf("rule = %+v reply=%q, want knowledge answer", rule, renderProtocolResponse(rule.Response))
@@ -412,9 +412,9 @@ func TestOperationExecutorCapabilityAndRuleAnswersDoNotUseBusinessTools(t *testi
 	knowledge.hits = nil
 	noHit := executor.Execute(context.Background(), uctx, OperationRequest{
 		Operation: "attendance.rule_explain",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"rule_topic": "迟到规则",
-		},
+		}),
 	})
 	if noHit.Response.Kind != ResponseAnswer || noHit.Response.BusinessError != "no_knowledge_hit" {
 		t.Fatalf("noHit = %+v, want no_knowledge_hit answer", noHit)
@@ -459,6 +459,13 @@ func executorUserContext() *tools.UserContext {
 		ConversationType:  "2",
 		ConversationTitle: "测试群",
 	}
+}
+
+func executorTrustedParams(values map[string]any) map[string]TrustedParam {
+	return trustedParamsFromValues(42, TrustedParamSource{
+		Kind:     TrustedParamSourceWorkflow,
+		Resolver: "executor_test",
+	}, values)
 }
 
 type executorFakeAttendancePort struct {

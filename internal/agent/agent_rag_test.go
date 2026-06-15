@@ -148,10 +148,10 @@ type testClarifyDeptPort struct{}
 
 func (testClarifyDeptPort) ListDepts(context.Context) ([]agenttools.DeptItem, error) {
 	return []agenttools.DeptItem{
-		{DeptID: 101, Name: "信工24级"},
-		{DeptID: 102, Name: "信工23级"},
-		{DeptID: 103, Name: "教务处"},
-		{DeptID: 104, Name: "学工处"},
+		{TenantID: 42, DeptID: 101, Name: "信工24级"},
+		{TenantID: 42, DeptID: 102, Name: "信工23级"},
+		{TenantID: 42, DeptID: 103, Name: "教务处"},
+		{TenantID: 42, DeptID: 104, Name: "学工处"},
 	}, nil
 }
 
@@ -159,8 +159,8 @@ type testFamilyDeptPort struct{}
 
 func (testFamilyDeptPort) ListDepts(context.Context) ([]agenttools.DeptItem, error) {
 	return []agenttools.DeptItem{
-		{DeptID: 201, Name: "家族7期"},
-		{DeptID: 202, Name: "乐知全栈一期"},
+		{TenantID: 42, DeptID: 201, Name: "家族7期"},
+		{TenantID: 42, DeptID: 202, Name: "乐知全栈一期"},
 	}, nil
 }
 

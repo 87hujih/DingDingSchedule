@@ -13,7 +13,6 @@ type ResolveStatus string
 
 const (
 	ResolveResolved     ResolveStatus = "resolved"
-	ResolveMissing      ResolveStatus = "missing"
 	ResolveAmbiguous    ResolveStatus = "ambiguous"
 	ResolveNotFound     ResolveStatus = "not_found"
 	ResolveInvalidShape ResolveStatus = "invalid_shape"
@@ -24,17 +23,21 @@ type ResolveResult struct {
 	Status     ResolveStatus
 	Value      any
 	Values     map[string]any
+	Param      TrustedParam
 	Candidates []EntityCandidate
 	Reason     string
 }
 
 type EntityCandidate struct {
-	ID    string
-	Label string
-	Value any
+	ID       string
+	Label    string
+	Value    any
+	TenantID uint
+	Source   TrustedParamSource
 }
 
 type entityContext struct {
+	TenantID    uint
 	Raw         string
 	Departments []agenttools.DeptItem
 	Users       []agenttools.UserInfo
@@ -47,23 +50,129 @@ type entityResolution struct {
 	Candidates []string
 }
 
+type EntityResolveContext struct {
+	TenantID uint
+	Field    string
+	Raw      string
+	Source   TrustedParamSourceKind
+}
+
+func (ctx EntityResolveContext) RawSlot(field string, raw string) EntityResolveContext {
+	ctx.Field = field
+	ctx.Raw = strings.TrimSpace(raw)
+	ctx.Source = TrustedParamSourceRawSlot
+	return ctx
+}
+
+func (ctx EntityResolveContext) Default(field string) EntityResolveContext {
+	ctx.Field = field
+	ctx.Raw = ""
+	ctx.Source = TrustedParamSourceDefault
+	return ctx
+}
+
+func (ctx EntityResolveContext) Runtime(field string, value string) EntityResolveContext {
+	ctx.Field = field
+	ctx.Raw = strings.TrimSpace(value)
+	ctx.Source = TrustedParamSourceRuntime
+	return ctx
+}
+
+func (ctx EntityResolveContext) Candidate(field string, value string) EntityResolveContext {
+	ctx.Field = field
+	ctx.Raw = strings.TrimSpace(value)
+	ctx.Source = TrustedParamSourceCandidate
+	return ctx
+}
+
+func trustedParam(field string, value any, tenantID uint, source TrustedParamSource) TrustedParam {
+	return TrustedParam{
+		Field:    field,
+		Value:    value,
+		Source:   source,
+		TenantID: tenantID,
+	}
+}
+
+func trustedParamFromContext(ctx EntityResolveContext, field string, value any, resolver string) TrustedParam {
+	source := ctx.Source
+	if source == "" {
+		source = TrustedParamSourceRawSlot
+	}
+	return trustedParam(field, value, ctx.TenantID, TrustedParamSource{
+		Kind:     source,
+		Raw:      rawForTrustedSource(source, ctx.Raw),
+		Resolver: resolver,
+	})
+}
+
+func rawForTrustedSource(source TrustedParamSourceKind, raw string) string {
+	if source == TrustedParamSourceRawSlot || source == TrustedParamSourceCandidate {
+		return raw
+	}
+	return ""
+}
+
+func resolveDateParam(ctx EntityResolveContext, defaultValue SlotDefault, clock func() time.Time) ResolveResult {
+	result := resolveDateSlot(ctx.Raw, defaultValue, clock)
+	if result.Status == ResolveResolved {
+		result.Param = trustedParamFromContext(ctx, "date", result.Value, "date_slot")
+	}
+	return result
+}
+
+func resolveWeekParam(ctx context.Context, input EntityResolveContext, defaultValue SlotDefault, semester weekProvider) ResolveResult {
+	result := resolveWeekSlot(ctx, input.Raw, defaultValue, semester)
+	if result.Status == ResolveResolved {
+		result.Param = trustedParamFromContext(input, "week", result.Value, "week_slot")
+	}
+	return result
+}
+
+func resolveSectionParam(ctx EntityResolveContext, periods []agenttools.PeriodInfo, clock func() time.Time) ResolveResult {
+	result := resolveSectionSlot(ctx.Raw, periods, clock)
+	if result.Status == ResolveResolved {
+		result.Param = trustedParamFromContext(ctx, "section", result.Value, "section_slot")
+	}
+	return result
+}
+
+func resolveConversationParam(ctx EntityResolveContext) ResolveResult {
+	value := strings.TrimSpace(ctx.Raw)
+	if value == "" {
+		return ResolveResult{Field: ctx.Field, Status: ResolveNotFound, Reason: "conversation_not_found"}
+	}
+	result := ResolveResult{Field: ctx.Field, Status: ResolveResolved, Value: value}
+	result.Param = trustedParamFromContext(ctx, ctx.Field, value, "conversation_runtime")
+	return result
+}
+
+func resolveUserParam(ctx EntityResolveContext, users []agenttools.UserInfo) ResolveResult {
+	return resolveUserSlotWithContext(ctx, users)
+}
+
+func resolveDepartmentParam(ctx EntityResolveContext, departments []agenttools.DeptItem) ResolveResult {
+	return resolveDepartmentSlotWithContext(ctx, departments)
+}
+
 // resolveDepartment resolves department.
 func resolveDepartment(ctx entityContext) entityResolution {
 	raw := strings.TrimSpace(ctx.Raw)
 	if !looksLikeEntityInput(raw) {
 		return entityResolution{Status: ResolveInvalidShape}
 	}
+	departments := filterDepartmentsByTenant(ctx.Departments, ctx.TenantID)
 
-	exactMatches := exactDepartmentMatches(raw, ctx.Departments)
+	exactMatches := exactDepartmentMatches(raw, departments)
 	if len(exactMatches) > 0 {
 		return departmentResolution(exactMatches)
 	}
-	normalizedMatches := normalizedDepartmentMatches(raw, ctx.Departments)
+	normalizedMatches := normalizedDepartmentMatches(raw, departments)
 	if len(normalizedMatches) > 0 {
 		return departmentResolution(normalizedMatches)
 	}
 
-	return departmentResolution(departmentCandidates(raw, ctx.Departments))
+	return departmentResolution(departmentCandidates(raw, departments))
 }
 
 func departmentResolution(matches []agenttools.DeptItem) entityResolution {
@@ -88,9 +197,10 @@ func resolveUser(ctx entityContext) entityResolution {
 	if !looksLikeEntityInput(raw) {
 		return entityResolution{Status: ResolveInvalidShape}
 	}
+	users := filterUsersByTenant(ctx.Users, ctx.TenantID)
 
 	exactMatches := make([]agenttools.UserInfo, 0)
-	for _, user := range ctx.Users {
+	for _, user := range users {
 		if strings.TrimSpace(user.Name) == raw {
 			exactMatches = append(exactMatches, user)
 		}
@@ -101,7 +211,7 @@ func resolveUser(ctx entityContext) entityResolution {
 
 	normalized := normalizeEntityName(raw)
 	matches := make([]agenttools.UserInfo, 0)
-	for _, candidate := range ctx.Users {
+	for _, candidate := range users {
 		name := normalizeEntityName(candidate.Name)
 		if strings.Contains(name, normalized) {
 			matches = append(matches, candidate)
@@ -142,7 +252,7 @@ func resolveDateSlot(raw string, defaultValue SlotDefault, clock func() time.Tim
 		if defaultValue == SlotDefaultToday {
 			return ResolveResult{Field: "date", Status: ResolveResolved, Value: clock().Format("2006-01-02")}
 		}
-		return ResolveResult{Field: "date", Status: ResolveMissing, Reason: "missing_date"}
+		return ResolveResult{Field: "date", Status: ResolveNotFound, Reason: "missing_date"}
 	}
 	dateValue, ok := resolveDateWithClock(value, clock)
 	if !ok {
@@ -161,15 +271,15 @@ func resolveWeekSlot(ctx context.Context, raw string, defaultValue SlotDefault, 
 	if value == "" || value == "本周" {
 		if defaultValue != SlotDefaultCurrentWeek {
 			if value == "" {
-				return ResolveResult{Field: "week", Status: ResolveMissing, Reason: "missing_week"}
+				return ResolveResult{Field: "week", Status: ResolveNotFound, Reason: "missing_week"}
 			}
 		}
 		if semester == nil {
-			return ResolveResult{Field: "week", Status: ResolveMissing, Reason: "missing_semester_provider"}
+			return ResolveResult{Field: "week", Status: ResolveNotFound, Reason: "missing_semester_provider"}
 		}
 		week, _, err := semester.GetCurrentWeek(ctx)
 		if err != nil || week <= 0 {
-			return ResolveResult{Field: "week", Status: ResolveMissing, Reason: "current_week_unavailable"}
+			return ResolveResult{Field: "week", Status: ResolveNotFound, Reason: "current_week_unavailable"}
 		}
 		return ResolveResult{Field: "week", Status: ResolveResolved, Value: week}
 	}
@@ -187,12 +297,12 @@ func resolveSectionSlot(raw string, periods []agenttools.PeriodInfo, clock func(
 	}
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		return ResolveResult{Field: "section", Status: ResolveMissing, Reason: "missing_section"}
+		return ResolveResult{Field: "section", Status: ResolveNotFound, Reason: "missing_section"}
 	}
 	if value == "本节" {
 		section, ok := currentSection(periods, clock())
 		if !ok {
-			return ResolveResult{Field: "section", Status: ResolveMissing, Reason: "current_section_unavailable"}
+			return ResolveResult{Field: "section", Status: ResolveNotFound, Reason: "current_section_unavailable"}
 		}
 		return ResolveResult{Field: "section", Status: ResolveResolved, Value: section}
 	}
@@ -205,10 +315,15 @@ func resolveSectionSlot(raw string, periods []agenttools.PeriodInfo, clock func(
 
 // resolveUserSlot resolves user name to canonical user id.
 func resolveUserSlot(raw string, users []agenttools.UserInfo) ResolveResult {
-	value := strings.TrimSpace(raw)
+	return resolveUserSlotWithContext(EntityResolveContext{}.RawSlot("user_id", raw), users)
+}
+
+func resolveUserSlotWithContext(ctx EntityResolveContext, users []agenttools.UserInfo) ResolveResult {
+	value := strings.TrimSpace(ctx.Raw)
 	if !looksLikeEntityInput(value) {
-		return ResolveResult{Field: "user_id", Status: ResolveInvalidShape, Reason: "invalid_user_shape"}
+		return ResolveResult{Field: ctx.Field, Status: ResolveInvalidShape, Reason: "invalid_user_shape"}
 	}
+	users = filterUsersByTenant(users, ctx.TenantID)
 
 	exactMatches := make([]agenttools.UserInfo, 0)
 	for _, user := range users {
@@ -217,7 +332,7 @@ func resolveUserSlot(raw string, users []agenttools.UserInfo) ResolveResult {
 		}
 	}
 	if len(exactMatches) > 0 {
-		return userSlotResolution(exactMatches)
+		return userSlotResolution(ctx, exactMatches)
 	}
 
 	normalized := normalizeEntityName(value)
@@ -227,81 +342,131 @@ func resolveUserSlot(raw string, users []agenttools.UserInfo) ResolveResult {
 			matches = append(matches, candidate)
 		}
 	}
-	return userSlotResolution(matches)
+	return userSlotResolution(ctx, matches)
 }
 
 // resolveDepartmentSlot resolves department name to canonical department id.
 func resolveDepartmentSlot(raw string, departments []agenttools.DeptItem) ResolveResult {
-	value := strings.TrimSpace(raw)
+	return resolveDepartmentSlotWithContext(EntityResolveContext{}.RawSlot("dept_ids", raw), departments)
+}
+
+func resolveDepartmentSlotWithContext(ctx EntityResolveContext, departments []agenttools.DeptItem) ResolveResult {
+	value := strings.TrimSpace(ctx.Raw)
 	if !looksLikeEntityInput(value) {
-		return ResolveResult{Field: "dept_ids", Status: ResolveInvalidShape, Reason: "invalid_department_shape"}
+		return ResolveResult{Field: ctx.Field, Status: ResolveInvalidShape, Reason: "invalid_department_shape"}
 	}
+	departments = filterDepartmentsByTenant(departments, ctx.TenantID)
 
 	exactMatches := exactDepartmentMatches(value, departments)
 	if len(exactMatches) > 0 {
-		return departmentSlotResolution(exactMatches)
+		return departmentSlotResolution(ctx, exactMatches)
 	}
 
 	normalizedMatches := normalizedDepartmentMatches(value, departments)
 	if len(normalizedMatches) > 0 {
-		return departmentSlotResolution(normalizedMatches)
+		return departmentSlotResolution(ctx, normalizedMatches)
 	}
 
-	return departmentSlotResolution(departmentCandidates(value, departments))
+	return departmentSlotResolution(ctx, departmentCandidates(value, departments))
 }
 
-func userSlotResolution(matches []agenttools.UserInfo) ResolveResult {
+func userSlotResolution(ctx EntityResolveContext, matches []agenttools.UserInfo) ResolveResult {
+	field := firstNonEmpty(ctx.Field, "user_id")
 	switch len(matches) {
 	case 0:
-		return ResolveResult{Field: "user_id", Status: ResolveNotFound, Reason: "user_not_found"}
+		return ResolveResult{Field: field, Status: ResolveNotFound, Reason: "user_not_found"}
 	case 1:
-		return ResolveResult{
-			Field:  "user_id",
+		value := matches[0].ID
+		result := ResolveResult{
+			Field:  field,
 			Status: ResolveResolved,
-			Value:  matches[0].ID,
+			Value:  value,
 			Values: map[string]any{
-				"user_id":   matches[0].ID,
+				"user_id":   value,
 				"user_name": matches[0].Name,
 			},
 		}
+		result.Param = trustedParamFromContext(ctx, field, value, "user_resolver")
+		return result
 	default:
 		candidates := make([]EntityCandidate, 0, len(matches))
 		for _, candidate := range matches {
 			candidates = append(candidates, EntityCandidate{
-				ID:    strconv.FormatUint(uint64(candidate.ID), 10),
-				Label: candidate.Name,
-				Value: candidate.ID,
+				ID:       strconv.FormatUint(uint64(candidate.ID), 10),
+				Label:    candidate.Name,
+				Value:    candidate.ID,
+				TenantID: candidate.TenantID,
+				Source: TrustedParamSource{
+					Kind:     TrustedParamSourceRawSlot,
+					Raw:      ctx.Raw,
+					Resolver: "user_resolver",
+				},
 			})
 		}
-		return ResolveResult{Field: "user_id", Status: ResolveAmbiguous, Candidates: candidates, Reason: "user_ambiguous"}
+		return ResolveResult{Field: field, Status: ResolveAmbiguous, Candidates: candidates, Reason: "user_ambiguous"}
 	}
 }
 
-func departmentSlotResolution(matches []agenttools.DeptItem) ResolveResult {
+func departmentSlotResolution(ctx EntityResolveContext, matches []agenttools.DeptItem) ResolveResult {
+	field := firstNonEmpty(ctx.Field, "dept_ids")
 	switch len(matches) {
 	case 0:
-		return ResolveResult{Field: "dept_ids", Status: ResolveNotFound, Reason: "department_not_found"}
+		return ResolveResult{Field: field, Status: ResolveNotFound, Reason: "department_not_found"}
 	case 1:
 		deptIDs := []int64{matches[0].DeptID}
-		return ResolveResult{
-			Field:  "dept_ids",
+		result := ResolveResult{
+			Field:  field,
 			Status: ResolveResolved,
 			Value:  deptIDs,
 			Values: map[string]any{
 				"dept_ids": deptIDs,
 			},
 		}
+		result.Param = trustedParamFromContext(ctx, field, deptIDs, "department_resolver")
+		return result
 	default:
 		candidates := make([]EntityCandidate, 0, len(matches))
 		for _, candidate := range matches {
 			candidates = append(candidates, EntityCandidate{
-				ID:    strconv.FormatInt(candidate.DeptID, 10),
-				Label: candidate.Name,
-				Value: candidate.DeptID,
+				ID:       strconv.FormatInt(candidate.DeptID, 10),
+				Label:    candidate.Name,
+				Value:    candidate.DeptID,
+				TenantID: candidate.TenantID,
+				Source: TrustedParamSource{
+					Kind:     TrustedParamSourceRawSlot,
+					Raw:      ctx.Raw,
+					Resolver: "department_resolver",
+				},
 			})
 		}
-		return ResolveResult{Field: "dept_ids", Status: ResolveAmbiguous, Candidates: candidates, Reason: "department_ambiguous"}
+		return ResolveResult{Field: field, Status: ResolveAmbiguous, Candidates: candidates, Reason: "department_ambiguous"}
 	}
+}
+
+func filterUsersByTenant(users []agenttools.UserInfo, tenantID uint) []agenttools.UserInfo {
+	if tenantID == 0 {
+		return users
+	}
+	filtered := make([]agenttools.UserInfo, 0, len(users))
+	for _, user := range users {
+		if user.TenantID == tenantID {
+			filtered = append(filtered, user)
+		}
+	}
+	return filtered
+}
+
+func filterDepartmentsByTenant(departments []agenttools.DeptItem, tenantID uint) []agenttools.DeptItem {
+	if tenantID == 0 {
+		return departments
+	}
+	filtered := make([]agenttools.DeptItem, 0, len(departments))
+	for _, department := range departments {
+		if department.TenantID == tenantID {
+			filtered = append(filtered, department)
+		}
+	}
+	return filtered
 }
 
 func resolveDateWithClock(raw string, clock func() time.Time) (string, bool) {

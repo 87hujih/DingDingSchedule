@@ -405,6 +405,7 @@ type PeriodInfo struct {
 
 // DeptItem 部门信息
 type DeptItem struct {
+	TenantID uint   `json:"tenant_id"`
 	DeptID   int64  `json:"dept_id"`
 	Name     string `json:"name"`
 	ParentID int64  `json:"parent_id"`

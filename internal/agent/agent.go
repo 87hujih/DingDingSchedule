@@ -1409,17 +1409,15 @@ func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserCo
 		}
 		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
 			Operation:     draft.Operation,
-			TrustedParams: params,
+			TrustedParams: trustedParamsFromValues(userTenantID(uctx), TrustedParamSource{Kind: TrustedParamSourceRuntime, Resolver: "conversation_runtime"}, params),
 		})
 	case "subscription.cancel":
 		if !validation.AllowExecution || uctx == nil || uctx.ConversationType != "2" || a.deps.GroupSub == nil {
 			return false, "", nil
 		}
 		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
-			Operation: draft.Operation,
-			TrustedParams: map[string]any{
-				"conversation_id": uctx.ConversationID,
-			},
+			Operation:     draft.Operation,
+			TrustedParams: trustedParamsFromValues(userTenantID(uctx), TrustedParamSource{Kind: TrustedParamSourceRuntime, Resolver: "conversation_runtime"}, map[string]any{"conversation_id": uctx.ConversationID}),
 		})
 	case "subscription.start", "subscription.list_departments":
 		return a.handleProtocolSubscriptionPrimary(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, draft, activeWorkflow)
@@ -2190,7 +2188,7 @@ func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *too
 		}
 		execResult := a.operationExecutor().Execute(ctx, uctx, OperationRequest{
 			Operation:     "subscription.start",
-			TrustedParams: params,
+			TrustedParams: trustedParamsFromValues(userTenantID(uctx), TrustedParamSource{Kind: TrustedParamSourceWorkflow, Resolver: "subscription_workflow"}, params),
 		})
 		applyOperationExecutionMetrics(metrics, execResult)
 		if execResult.Response.Kind == ResponseResult {
@@ -2443,11 +2441,8 @@ func parseToolErrorPayload(toolResult string) toolErrorPayload {
 }
 
 // extractParamString safely extracts a string value from a params map.
-func extractParamString(params map[string]any, key string) (string, bool) {
-	if params == nil {
-		return "", false
-	}
-	v, ok := params[key]
+func extractParamString(params map[string]TrustedParam, key string) (string, bool) {
+	v, ok := trustedParamConcreteValue(params, key)
 	if !ok {
 		return "", false
 	}
@@ -2456,11 +2451,8 @@ func extractParamString(params map[string]any, key string) (string, bool) {
 }
 
 // extractParamInt safely extracts an int value from a params map.
-func extractParamInt(params map[string]any, key string) (int, bool) {
-	if params == nil {
-		return 0, false
-	}
-	v, ok := params[key]
+func extractParamInt(params map[string]TrustedParam, key string) (int, bool) {
+	v, ok := trustedParamConcreteValue(params, key)
 	if !ok {
 		return 0, false
 	}
@@ -2476,11 +2468,8 @@ func extractParamInt(params map[string]any, key string) (int, bool) {
 }
 
 // extractParamUint safely extracts a uint value from a params map.
-func extractParamUint(params map[string]any, key string) (uint, bool) {
-	if params == nil {
-		return 0, false
-	}
-	v, ok := params[key]
+func extractParamUint(params map[string]TrustedParam, key string) (uint, bool) {
+	v, ok := trustedParamConcreteValue(params, key)
 	if !ok {
 		return 0, false
 	}

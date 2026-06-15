@@ -37,16 +37,18 @@ const (
 )
 
 type TrustedEntity struct {
-	ID    string
-	Type  string
-	Label string
-	Value any
+	ID       string
+	Type     string
+	Label    string
+	Value    any
+	TenantID uint
 }
 
 type Candidate struct {
-	ID    string
-	Label string
-	Value any
+	ID       string
+	Label    string
+	Value    any
+	TenantID uint
 }
 
 type WorkflowSnapshot struct {
@@ -94,7 +96,7 @@ func cloneWorkflowSnapshot(workflow *WorkflowSnapshot) *WorkflowSnapshot {
 	cloned.Candidates = cloneWorkflowCandidates(workflow.Candidates)
 	cloned.Trusted.DeptIDs = append([]int64(nil), workflow.Trusted.DeptIDs...)
 	if cloned.Trusted.TrustedParams != nil {
-		cloned.Trusted.TrustedParams = cloneAnyMap(workflow.Trusted.TrustedParams)
+		cloned.Trusted.TrustedParams = cloneTrustedParamMap(workflow.Trusted.TrustedParams)
 	}
 	return &cloned
 }
@@ -157,6 +159,17 @@ func cloneAnyMap(values map[string]any) map[string]any {
 		return nil
 	}
 	cloned := make(map[string]any, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneTrustedParamMap(values map[string]TrustedParam) map[string]TrustedParam {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]TrustedParam, len(values))
 	for key, value := range values {
 		cloned[key] = value
 	}

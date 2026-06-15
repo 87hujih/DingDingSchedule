@@ -87,10 +87,7 @@ func (e operationExecutor) executeAttendanceQuery(ctx context.Context, req Opera
 	if !ok {
 		return operationExecutionResult(missingOperationParamsResponse(req.Operation, []string{"date"}), answerModeToolFirst)
 	}
-	week, ok, err := e.resolveOperationWeek(ctx, req.TrustedParams)
-	if err != nil {
-		return operationExecutionResult(operationErrorResponse(), answerModeReject)
-	}
+	week, ok := extractParamInt(req.TrustedParams, "week")
 	if !ok {
 		return operationExecutionResult(missingOperationParamsResponse(req.Operation, []string{"week"}), answerModeToolFirst)
 	}
@@ -107,21 +104,6 @@ func (e operationExecutor) executeAttendanceQuery(ctx context.Context, req Opera
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
 	return operationExecutionResult(ResponseModel{Kind: ResponseResult, ResultText: buildAttendanceStatusReply(result)}, answerModeToolFirst)
-}
-
-func (e operationExecutor) resolveOperationWeek(ctx context.Context, params map[string]any) (int, bool, error) {
-	week, ok := extractParamInt(params, "week")
-	if ok {
-		return week, true, nil
-	}
-	if e.deps.Semester == nil {
-		return 0, false, nil
-	}
-	week, _, err := e.deps.Semester.GetCurrentWeek(ctx)
-	if err != nil || week <= 0 {
-		return 0, false, err
-	}
-	return week, true, nil
 }
 
 func (e operationExecutor) executeAttendanceUserDayQuery(ctx context.Context, req OperationRequest) OperationExecutionResult {
@@ -437,11 +419,8 @@ func weekdayName(day int) string {
 	}
 }
 
-func extractParamInt64Slice(params map[string]any, key string) ([]int64, bool) {
-	if params == nil {
-		return nil, false
-	}
-	value, ok := params[key]
+func extractParamInt64Slice(params map[string]TrustedParam, key string) ([]int64, bool) {
+	value, ok := trustedParamConcreteValue(params, key)
 	if !ok {
 		return nil, false
 	}

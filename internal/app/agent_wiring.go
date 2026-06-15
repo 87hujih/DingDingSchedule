@@ -651,6 +651,7 @@ func (a *deptAdapter) ListDepts(ctx context.Context) ([]agent.DeptItem, error) {
 			continue
 		}
 		items = append(items, agent.DeptItem{
+			TenantID: d.TenantID,
 			DeptID:   d.DeptID,
 			Name:     d.Name,
 			ParentID: d.ParentID,

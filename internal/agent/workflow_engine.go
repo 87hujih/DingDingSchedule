@@ -85,11 +85,13 @@ func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft
 		switch trusted.Scope {
 		case "all":
 			workflow.Trusted.Scope = trusted.Scope
+			mergeTrustedParams(&workflow.Trusted, trusted.TrustedParams)
 			workflow.State = WorkflowReady
 			setWorkflowMissingFields(&workflow, nil)
 			return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}
 		case "department":
 			workflow.Trusted.Scope = trusted.Scope
+			mergeTrustedParams(&workflow.Trusted, trusted.TrustedParams)
 			deptIDs := trusted.DeptIDs
 			if len(deptIDs) == 0 && trusted.DepartmentID != 0 {
 				deptIDs = []int64{trusted.DepartmentID}
@@ -117,6 +119,7 @@ func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft
 		}
 		workflow.Trusted.DepartmentID = deptIDs[0]
 		workflow.Trusted.DeptIDs = append([]int64(nil), deptIDs...)
+		mergeTrustedParams(&workflow.Trusted, trusted.TrustedParams)
 		workflow.State = WorkflowReady
 		setWorkflowMissingFields(&workflow, nil)
 		return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}
@@ -133,6 +136,7 @@ func continueManualSignWorkflow(workflow WorkflowSnapshot, trusted trustedEntiti
 	if trusted.UserName != "" {
 		workflow.Trusted.UserName = trusted.UserName
 	}
+	mergeTrustedParams(&workflow.Trusted, trusted.TrustedParams)
 	if trusted.Date != "" {
 		workflow.Trusted.Date = trusted.Date
 	}
@@ -176,6 +180,18 @@ func nextManualSignState(slot string) WorkflowState {
 		return WorkflowCollectSection
 	default:
 		return WorkflowCollectUser
+	}
+}
+
+func mergeTrustedParams(dst *trustedEntities, params map[string]TrustedParam) {
+	if dst == nil || len(params) == 0 {
+		return
+	}
+	if dst.TrustedParams == nil {
+		dst.TrustedParams = make(map[string]TrustedParam, len(params))
+	}
+	for field, param := range params {
+		dst.TrustedParams[field] = param
 	}
 }
 

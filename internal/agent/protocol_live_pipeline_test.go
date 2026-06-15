@@ -225,7 +225,7 @@ func TestProtocolLivePipelineSubscriptionStartExecutesCompleteAllScopeFirstTurn(
 func TestProtocolLivePipelineListsDepartmentsWithoutActiveWorkflow(t *testing.T) {
 	t.Parallel()
 
-	dept := executorFakeDeptPort{depts: []tools.DeptItem{{DeptID: 101, Name: "信工24级"}}}
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{{TenantID: 42, DeptID: 101, Name: "信工24级"}}}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
 		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
 			Act:        ActReadQuery,
@@ -258,7 +258,7 @@ func TestProtocolLivePipelineListsDepartmentsWithoutActiveWorkflow(t *testing.T)
 func TestProtocolLivePipelineListsDepartmentsInDMWithoutGroupGate(t *testing.T) {
 	t.Parallel()
 
-	dept := executorFakeDeptPort{depts: []tools.DeptItem{{DeptID: 101, Name: "信工24级"}}}
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{{TenantID: 42, DeptID: 101, Name: "信工24级"}}}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
 		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
 			Act:        ActReadQuery,
@@ -456,7 +456,7 @@ func TestProtocolLivePipelineUnsupportedExplicitWriteInterruptsActiveWorkflow(t 
 func TestProtocolLivePipelineDepartmentListChoosesDepartmentScopeDuringScopeCollection(t *testing.T) {
 	t.Parallel()
 
-	dept := executorFakeDeptPort{depts: []tools.DeptItem{{DeptID: 101, Name: "信工24级"}}}
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{{TenantID: 42, DeptID: 101, Name: "信工24级"}}}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
 		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
 			Act:        ActWorkflowContinue,
@@ -507,7 +507,7 @@ func TestProtocolLivePipelineDepartmentNameChoosesDepartmentScopeDuringScopeColl
 	t.Parallel()
 
 	groupSub := &executorFakeGroupSubPort{}
-	dept := executorFakeDeptPort{depts: []tools.DeptItem{{DeptID: 125, Name: "信工25级"}}}
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{{TenantID: 42, DeptID: 125, Name: "信工25级"}}}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
 		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
 			Act:        ActWorkflowContinue,
@@ -548,6 +548,66 @@ func TestProtocolLivePipelineDepartmentNameChoosesDepartmentScopeDuringScopeColl
 	}
 }
 
+func TestProtocolLivePipelineDepartmentAmbiguitySelectsCandidatesForWrite(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{
+		{TenantID: 42, DeptID: 101, Name: "信工24级"},
+		{TenantID: 42, DeptID: 125, Name: "信工25级"},
+	}}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.9,
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+		Dept:     dept,
+	})
+	workflow := &WorkflowSnapshot{
+		ID:             "wf-sub",
+		TenantID:       42,
+		ActorUserID:    7,
+		ConversationID: "conv-1",
+		Type:           WorkflowSubscriptionStart,
+		State:          WorkflowCollectDepartments,
+		MissingSlots:   []string{"dept_names"},
+		Trusted: trustedEntities{
+			Scope: "department",
+		},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "信工",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if outcome.Response.Kind != ResponseSelectOptions {
+		t.Fatalf("Response = %+v, want select options for ambiguous write target", outcome.Response)
+	}
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 before user chooses candidate", groupSub.subscribeCalls)
+	}
+	if outcome.WorkflowAfter == nil || outcome.WorkflowAfter.State != WorkflowCollectDepartments {
+		t.Fatalf("WorkflowAfter = %+v, want workflow still collecting departments", outcome.WorkflowAfter)
+	}
+	candidates := outcome.WorkflowAfter.Candidates["dept_ids"]
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %+v, want two tenant-bound choices", candidates)
+	}
+	for _, candidate := range candidates {
+		if candidate.TenantID != 42 {
+			t.Fatalf("candidate = %+v, want tenant 42 only", candidate)
+		}
+	}
+	if outcome.CandidateCount != 2 {
+		t.Fatalf("CandidateCount = %d, want 2", outcome.CandidateCount)
+	}
+}
+
 func TestProtocolLivePipelineDepartmentOrdinalUsesCurrentWorkflowCandidates(t *testing.T) {
 	t.Parallel()
 
@@ -561,7 +621,7 @@ func TestProtocolLivePipelineDepartmentOrdinalUsesCurrentWorkflowCandidates(t *t
 		}},
 		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
 		Dept: executorFakeDeptPort{depts: []tools.DeptItem{
-			{DeptID: 999, Name: "当前库里的第二项"},
+			{TenantID: 42, DeptID: 999, Name: "当前库里的第二项"},
 		}},
 	})
 	workflow := &WorkflowSnapshot{
@@ -574,8 +634,8 @@ func TestProtocolLivePipelineDepartmentOrdinalUsesCurrentWorkflowCandidates(t *t
 		},
 		Candidates: map[string][]Candidate{
 			"dept_ids": {
-				{ID: "101", Label: "信工24级", Value: int64(101)},
-				{ID: "125", Label: "信工25级", Value: int64(125)},
+				{ID: "101", Label: "信工24级", Value: int64(101), TenantID: 42},
+				{ID: "125", Label: "信工25级", Value: int64(125), TenantID: 42},
 			},
 		},
 	}
@@ -594,6 +654,51 @@ func TestProtocolLivePipelineDepartmentOrdinalUsesCurrentWorkflowCandidates(t *t
 	}
 	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 125 {
 		t.Fatalf("lastDeptIDs = %v, want [125] from workflow candidates", groupSub.lastDeptIDs)
+	}
+}
+
+func TestProtocolLivePipelineDepartmentOrdinalRejectsCrossTenantWorkflowCandidate(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.9,
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+	})
+	workflow := &WorkflowSnapshot{
+		ID:             "wf-sub",
+		TenantID:       42,
+		ActorUserID:    7,
+		ConversationID: "conv-1",
+		Type:           WorkflowSubscriptionStart,
+		State:          WorkflowCollectDepartments,
+		MissingSlots:   []string{"dept_names"},
+		Trusted: trustedEntities{
+			Scope: "department",
+		},
+		Candidates: map[string][]Candidate{
+			"dept_ids": {
+				{ID: "125", Label: "其他租户部门", Value: int64(125), TenantID: 99},
+			},
+		},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "第 1 个",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if outcome.Response.Kind == ResponseResult {
+		t.Fatalf("Response = %+v, want no execution for cross-tenant candidate", outcome.Response)
+	}
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 for cross-tenant candidate", groupSub.subscribeCalls)
 	}
 }
 

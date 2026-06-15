@@ -60,9 +60,33 @@ type IntentDraft struct {
 
 type ProtocolDraft = IntentDraft
 
+type TrustedParamSourceKind string
+
+const (
+	TrustedParamSourceRawSlot   TrustedParamSourceKind = "raw_slot"
+	TrustedParamSourceDefault   TrustedParamSourceKind = "default"
+	TrustedParamSourceRuntime   TrustedParamSourceKind = "runtime"
+	TrustedParamSourceWorkflow  TrustedParamSourceKind = "workflow"
+	TrustedParamSourceCandidate TrustedParamSourceKind = "candidate"
+	TrustedParamSourceDerived   TrustedParamSourceKind = "derived"
+)
+
+type TrustedParamSource struct {
+	Kind     TrustedParamSourceKind
+	Raw      string
+	Resolver string
+}
+
+type TrustedParam struct {
+	Field    string
+	Value    any
+	Source   TrustedParamSource
+	TenantID uint
+}
+
 type OperationRequest struct {
 	Operation     string
-	TrustedParams map[string]any
+	TrustedParams map[string]TrustedParam
 }
 
 // protocolModes handles protocol modes.

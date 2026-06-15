@@ -46,6 +46,21 @@ func TestResponseKindsExcludeConfirm(t *testing.T) {
 	}
 }
 
+func TestOperationRequestTrustedParamsAreTyped(t *testing.T) {
+	t.Parallel()
+
+	field, ok := reflect.TypeOf(OperationRequest{}).FieldByName("TrustedParams")
+	if !ok {
+		t.Fatalf("OperationRequest.TrustedParams field missing")
+	}
+	if field.Type.Kind() != reflect.Map || field.Type.Key().Kind() != reflect.String {
+		t.Fatalf("TrustedParams type = %v, want map[string]TrustedParam", field.Type)
+	}
+	if field.Type.Elem() != reflect.TypeOf(TrustedParam{}) {
+		t.Fatalf("TrustedParams elem = %v, want TrustedParam", field.Type.Elem())
+	}
+}
+
 func containsResponseKind(kinds []ResponseKind, target ResponseKind) bool {
 	for _, kind := range kinds {
 		if kind == target {
