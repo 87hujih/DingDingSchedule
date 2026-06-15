@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 
 type protocolLivePipelineDeps struct {
 	Compiler       IntentCompiler
+	Validator      CatalogValidator
 	Executor       operationExecutor
 	User           UserPort
 	Dept           DeptPort
@@ -47,6 +49,12 @@ func newProtocolLivePipeline(deps protocolLivePipelineDeps) protocolLivePipeline
 	return protocolLivePipeline{deps: deps}
 }
 
+func (p protocolLivePipeline) catalogValidator() CatalogValidator {
+	if p.deps.Validator != nil {
+		return p.deps.Validator
+	}
+	return newCatalogValidator()
+}
 func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInput) protocolLiveOutcome {
 	workflowCtx := protocolWorkflowContextFromWorkflowSnapshot(input.ActiveWorkflow)
 	draft, err := compileProtocolWithCompiler(ctx, protocolInput{
@@ -54,10 +62,14 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 		ActiveWorkflow: workflowCtx,
 	}, p.deps.Compiler)
 	if err != nil {
-		draft = unknownIntentDraft("intent_parse_failed")
+		reason := "intent_parse_failed"
+		if errors.Is(err, context.DeadlineExceeded) {
+			reason = "intent_timeout"
+		}
+		draft = unknownIntentDraft(reason)
 	}
 
-	validation := validateProtocol(draft, workflowCtx)
+	validation := p.catalogValidator().Validate(draft, workflowCtx)
 	outcome := protocolLiveOutcome{
 		Draft:      draft,
 		Validation: validation,
@@ -397,9 +409,6 @@ func (p protocolLivePipeline) attendanceRequest(ctx context.Context, message str
 	}
 
 	userRaw := firstNonEmpty(draftSlotRaw(draft, "user"), draftSlotRaw(draft, "user_name"))
-	if userRaw == "" && strings.TrimSpace(draftSlotRaw(draft, "user_id")) != "" {
-		userRaw = draftSlotRaw(draft, "user_id")
-	}
 	if userRaw != "" && p.deps.User != nil {
 		users, err := p.deps.User.SearchByName(ctx, userRaw)
 		if err == nil {
@@ -619,6 +628,8 @@ func protocolUnknownIntentReasonCode(draft ProtocolDraft) string {
 		return "empty_message"
 	case "intent_parse_failed":
 		return "intent_parse_failed"
+	case "intent_timeout":
+		return "intent_timeout"
 	case "intent_compiler_unavailable":
 		return "intent_compiler_unavailable"
 	case "operation_not_allowed":

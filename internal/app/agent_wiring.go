@@ -48,14 +48,15 @@ func BuildAgent(
 	attendance := &attendanceAdapter{srv: attendanceSrv, repo: repo.AttendanceRecordRepo}
 
 	return agent.NewAgent(agent.Deps{
-		LLMBaseURL:       cfg.BaseURL,
-		LLMAPIKey:        cfg.APIKey,
-		LLMModel:         cfg.Model,
-		RouterLLMBaseURL: cfg.RouterBaseURL,
-		RouterLLMAPIKey:  cfg.RouterAPIKey,
-		RouterLLMModel:   cfg.RouterModel,
-		RouteMode:        cfg.RouteMode,
-		ProtocolMode:     cfg.ProtocolMode,
+		LLMBaseURL:            cfg.BaseURL,
+		LLMAPIKey:             cfg.APIKey,
+		LLMModel:              cfg.Model,
+		RouterLLMBaseURL:      cfg.RouterBaseURL,
+		RouterLLMAPIKey:       cfg.RouterAPIKey,
+		RouterLLMModel:        cfg.RouterModel,
+		RouteMode:             cfg.RouteMode,
+		ProtocolMode:          cfg.ProtocolMode,
+		IntentCompilerTimeout: intentCompilerTimeoutFromConfig(cfg),
 
 		Schedule:                &scheduleAdapter{srv: scheduleSrv, schedulePeriodSrv: schedulePeriodSrv},
 		Attendance:              attendance,
@@ -75,6 +76,18 @@ func BuildAgent(
 
 		Logger: global.Log,
 	})
+}
+
+func intentCompilerTimeoutFromConfig(cfg config.LLM) time.Duration {
+	value := strings.TrimSpace(cfg.IntentCompilerTimeout)
+	if value == "" {
+		return 0
+	}
+	timeout, err := time.ParseDuration(value)
+	if err != nil {
+		return 0
+	}
+	return timeout
 }
 
 // ────────────── scheduleAdapter ──────────────

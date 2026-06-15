@@ -27,15 +27,16 @@ const (
 
 // Deps Agent 依赖注入
 type Deps struct {
-	LLMBaseURL       string
-	LLMAPIKey        string
-	LLMModel         string
-	RouterLLMBaseURL string
-	RouterLLMAPIKey  string
-	RouterLLMModel   string
-	RouteMode        string
-	ProtocolMode     string
-	IntentCompiler   IntentCompiler
+	LLMBaseURL            string
+	LLMAPIKey             string
+	LLMModel              string
+	RouterLLMBaseURL      string
+	RouterLLMAPIKey       string
+	RouterLLMModel        string
+	RouteMode             string
+	ProtocolMode          string
+	IntentCompiler        IntentCompiler
+	IntentCompilerTimeout time.Duration
 
 	Schedule                SchedulePort
 	Attendance              AttendancePort
@@ -101,7 +102,7 @@ func NewAgent(deps Deps) *Agent {
 	}
 	intentCompiler := deps.IntentCompiler
 	if intentCompiler == nil && protocolMode == ProtocolModeLive && protocolLLMCompilerAvailable(mainClient) {
-		intentCompiler = newLLMIntentCompiler(mainClient, intentCompilerOptions{})
+		intentCompiler = newLLMIntentCompiler(mainClient, intentCompilerOptions{Timeout: deps.IntentCompilerTimeout})
 	}
 
 	a := &Agent{

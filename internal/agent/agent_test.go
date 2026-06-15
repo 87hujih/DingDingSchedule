@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	agenttools "schedule_server/internal/agent/tools"
 	"schedule_server/pkg/dingtalk"
@@ -222,6 +223,28 @@ func TestNewAgentCreatesProtocolLiveIntentCompilerWhenLLMConfigured(t *testing.T
 	}
 }
 
+func TestNewAgentAppliesConfiguredIntentCompilerTimeout(t *testing.T) {
+	t.Parallel()
+
+	a := NewAgent(Deps{
+		LLMBaseURL:            "http://llm.example.test/v1/chat/completions",
+		LLMModel:              "intent-model",
+		ProtocolMode:          string(ProtocolModeLive),
+		IntentCompilerTimeout: 3 * time.Second,
+		User:                  testUserPort{},
+		Tenant:                testTenantPort{},
+		Logger:                zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	compiler, ok := a.intentCompiler.(*llmIntentCompiler)
+	if !ok {
+		t.Fatalf("intentCompiler = %T, want *llmIntentCompiler", a.intentCompiler)
+	}
+	if compiler.timeout != 3*time.Second {
+		t.Fatalf("compiler.timeout = %s, want 3s", compiler.timeout)
+	}
+}
 func TestNewAgentDoesNotCreateProtocolLiveIntentCompilerForPortZeroURLWithPath(t *testing.T) {
 	t.Parallel()
 

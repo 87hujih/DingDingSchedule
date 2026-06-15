@@ -291,6 +291,17 @@ func TestBuildAgentUsesConfiguredProtocolMode(t *testing.T) {
 	}
 }
 
+func TestIntentCompilerTimeoutFromConfig(t *testing.T) {
+	t.Parallel()
+
+	if got := intentCompilerTimeoutFromConfig(config.LLM{IntentCompilerTimeout: "4s"}); got != 4*time.Second {
+		t.Fatalf("intentCompilerTimeoutFromConfig(valid) = %s, want 4s", got)
+	}
+	if got := intentCompilerTimeoutFromConfig(config.LLM{IntentCompilerTimeout: "bad-value"}); got != 0 {
+		t.Fatalf("intentCompilerTimeoutFromConfig(invalid) = %s, want 0", got)
+	}
+}
+
 func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	db := newCallLogTestDB(t)
 	adapter := &callLogAdapter{db: db}

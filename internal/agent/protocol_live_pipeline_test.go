@@ -95,6 +95,45 @@ func TestProtocolLivePipelineExecutesAttendanceSlotQuery(t *testing.T) {
 	}
 }
 
+func TestProtocolLivePipelineIgnoresTrustedIDSlotFromDraft(t *testing.T) {
+	t.Parallel()
+
+	attendance := &executorFakeAttendancePort{detailResp: &tools.AttendanceResult{Date: "2026-06-06", Week: 10, Section: 2}}
+	user := &pipelineSearchUserPort{users: []tools.UserInfo{{ID: 42, Name: "张三"}}}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActReadQuery,
+			Domain:     DomainAttendance,
+			Operation:  "attendance.query_status",
+			Confidence: 0.92,
+			Slots: map[string]SlotDraft{
+				"date":        {Field: "date", Raw: "2026-06-06"},
+				"user_id":     {Field: "user_id", Raw: "张三"},
+				"query_shape": {Field: "query_shape", Raw: "user_day_status"},
+			},
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{
+			Attendance: attendance,
+			Semester:   &executorFakeSemesterPort{week: 10},
+		}),
+		User: user,
+	})
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message: "查张三今天考勤",
+		User:    executorUserContext(),
+	})
+
+	if outcome.Response.Kind != ResponseClarify {
+		t.Fatalf("Response = %+v, want clarify because user_id slot is not raw user input", outcome.Response)
+	}
+	if user.searchCalls != 0 {
+		t.Fatalf("SearchByName calls = %d, want 0 for trusted ID slot", user.searchCalls)
+	}
+	if attendance.detailCalls != 0 {
+		t.Fatalf("detailCalls = %d, want 0 without trusted user resolver output", attendance.detailCalls)
+	}
+}
 func TestProtocolLivePipelineSubscriptionWorkflowClarifiesAndExecutesAllScope(t *testing.T) {
 	t.Parallel()
 
@@ -312,6 +351,34 @@ func TestProtocolLivePipelineWithoutCompilerFailsClosed(t *testing.T) {
 	}
 }
 
+func TestProtocolLivePipelineCompilerTimeoutFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	attendance := &executorFakeAttendancePort{detailResp: &tools.AttendanceResult{Date: "2026-06-06", Week: 10, Section: 2}}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{err: context.DeadlineExceeded},
+		Executor: newOperationExecutor(operationExecutorDeps{Attendance: attendance, Semester: &executorFakeSemesterPort{week: 10}}),
+		Semester: &executorFakeSemesterPort{week: 10},
+	})
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message: "查询今天第二节考勤状态",
+		User:    executorUserContext(),
+	})
+
+	if outcome.Response.Kind != ResponseClarify {
+		t.Fatalf("Response = %+v, want clarify", outcome.Response)
+	}
+	if outcome.Draft.Act != ActUnknown || outcome.Draft.Reason != "intent_timeout" {
+		t.Fatalf("Draft = %+v, want timeout unknown draft", outcome.Draft)
+	}
+	if outcome.BlockedReason != "intent_timeout" {
+		t.Fatalf("BlockedReason = %q, want intent_timeout", outcome.BlockedReason)
+	}
+	if attendance.detailCalls != 0 {
+		t.Fatalf("detailCalls = %d, want 0 after compiler timeout", attendance.detailCalls)
+	}
+}
 func TestProtocolLivePipelineRoleDeniedRequestInterruptsActiveWorkflow(t *testing.T) {
 	t.Parallel()
 
@@ -585,4 +652,18 @@ type pipelineFakeSchedulePeriodPort struct {
 
 func (p pipelineFakeSchedulePeriodPort) GetScheduleInfo(context.Context) ([]tools.PeriodInfo, string, error) {
 	return append([]tools.PeriodInfo(nil), p.periods...), "test", nil
+}
+
+type pipelineSearchUserPort struct {
+	users       []tools.UserInfo
+	searchCalls int
+}
+
+func (p *pipelineSearchUserPort) FindByDingUserID(context.Context, string) (*tools.UserInfo, error) {
+	return nil, nil
+}
+
+func (p *pipelineSearchUserPort) SearchByName(context.Context, string) ([]tools.UserInfo, error) {
+	p.searchCalls++
+	return append([]tools.UserInfo(nil), p.users...), nil
 }

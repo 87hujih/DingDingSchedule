@@ -10,8 +10,22 @@ type ProtocolValidationResult struct {
 	ResponseKind            ResponseKind
 }
 
-// validateProtocol validates whether a protocol draft is allowed to proceed.
+type CatalogValidator interface {
+	Validate(draft ProtocolDraft, activeWorkflow *protocolWorkflowContext) ProtocolValidationResult
+}
+
+type catalogValidator struct{}
+
+func newCatalogValidator() CatalogValidator {
+	return catalogValidator{}
+}
+
 func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowContext) ProtocolValidationResult {
+	return newCatalogValidator().Validate(draft, activeWorkflow)
+}
+
+// Validate checks the untrusted intent draft against OperationCatalog protocol contracts.
+func (catalogValidator) Validate(draft ProtocolDraft, activeWorkflow *protocolWorkflowContext) ProtocolValidationResult {
 	if draft.Act == ActUnknown {
 		return ProtocolValidationResult{ValidationCode: "unknown_intent", ResponseKind: ResponseClarify}
 	}
@@ -43,6 +57,7 @@ func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowConte
 			ResponseKind:            ResponseRefuse,
 		}
 	}
+	responseKind := catalogResponseKind(metadata, ResponseResult)
 
 	if draft.Domain != metadata.Domain {
 		return ProtocolValidationResult{
@@ -86,13 +101,13 @@ func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowConte
 		return ProtocolValidationResult{
 			ValidationCode:          "capability_non_executable",
 			InterruptActiveWorkflow: interrupt,
-			ResponseKind:            ResponseAnswer,
+			ResponseKind:            responseKind,
 		}
 	case ActRuleQuestion:
 		return ProtocolValidationResult{
 			ValidationCode:          "rule_non_executable",
 			InterruptActiveWorkflow: interrupt,
-			ResponseKind:            ResponseAnswer,
+			ResponseKind:            responseKind,
 		}
 	case ActHelp:
 		if metadata.Capability == nil || metadata.Domain != DomainSystem {
@@ -104,14 +119,14 @@ func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowConte
 		return ProtocolValidationResult{
 			ValidationCode:          "help_non_executable",
 			InterruptActiveWorkflow: interrupt,
-			ResponseKind:            ResponseAnswer,
+			ResponseKind:            responseKind,
 		}
 	case ActReadQuery:
 		return ProtocolValidationResult{
 			AllowExecution:          true,
 			ValidationCode:          "allowed_read_query",
 			InterruptActiveWorkflow: interrupt,
-			ResponseKind:            ResponseResult,
+			ResponseKind:            responseKind,
 		}
 	case ActWriteRequest:
 		if draft.Confidence < lowConfidenceWriteThreshold {
@@ -124,7 +139,7 @@ func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowConte
 			AllowExecution:          true,
 			ValidationCode:          "allowed_write_request",
 			InterruptActiveWorkflow: interrupt,
-			ResponseKind:            ResponseResult,
+			ResponseKind:            responseKind,
 		}
 	default:
 		return ProtocolValidationResult{
@@ -173,8 +188,15 @@ func validateWorkflowContinue(draft ProtocolDraft, activeWorkflow *protocolWorkf
 		AllowExecution:    true,
 		ValidationCode:    "workflow_continue_allowed",
 		UseActiveWorkflow: true,
-		ResponseKind:      ResponseResult,
+		ResponseKind:      catalogResponseKind(metadata, ResponseResult),
 	}
+}
+
+func catalogResponseKind(metadata OperationManifest, fallback ResponseKind) ResponseKind {
+	if metadata.Renderer.Kind != "" {
+		return metadata.Renderer.Kind
+	}
+	return fallback
 }
 
 // workflowContinueTargetsActiveWorkflow reports whether a continuation targets the active workflow.
