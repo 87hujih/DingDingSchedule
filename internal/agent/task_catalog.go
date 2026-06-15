@@ -10,7 +10,7 @@ type taskCatalog struct {
 	runtime *taskRuntime
 }
 
-// newTaskCatalog creates the task catalog backed by the runtime registry.
+// legacy-only: newTaskCatalog creates the old task catalog backed by the runtime registry.
 func newTaskCatalog(runtime *taskRuntime) *taskCatalog {
 	return &taskCatalog{runtime: runtime}
 }

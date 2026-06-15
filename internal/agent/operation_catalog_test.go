@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -140,6 +141,26 @@ func TestOperationCatalogEveryManifestHasRendererAndEvalBinding(t *testing.T) {
 		}
 		if len(manifest.Eval.CaseIDs) == 0 {
 			t.Fatalf("%s Eval.CaseIDs is empty", manifest.Name)
+		}
+	}
+}
+
+func TestOperationCatalogEvalCaseIDsExistInFixture(t *testing.T) {
+	t.Parallel()
+
+	cases, err := LoadEvalCases(filepath.Join("testdata", "eval_cases.json"))
+	if err != nil {
+		t.Fatalf("LoadEvalCases() error = %v", err)
+	}
+	seen := make(map[string]struct{}, len(cases))
+	for _, tc := range cases {
+		seen[tc.Name] = struct{}{}
+	}
+	for _, manifest := range operationManifests() {
+		for _, caseID := range manifest.Eval.CaseIDs {
+			if _, ok := seen[caseID]; !ok {
+				t.Fatalf("%s Eval.CaseIDs contains %q but fixture has no such case", manifest.Name, caseID)
+			}
 		}
 	}
 }

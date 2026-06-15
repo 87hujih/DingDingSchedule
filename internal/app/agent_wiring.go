@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -701,6 +702,19 @@ type callLogAdapter struct {
 	db *gorm.DB
 }
 
+const (
+	agentCallLogMaxCodeRunes = 64
+	agentCallLogMaxJSONRunes = 4000
+	agentCallLogMaxKeyRunes  = 128
+)
+
+var (
+	agentCallLogPhonePattern  = regexp.MustCompile(`1[3-9]\d{9}`)
+	agentCallLogEmailPattern  = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+	agentCallLogSecretPattern = regexp.MustCompile(`(?i)(api[_-]?key|token|secret|password|passwd|pwd)["'\s:=]+[^"',\s}]+`)
+	agentCallLogIDCardPattern = regexp.MustCompile(`\d{17}[\dXx]`)
+)
+
 // Write 记录一次 Agent 调用日志，并显式跳过租户作用域插件。
 func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 	toolsCalled := ""
@@ -757,6 +771,26 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 		ProtocolBlockedReason:   boundedAgentCallLogCode(log.ProtocolBlockedReason, 64),
 		ProtocolResolvedSlots:   log.ProtocolResolvedSlots,
 		ProtocolCandidateCount:  log.ProtocolCandidateCount,
+		RequestID:               boundedAgentCallLogCode(log.RequestID, agentCallLogMaxCodeRunes),
+		ConversationID:          boundedAgentCallLogCode(log.ConversationID, agentCallLogMaxKeyRunes),
+		CompilerStatus:          boundedAgentCallLogCode(log.CompilerStatus, 32),
+		CompilerLatencyMs:       log.CompilerLatencyMs,
+		IntentDraftJSON:         boundedAgentCallLogJSON(log.IntentDraftJSON),
+		CatalogValidationCode:   boundedAgentCallLogCode(log.CatalogValidationCode, agentCallLogMaxCodeRunes),
+		WorkflowDecision:        boundedAgentCallLogCode(log.WorkflowDecision, 32),
+		WorkflowInterruptReason: boundedAgentCallLogCode(log.WorkflowInterruptReason, agentCallLogMaxCodeRunes),
+		ResolvedSlotsJSON:       boundedAgentCallLogJSON(log.ResolvedSlotsJSON),
+		EntityResolutionStatus:  boundedAgentCallLogCode(log.EntityResolutionStatus, 32),
+		PrePolicyResult:         boundedAgentCallLogCode(log.PrePolicyResult, 32),
+		ResourcePolicyResult:    boundedAgentCallLogCode(log.ResourcePolicyResult, 32),
+		BlockedReason:           boundedAgentCallLogCode(log.BlockedReason, agentCallLogMaxCodeRunes),
+		WriteGuardResult:        boundedAgentCallLogCode(log.WriteGuardResult, 32),
+		IdempotencyKey:          boundedAgentCallLogCode(log.IdempotencyKey, agentCallLogMaxKeyRunes),
+		ExecutorStatus:          boundedAgentCallLogCode(log.ExecutorStatus, 32),
+		RendererName:            boundedAgentCallLogCode(log.RendererName, agentCallLogMaxCodeRunes),
+		FailureLayer:            boundedAgentCallLogCode(log.FailureLayer, 32),
+		LegacyCalled:            log.LegacyCalled,
+		ReplayCaseID:            boundedAgentCallLogCode(log.ReplayCaseID, agentCallLogMaxCodeRunes),
 		WorkflowIDBefore:        log.WorkflowIDBefore,
 		WorkflowIDAfter:         log.WorkflowIDAfter,
 		WorkflowStateBefore:     log.WorkflowStateBefore,
@@ -806,6 +840,22 @@ func boundedAgentCallLogCode(value string, maxRunes int) string {
 		return value
 	}
 	return string(runes[:maxRunes])
+}
+
+func boundedAgentCallLogJSON(value string) string {
+	return boundedAgentCallLogCode(sanitizeAgentCallLogText(value), agentCallLogMaxJSONRunes)
+}
+
+func sanitizeAgentCallLogText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = agentCallLogSecretPattern.ReplaceAllString(value, `${1}:[REDACTED]`)
+	value = agentCallLogPhonePattern.ReplaceAllString(value, "[REDACTED_PHONE]")
+	value = agentCallLogIDCardPattern.ReplaceAllString(value, "[REDACTED_ID]")
+	value = agentCallLogEmailPattern.ReplaceAllString(value, "[REDACTED_EMAIL]")
+	return value
 }
 
 func joinIntList(values []int) string {

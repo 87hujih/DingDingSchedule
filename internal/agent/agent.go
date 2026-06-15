@@ -275,10 +275,12 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 
 	// 3. 语义路由器为主决策入口。
 	if primaryChain == decisionChainRoute {
+		metrics.Proto.LegacyCalled = true
 		return a.chatWithSemanticRouter(ctx, uctx, sessionKey, msg, userMsg, startTime, &metrics)
 	}
 
 	// 4. legacy 路径（routeMode=shadow 或 off）
+	metrics.Proto.LegacyCalled = true
 	return a.chatLegacy(ctx, uctx, sessionKey, msg, userMsg, startTime, &metrics)
 }
 
@@ -322,6 +324,7 @@ func protocolLLMCompilerAvailable(client *LLMClient) bool {
 	return !strings.HasSuffix(trimmed, ":0")
 }
 
+// legacy-only: chatWithSemanticRouter is the old semantic-router main path used outside protocol_live.
 // chatWithSemanticRouter 使用语义路由器作为唯一决策入口的处理路径。
 func (a *Agent) chatWithSemanticRouter(
 	ctx context.Context,
@@ -390,6 +393,7 @@ func (a *Agent) chatWithSemanticRouter(
 	return "请再具体说明你要查询或操作的内容。", nil
 }
 
+// legacy-only: chatLegacy uses planner + ReAct interpreter and must not run under protocol_live.
 // chatLegacy 使用 planner + interpreter 的遗留处理路径。
 func (a *Agent) chatLegacy(
 	ctx context.Context,
@@ -1265,6 +1269,26 @@ func (a *Agent) writeCallLog(_ context.Context, uctx *tools.UserContext, questio
 		ProtocolBlockedReason:   metrics.Proto.BlockedReason,
 		ProtocolResolvedSlots:   metrics.Proto.ResolvedSlots,
 		ProtocolCandidateCount:  metrics.Proto.CandidateCount,
+		RequestID:               metrics.Proto.RequestID,
+		ConversationID:          uctx.ConversationID,
+		CompilerStatus:          metrics.Proto.CompilerStatus,
+		CompilerLatencyMs:       metrics.Proto.CompilerLatencyMs,
+		IntentDraftJSON:         metrics.Proto.IntentDraftJSON,
+		CatalogValidationCode:   metrics.Proto.CatalogValidationCode,
+		WorkflowDecision:        metrics.Proto.WorkflowDecision,
+		WorkflowInterruptReason: metrics.Proto.WorkflowInterruptReason,
+		ResolvedSlotsJSON:       metrics.Proto.ResolvedSlotsJSON,
+		EntityResolutionStatus:  metrics.Proto.EntityResolutionStatus,
+		PrePolicyResult:         metrics.Proto.PrePolicyResult,
+		ResourcePolicyResult:    metrics.Proto.ResourcePolicyResult,
+		BlockedReason:           metrics.Proto.BlockedReason,
+		WriteGuardResult:        metrics.Proto.WriteGuardResult,
+		IdempotencyKey:          metrics.Proto.IdempotencyKey,
+		ExecutorStatus:          metrics.Proto.ExecutorStatus,
+		RendererName:            metrics.Proto.RendererName,
+		FailureLayer:            metrics.Proto.FailureLayer,
+		LegacyCalled:            metrics.Proto.LegacyCalled,
+		ReplayCaseID:            metrics.Proto.RequestID,
 		WorkflowIDBefore:        metrics.Wf.IDBefore,
 		WorkflowIDAfter:         metrics.Wf.IDAfter,
 		WorkflowStateBefore:     metrics.Wf.StateBefore,
@@ -1326,6 +1350,9 @@ func applyProtocolMetrics(metrics *callMetrics, draft ProtocolDraft, validation 
 	metrics.Proto.Domain = string(draft.Domain)
 	metrics.Proto.Operation = draft.Operation
 	metrics.Proto.ValidationCode = validation.ValidationCode
+	if metrics.Proto.CatalogValidationCode == "" {
+		metrics.Proto.CatalogValidationCode = validation.ValidationCode
+	}
 	metrics.Proto.ExecutionAllowed = validation.AllowExecution
 }
 
@@ -1340,6 +1367,7 @@ func protocolPrimaryDispatchAllowed(_ ProtocolDraft, validation ProtocolValidati
 	return validation.ResponseKind == ResponseAnswer
 }
 
+// legacy-only: tryHandleProtocolPrimary is an old partial protocol path, superseded by protocolLivePipeline.
 // tryHandleProtocolPrimary attempts to answer through the protocol-primary path.
 func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, activeWorkflow *WorkflowSnapshot, workflowCtx *protocolWorkflowContext) (bool, string, error) {
 	if a.protocolMode != ProtocolModeLive {
@@ -1546,7 +1574,24 @@ func (a *Agent) applyProtocolLiveOutcomeAfterStore(sessionKey string, metrics *c
 	}
 	metrics.Proto.BlockedReason = outcome.BlockedReason
 	metrics.Proto.ResolvedSlots = compactProtocolResolvedSlots(outcome.ResolvedSlots)
+	metrics.Proto.ResolvedSlotsJSON = metrics.Proto.ResolvedSlots
 	metrics.Proto.CandidateCount = outcome.CandidateCount
+	metrics.Proto.RequestID = outcome.RequestID
+	metrics.Proto.CompilerStatus = outcome.CompilerStatus
+	metrics.Proto.CompilerLatencyMs = outcome.CompilerLatencyMs
+	metrics.Proto.IntentDraftJSON = outcome.IntentDraftJSON
+	metrics.Proto.CatalogValidationCode = firstNonEmpty(outcome.CatalogValidationCode, outcome.Validation.ValidationCode)
+	metrics.Proto.WorkflowDecision = string(outcome.WorkflowDecision)
+	metrics.Proto.WorkflowInterruptReason = outcome.WorkflowInterruptReason
+	metrics.Proto.EntityResolutionStatus = outcome.EntityResolutionStatus
+	metrics.Proto.PrePolicyResult = outcome.PrePolicyResult
+	metrics.Proto.ResourcePolicyResult = outcome.ResourcePolicyResult
+	metrics.Proto.WriteGuardResult = outcome.WriteGuardResult
+	metrics.Proto.IdempotencyKey = outcome.IdempotencyKey
+	metrics.Proto.ExecutorStatus = outcome.ExecutorStatus
+	metrics.Proto.RendererName = outcome.RendererName
+	metrics.Proto.FailureLayer = string(outcome.FailureLayer)
+	metrics.Proto.LegacyCalled = outcome.LegacyCalled
 	if outcome.ExecutionMetrics.ExecutorName != "" {
 		applyOperationExecutionMetrics(metrics, OperationExecutionResult{
 			Response: outcome.Response,
@@ -1578,11 +1623,15 @@ func workflowStoreFailureOutcome() protocolLiveOutcome {
 		ResponseKind:   ResponseRefuse,
 	}
 	return protocolLiveOutcome{
-		Draft:         draft,
-		Validation:    validation,
-		Response:      ResponseModel{Kind: ResponseRefuse, RefusalReason: "系统暂时无法处理当前任务状态，请稍后重试。"},
-		AnswerMode:    answerModeReject,
-		BlockedReason: "workflow_store_failed",
+		Draft:          draft,
+		Validation:     validation,
+		Response:       ResponseModel{Kind: ResponseRefuse, RefusalReason: "系统暂时无法处理当前任务状态，请稍后重试。"},
+		AnswerMode:     answerModeReject,
+		BlockedReason:  "workflow_store_failed",
+		RequestID:      newProtocolLiveRequestID(time.Now()),
+		CompilerStatus: "skipped",
+		FailureLayer:   FailurePersistence,
+		RendererName:   "response_renderer",
 	}
 }
 
@@ -1814,6 +1863,7 @@ func buildManualSignCapabilityReply(uctx *tools.UserContext) string {
 	return "代签（补签）属于管理员能力；普通用户不能通过当前聊天路径执行代签。"
 }
 
+// legacy-only: handleProtocolFallback belongs to the old partial protocol path.
 // handleProtocolFallback returns a safe fallback reply when protocol primary cannot execute.
 func (a *Agent) handleProtocolFallback(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, draft ProtocolDraft, validation ProtocolValidationResult, activeWorkflow *WorkflowSnapshot) (string, error) {
 	model := ResponseModel{
@@ -1894,6 +1944,7 @@ type manualSignResolution struct {
 	UserResolution entityResolution
 }
 
+// legacy-only: handleProtocolManualSignPrimary belongs to the old partial protocol path.
 // handleProtocolManualSignPrimary runs the manual-sign protocol primary flow.
 func (a *Agent) handleProtocolManualSignPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot) (bool, string, error) {
 	if uctx == nil || a.deps.Attendance == nil || a.deps.User == nil {
@@ -2085,6 +2136,7 @@ func buildResponseOptions(candidates []string) []ResponseOption {
 	return options
 }
 
+// legacy-only: handleProtocolSubscriptionPrimary belongs to the old partial protocol path.
 // handleProtocolSubscriptionPrimary runs the subscription protocol primary flow.
 func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot) (bool, string, error) {
 	if uctx == nil || uctx.ConversationType != "2" || a.deps.GroupSub == nil {

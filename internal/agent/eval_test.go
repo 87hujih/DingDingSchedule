@@ -424,6 +424,55 @@ func TestEvaluateCasesAggregatesProtocolMatches(t *testing.T) {
 	}
 }
 
+func TestEvaluateCasesProtocolChecksFailureLayerAndLegacyCalled(t *testing.T) {
+	t.Parallel()
+
+	expectedLegacyCalled := false
+	cases := []EvalCase{{
+		Name:                      "protocol-no-legacy",
+		Category:                  "protocol",
+		Question:                  "开启本群考勤订阅",
+		ExpectedProtocolAct:       "write_request",
+		ExpectedProtocolDomain:    "subscription",
+		ExpectedProtocolOperation: "subscription.start",
+		ExpectedResponseKind:      "clarify",
+		ExpectedBlockedReason:     "missing_scope",
+		ExpectedFailureLayer:      "",
+		ExpectedLegacyCalled:      &expectedLegacyCalled,
+		ExpectedTools:             []string{},
+	}}
+
+	observer := func(context.Context, EvalCase) (EvalObservation, error) {
+		return EvalObservation{
+			ProtocolAct:           "write_request",
+			ProtocolDomain:        "subscription",
+			ProtocolOperation:     "subscription.start",
+			ResponseKind:          "clarify",
+			ProtocolBlockedReason: "missing_scope",
+			FailureLayer:          "intent_failed",
+			LegacyCalled:          true,
+			Tools:                 []string{"query_subscription_status"},
+		}, nil
+	}
+
+	summary, results, err := EvaluateCases(context.Background(), nil, 42, cases, observer)
+	if err != nil {
+		t.Fatalf("EvaluateCases() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("result count = %d, want 1", len(results))
+	}
+	if results[0].ProtocolMatched {
+		t.Fatalf("ProtocolMatched = true, want false when failure_layer or legacy_called mismatches: %+v", results[0])
+	}
+	if results[0].ToolsMatched {
+		t.Fatalf("empty expected_tools must forbid all tool calls: %+v", results[0])
+	}
+	if summary.ProtocolPassed != 0 || summary.ToolPassed != 0 {
+		t.Fatalf("summary = %+v, want protocol/tool failures", summary)
+	}
+}
+
 func TestEvaluateCasesProtocolUsesTargetTenantForKnowledge(t *testing.T) {
 	t.Parallel()
 

@@ -314,6 +314,81 @@
     "expected_tools": []
   },
   {
+    "name": "catalog-subscription-cancel",
+    "category": "protocol",
+    "question": "取消本群考勤订阅",
+    "expected_protocol_act": "write_request",
+    "expected_protocol_domain": "subscription",
+    "expected_protocol_operation": "subscription.cancel",
+    "expected_tools": []
+  },
+  {
+    "name": "catalog-subscription-query-status",
+    "category": "protocol",
+    "question": "查这个群有没有订阅考勤推送",
+    "expected_protocol_act": "read_query",
+    "expected_protocol_domain": "subscription",
+    "expected_protocol_operation": "subscription.query_status",
+    "expected_tools": []
+  },
+  {
+    "name": "catalog-attendance-describe-capability",
+    "category": "protocol",
+    "question": "考勤能做什么",
+    "expected_protocol_act": "capability_question",
+    "expected_protocol_domain": "attendance",
+    "expected_protocol_operation": "attendance.describe_capability",
+    "expected_response_kind": "answer",
+    "expected_tools": []
+  },
+  {
+    "name": "catalog-schedule-describe-capability",
+    "category": "protocol",
+    "question": "课表能做什么",
+    "expected_protocol_act": "capability_question",
+    "expected_protocol_domain": "schedule",
+    "expected_protocol_operation": "schedule.describe_capability",
+    "expected_response_kind": "answer",
+    "expected_tools": []
+  },
+  {
+    "name": "catalog-subscription-describe-capability",
+    "category": "protocol",
+    "question": "考勤订阅能做什么",
+    "expected_protocol_act": "capability_question",
+    "expected_protocol_domain": "subscription",
+    "expected_protocol_operation": "subscription.describe_capability",
+    "expected_response_kind": "answer",
+    "expected_tools": []
+  },
+  {
+    "name": "catalog-schedule-rule-explain",
+    "category": "protocol",
+    "question": "课表规则是什么",
+    "expected_protocol_act": "rule_question",
+    "expected_protocol_domain": "schedule",
+    "expected_protocol_operation": "schedule.rule_explain",
+    "expected_tools": []
+  },
+  {
+    "name": "catalog-subscription-rule-explain",
+    "category": "protocol",
+    "question": "群订阅规则是什么",
+    "expected_protocol_act": "rule_question",
+    "expected_protocol_domain": "subscription",
+    "expected_protocol_operation": "subscription.rule_explain",
+    "expected_tools": []
+  },
+  {
+    "name": "catalog-schedule-query-user-schedule",
+    "category": "protocol",
+    "question": "查张三本周课表",
+    "expected_protocol_act": "read_query",
+    "expected_protocol_domain": "schedule",
+    "expected_protocol_operation": "schedule.query_user_schedule",
+    "expected_tools": []
+  },
+  {
     "name": "reject-weather",
     "category": "reject",
     "question": "今天上海天气怎么样？",

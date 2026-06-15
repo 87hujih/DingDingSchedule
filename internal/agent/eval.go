@@ -27,6 +27,8 @@ type EvalCase struct {
 	ExpectedProtocolOperation string   `json:"expected_protocol_operation,omitempty"`
 	ExpectedResponseKind      string   `json:"expected_response_kind,omitempty"`
 	ExpectedBlockedReason     string   `json:"expected_blocked_reason,omitempty"`
+	ExpectedFailureLayer      string   `json:"expected_failure_layer,omitempty"`
+	ExpectedLegacyCalled      *bool    `json:"expected_legacy_called,omitempty"`
 	ConversationType          string   `json:"conversation_type,omitempty"`
 	ActiveWorkflowType        string   `json:"active_workflow_type,omitempty"`
 	ActiveWorkflowState       string   `json:"active_workflow_state,omitempty"`
@@ -45,6 +47,8 @@ type EvalObservation struct {
 	ProtocolOperation     string
 	ResponseKind          string
 	ProtocolBlockedReason string
+	FailureLayer          string
+	LegacyCalled          bool
 }
 
 // EvalObserver 执行真实问答并返回回复与工具调用信息。
@@ -74,6 +78,8 @@ type EvalCaseResult struct {
 	ProtocolOperation     string
 	ResponseKind          string
 	ProtocolBlockedReason string
+	FailureLayer          string
+	LegacyCalled          bool
 	ProtocolChecked       bool
 	ProtocolMatched       bool
 	AnswerMode            string
@@ -227,6 +233,8 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 			result.ProtocolOperation = protocolEval.Operation
 			result.ResponseKind = protocolEval.ResponseKind
 			result.ProtocolBlockedReason = protocolEval.BlockedReason
+			result.FailureLayer = protocolEval.FailureLayer
+			result.LegacyCalled = protocolEval.LegacyCalled
 		}
 
 		result.AnswerMode = string(compat.AnswerMode)
@@ -290,6 +298,10 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 				if observation.ProtocolBlockedReason != "" {
 					result.ProtocolBlockedReason = observation.ProtocolBlockedReason
 				}
+				if observation.FailureLayer != "" {
+					result.FailureLayer = observation.FailureLayer
+				}
+				result.LegacyCalled = observation.LegacyCalled
 			}
 		}
 
@@ -375,12 +387,17 @@ type evalProtocolResult struct {
 	Operation     string
 	ResponseKind  string
 	BlockedReason string
+	FailureLayer  string
+	LegacyCalled  bool
 }
 
 type evalProtocolCompiler struct{}
 
 func (evalProtocolCompiler) Compile(_ context.Context, req IntentCompileRequest) (IntentDraft, error) {
 	normalized := normalizeQuery(req.Message)
+	if draft, ok := compileCapabilityQuestion(req.Message); ok {
+		return draft, nil
+	}
 	if hasHelpIntent(normalized) {
 		operation, ok := operationNameForActDomain(ActHelp, DomainSystem)
 		if !ok {
@@ -435,6 +452,8 @@ func evaluateProtocolCase(ctx context.Context, tc EvalCase, knowledge KnowledgeP
 		Operation:     outcome.Draft.Operation,
 		ResponseKind:  string(outcome.Response.Kind),
 		BlockedReason: outcome.BlockedReason,
+		FailureLayer:  string(outcome.FailureLayer),
+		LegacyCalled:  outcome.LegacyCalled,
 	}
 }
 
@@ -443,7 +462,9 @@ func protocolExpectationPresent(tc EvalCase) bool {
 		strings.TrimSpace(tc.ExpectedProtocolDomain) != "" ||
 		strings.TrimSpace(tc.ExpectedProtocolOperation) != "" ||
 		strings.TrimSpace(tc.ExpectedResponseKind) != "" ||
-		strings.TrimSpace(tc.ExpectedBlockedReason) != ""
+		strings.TrimSpace(tc.ExpectedBlockedReason) != "" ||
+		strings.TrimSpace(tc.ExpectedFailureLayer) != "" ||
+		tc.ExpectedLegacyCalled != nil
 }
 
 func protocolExpectationMatched(tc EvalCase, result EvalCaseResult) bool {
@@ -456,6 +477,7 @@ func protocolExpectationMatched(tc EvalCase, result EvalCaseResult) bool {
 		{tc.ExpectedProtocolOperation, result.ProtocolOperation},
 		{tc.ExpectedResponseKind, result.ResponseKind},
 		{tc.ExpectedBlockedReason, result.ProtocolBlockedReason},
+		{tc.ExpectedFailureLayer, result.FailureLayer},
 	}
 	for _, check := range checks {
 		if strings.TrimSpace(check.expected) == "" {
@@ -464,6 +486,9 @@ func protocolExpectationMatched(tc EvalCase, result EvalCaseResult) bool {
 		if !strings.EqualFold(strings.TrimSpace(check.actual), strings.TrimSpace(check.expected)) {
 			return false
 		}
+	}
+	if tc.ExpectedLegacyCalled != nil && result.LegacyCalled != *tc.ExpectedLegacyCalled {
+		return false
 	}
 	return true
 }

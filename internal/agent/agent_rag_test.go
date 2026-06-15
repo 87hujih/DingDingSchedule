@@ -2004,6 +2004,18 @@ func TestSubscriptionWorkflowStartsAndExecutesAllScopeInProtocolLive(t *testing.
 	if log.ToolPool != "operation" {
 		t.Fatalf("ToolPool = %q, want operation", log.ToolPool)
 	}
+	if log.IdempotencyKey == "" {
+		t.Fatalf("IdempotencyKey is empty for subscription write")
+	}
+	if log.WriteGuardResult != "allow" {
+		t.Fatalf("WriteGuardResult = %q, want allow", log.WriteGuardResult)
+	}
+	if log.LegacyCalled {
+		t.Fatalf("LegacyCalled = true, want false for protocol_live write")
+	}
+	if log.FailureLayer != "" {
+		t.Fatalf("FailureLayer = %q, want empty successful write", log.FailureLayer)
+	}
 
 	groupSub.mu.Lock()
 	defer groupSub.mu.Unlock()
@@ -2081,6 +2093,12 @@ func TestSubscriptionWorkflowKeepsWorkflowWhenExecutorStartFails(t *testing.T) {
 	}
 	if log.ExecutorName != "operation_executor" || log.ResponseKind != string(ResponseRefuse) {
 		t.Fatalf("log executor=%q response=%q, want operation refuse", log.ExecutorName, log.ResponseKind)
+	}
+	if log.FailureLayer != string(FailureExecutor) {
+		t.Fatalf("FailureLayer = %q, want %q", log.FailureLayer, FailureExecutor)
+	}
+	if log.LegacyCalled {
+		t.Fatalf("LegacyCalled = true, want false for protocol_live executor failure")
 	}
 }
 

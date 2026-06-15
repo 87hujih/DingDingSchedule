@@ -47,6 +47,26 @@ type AgentCallLog struct {
 	ProtocolBlockedReason   string `gorm:"size:64"`
 	ProtocolResolvedSlots   string `gorm:"type:text"`
 	ProtocolCandidateCount  int
+	RequestID               string `gorm:"size:64;index"`
+	ConversationID          string `gorm:"size:128;index"`
+	CompilerStatus          string `gorm:"size:32"`
+	CompilerLatencyMs       int64
+	IntentDraftJSON         string `gorm:"type:text"`
+	CatalogValidationCode   string `gorm:"size:64"`
+	WorkflowDecision        string `gorm:"size:32"`
+	WorkflowInterruptReason string `gorm:"size:64"`
+	ResolvedSlotsJSON       string `gorm:"type:text"`
+	EntityResolutionStatus  string `gorm:"size:32"`
+	PrePolicyResult         string `gorm:"size:32"`
+	ResourcePolicyResult    string `gorm:"size:32"`
+	BlockedReason           string `gorm:"size:64"`
+	WriteGuardResult        string `gorm:"size:32"`
+	IdempotencyKey          string `gorm:"size:128"`
+	ExecutorStatus          string `gorm:"size:32"`
+	RendererName            string `gorm:"size:64"`
+	FailureLayer            string `gorm:"size:32;index"`
+	LegacyCalled            bool   `gorm:"index"`
+	ReplayCaseID            string `gorm:"size:64;index"`
 	WorkflowIDBefore        string `gorm:"size:64"`
 	WorkflowIDAfter         string `gorm:"size:64"`
 	WorkflowStateBefore     string `gorm:"size:32"`

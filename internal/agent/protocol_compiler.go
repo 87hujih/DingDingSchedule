@@ -58,6 +58,9 @@ func compileProtocol(input protocolInput) ProtocolDraft {
 		return draft
 	}
 
+	if draft, ok := compileCapabilityQuestion(message); ok {
+		return draft
+	}
 	if looksLikeManualSignCapabilityQuestion(message) {
 		return ProtocolDraft{
 			Act:       ActCapabilityQuestion,
@@ -122,6 +125,34 @@ func compileProtocol(input protocolInput) ProtocolDraft {
 		Domain:        DomainUnknown,
 		ClarifyReason: "unknown_intent",
 	}
+}
+
+func compileCapabilityQuestion(message string) (ProtocolDraft, bool) {
+	normalized := normalizeQuery(message)
+	if !containsAny(normalized, []string{"有什么功能", "能做什么", "可以做什么", "支持什么", "能力", "功能"}) {
+		return ProtocolDraft{}, false
+	}
+	candidates := []struct {
+		keywords  []string
+		domain    BusinessDomain
+		operation string
+	}{
+		{[]string{"订阅", "推送"}, DomainSubscription, "subscription.describe_capability"},
+		{[]string{"考勤"}, DomainAttendance, "attendance.describe_capability"},
+		{[]string{"课表", "课程"}, DomainSchedule, "schedule.describe_capability"},
+		{[]string{"补签", "代签"}, DomainManualSign, "manual_sign.describe_capability"},
+	}
+	for _, candidate := range candidates {
+		if containsAny(normalized, candidate.keywords) {
+			return ProtocolDraft{
+				Act:        ActCapabilityQuestion,
+				Domain:     candidate.domain,
+				Operation:  candidate.operation,
+				Confidence: 1,
+			}, true
+		}
+	}
+	return ProtocolDraft{}, false
 }
 
 // compileWorkflowMeta handles bounded read-only workflow meta questions that should not be treated as slot values.

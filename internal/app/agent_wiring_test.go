@@ -349,6 +349,26 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 		ProtocolBlockedReason:   "missing_scope",
 		ProtocolResolvedSlots:   `{"date":"2026-06-06","section":2}`,
 		ProtocolCandidateCount:  2,
+		RequestID:               "req-v2-1",
+		ConversationID:          "conv-v2-1",
+		CompilerStatus:          "ok",
+		CompilerLatencyMs:       11,
+		IntentDraftJSON:         `{"operation":"attendance.query_status","raw":"手机号 13812345678"}`,
+		CatalogValidationCode:   "allowed_read_query",
+		WorkflowDecision:        "single_turn",
+		WorkflowInterruptReason: "new_read_query",
+		ResolvedSlotsJSON:       `{"date":"2026-06-06","section":2}`,
+		EntityResolutionStatus:  "resolved",
+		PrePolicyResult:         "allow",
+		ResourcePolicyResult:    "allow",
+		BlockedReason:           "missing_scope",
+		WriteGuardResult:        "not_required",
+		IdempotencyKey:          "idem-1",
+		ExecutorStatus:          "success",
+		RendererName:            "response_renderer",
+		FailureLayer:            "",
+		LegacyCalled:            false,
+		ReplayCaseID:            "replay-1",
 		WorkflowIDBefore:        "wf-before",
 		WorkflowIDAfter:         "wf-after",
 		WorkflowStateBefore:     "collect_scope",
@@ -481,6 +501,51 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	if row.ProtocolCandidateCount != 2 {
 		t.Fatalf("ProtocolCandidateCount = %d, want 2", row.ProtocolCandidateCount)
 	}
+	if row.RequestID != "req-v2-1" {
+		t.Fatalf("RequestID = %q, want req-v2-1", row.RequestID)
+	}
+	if row.ConversationID != "conv-v2-1" {
+		t.Fatalf("ConversationID = %q, want conv-v2-1", row.ConversationID)
+	}
+	if row.CompilerStatus != "ok" || row.CompilerLatencyMs != 11 {
+		t.Fatalf("compiler fields = %q/%d, want ok/11", row.CompilerStatus, row.CompilerLatencyMs)
+	}
+	if strings.Contains(row.IntentDraftJSON, "13812345678") {
+		t.Fatalf("IntentDraftJSON was not sanitized: %q", row.IntentDraftJSON)
+	}
+	if row.CatalogValidationCode != "allowed_read_query" {
+		t.Fatalf("CatalogValidationCode = %q, want allowed_read_query", row.CatalogValidationCode)
+	}
+	if row.WorkflowDecision != "single_turn" || row.WorkflowInterruptReason != "new_read_query" {
+		t.Fatalf("workflow v2 fields = %q/%q, want single_turn/new_read_query", row.WorkflowDecision, row.WorkflowInterruptReason)
+	}
+	if row.ResolvedSlotsJSON != `{"date":"2026-06-06","section":2}` {
+		t.Fatalf("ResolvedSlotsJSON = %q, want compact resolved slot JSON", row.ResolvedSlotsJSON)
+	}
+	if row.EntityResolutionStatus != "resolved" {
+		t.Fatalf("EntityResolutionStatus = %q, want resolved", row.EntityResolutionStatus)
+	}
+	if row.PrePolicyResult != "allow" || row.ResourcePolicyResult != "allow" {
+		t.Fatalf("policy fields = %q/%q, want allow/allow", row.PrePolicyResult, row.ResourcePolicyResult)
+	}
+	if row.BlockedReason != "missing_scope" {
+		t.Fatalf("BlockedReason = %q, want missing_scope", row.BlockedReason)
+	}
+	if row.WriteGuardResult != "not_required" || row.IdempotencyKey != "idem-1" {
+		t.Fatalf("write guard fields = %q/%q, want not_required/idem-1", row.WriteGuardResult, row.IdempotencyKey)
+	}
+	if row.ExecutorStatus != "success" || row.RendererName != "response_renderer" {
+		t.Fatalf("executor/renderer fields = %q/%q, want success/response_renderer", row.ExecutorStatus, row.RendererName)
+	}
+	if row.FailureLayer != "" {
+		t.Fatalf("FailureLayer = %q, want empty success layer", row.FailureLayer)
+	}
+	if row.LegacyCalled {
+		t.Fatalf("LegacyCalled = true, want false")
+	}
+	if row.ReplayCaseID != "replay-1" {
+		t.Fatalf("ReplayCaseID = %q, want replay-1", row.ReplayCaseID)
+	}
 	if row.WorkflowIDBefore != "wf-before" {
 		t.Fatalf("WorkflowIDBefore = %q, want wf-before", row.WorkflowIDBefore)
 	}
@@ -528,6 +593,37 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	}
 	if row.KnowledgeDocTypes != "rule,overview" {
 		t.Fatalf("KnowledgeDocTypes = %q, want rule,overview", row.KnowledgeDocTypes)
+	}
+}
+
+func TestCallLogAdapterBoundsAndSanitizesV2JSONFields(t *testing.T) {
+	db := newCallLogTestDB(t)
+	adapter := &callLogAdapter{db: db}
+
+	raw := `{"message":"` + strings.Repeat("x", 5000) + `","phone":"13812345678","email":"alice@example.com"}`
+	adapter.Write(context.Background(), agenttool.CallLog{
+		TenantID:          1,
+		UserID:            7,
+		ProtocolMode:      "protocol_live",
+		IntentDraftJSON:   raw,
+		ResolvedSlotsJSON: raw,
+		Status:            "success",
+	})
+
+	var row model.AgentCallLog
+	if err := db.First(&row).Error; err != nil {
+		t.Fatalf("query call log: %v", err)
+	}
+	for name, value := range map[string]string{
+		"IntentDraftJSON":   row.IntentDraftJSON,
+		"ResolvedSlotsJSON": row.ResolvedSlotsJSON,
+	} {
+		if len([]rune(value)) > 4000 {
+			t.Fatalf("%s length = %d, want <= 4000", name, len([]rune(value)))
+		}
+		if strings.Contains(value, "13812345678") || strings.Contains(value, "alice@example.com") {
+			t.Fatalf("%s was not sanitized: %q", name, value)
+		}
 	}
 }
 

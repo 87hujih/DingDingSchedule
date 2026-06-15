@@ -20,6 +20,9 @@ type reactLoopResult struct {
 // toolCallHook is called for each tool invocation during the ReAct loop.
 type toolCallHook func(toolName string, args string)
 
+// legacy-only: runReactLoop executes the old LLM tool loop outside protocol_live.
+// It must not be called by protocol_live, which uses OperationExecutor instead of tools.Registry.
+//
 // runReactLoop executes the shared ReAct loop: LLM call -> tool dispatch -> append messages -> repeat.
 // It returns the final reply, the list of tools called, and the total LLM duration.
 // The optional onToolCall hook is invoked before each tool dispatch (pass nil to skip).

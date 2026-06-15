@@ -259,6 +259,8 @@ func newCaseScopedObserver(factory evalRunnerFactory, corpID, senderID, senderNa
 			ProtocolOperation:     callLog.ProtocolOperation,
 			ResponseKind:          callLog.ResponseKind,
 			ProtocolBlockedReason: callLog.ProtocolBlockedReason,
+			FailureLayer:          callLog.FailureLayer,
+			LegacyCalled:          callLog.LegacyCalled,
 		}, nil
 	}
 }
@@ -615,13 +617,15 @@ func printFailures(results []agent.EvalCaseResult) {
 			fmt.Printf(" | tools=%t actual=%v", result.ToolsMatched, result.ActualTools)
 		}
 		if result.ProtocolChecked {
-			fmt.Printf(" | protocol=%t act=%s domain=%s operation=%s response=%s blocked=%s",
+			fmt.Printf(" | protocol=%t act=%s domain=%s operation=%s response=%s blocked=%s failure_layer=%s legacy_called=%t",
 				result.ProtocolMatched,
 				result.ProtocolAct,
 				result.ProtocolDomain,
 				result.ProtocolOperation,
 				result.ResponseKind,
 				result.ProtocolBlockedReason,
+				result.FailureLayer,
+				result.LegacyCalled,
 			)
 		}
 		if result.KeywordsChecked {

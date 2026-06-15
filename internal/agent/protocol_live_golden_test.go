@@ -56,6 +56,7 @@ func TestProtocolLiveGoldenHelpDoesNotCallBusinessTools(t *testing.T) {
 	if log.ProtocolOperation != "system.describe_capability" || log.ExecutorName != "operation_executor" {
 		t.Fatalf("log operation=%q executor=%q, want help through operation executor", log.ProtocolOperation, log.ExecutorName)
 	}
+	assertProtocolLiveGoldenCallLog(t, log)
 
 	if attendance.signCalls != 0 {
 		t.Fatalf("SignForUsersBySlot calls = %d, want 0", attendance.signCalls)
@@ -113,6 +114,7 @@ func TestProtocolLiveGoldenRuleExplainUsesKnowledgeOnly(t *testing.T) {
 	if log.ExecutorName != "operation_executor" || log.ToolPool != "operation" {
 		t.Fatalf("executor=%q toolPool=%q, want operation executor", log.ExecutorName, log.ToolPool)
 	}
+	assertProtocolLiveGoldenCallLog(t, log)
 	if log.RetrievalHitCount != 1 {
 		t.Fatalf("RetrievalHitCount = %d, want 1", log.RetrievalHitCount)
 	}
@@ -166,6 +168,24 @@ func TestProtocolLiveGoldenMyScheduleUsesOperationExecutor(t *testing.T) {
 	}
 	if log.ProtocolOperation != "schedule.query_my_schedule" || log.ExecutorName != "operation_executor" {
 		t.Fatalf("operation=%q executor=%q, want schedule operation executor", log.ProtocolOperation, log.ExecutorName)
+	}
+	assertProtocolLiveGoldenCallLog(t, log)
+}
+
+func assertProtocolLiveGoldenCallLog(t *testing.T, log agenttools.CallLog) {
+	t.Helper()
+
+	if log.RequestID == "" {
+		t.Fatalf("RequestID is empty in protocol_live call log: %+v", log)
+	}
+	if log.LegacyCalled {
+		t.Fatalf("LegacyCalled = true, want false for protocol_live golden case: %+v", log)
+	}
+	if log.FailureLayer != "" {
+		t.Fatalf("FailureLayer = %q, want empty for successful golden case", log.FailureLayer)
+	}
+	if log.RendererName != "response_renderer" {
+		t.Fatalf("RendererName = %q, want response_renderer", log.RendererName)
 	}
 }
 

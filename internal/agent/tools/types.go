@@ -284,6 +284,26 @@ type CallLog struct {
 	ProtocolBlockedReason   string
 	ProtocolResolvedSlots   string
 	ProtocolCandidateCount  int
+	RequestID               string
+	ConversationID          string
+	CompilerStatus          string
+	CompilerLatencyMs       int64
+	IntentDraftJSON         string
+	CatalogValidationCode   string
+	WorkflowDecision        string
+	WorkflowInterruptReason string
+	ResolvedSlotsJSON       string
+	EntityResolutionStatus  string
+	PrePolicyResult         string
+	ResourcePolicyResult    string
+	BlockedReason           string
+	WriteGuardResult        string
+	IdempotencyKey          string
+	ExecutorStatus          string
+	RendererName            string
+	FailureLayer            string
+	LegacyCalled            bool
+	ReplayCaseID            string
 	WorkflowIDBefore        string
 	WorkflowIDAfter         string
 	WorkflowStateBefore     string

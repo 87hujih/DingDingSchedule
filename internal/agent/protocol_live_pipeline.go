@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"schedule_server/internal/agent/tools"
@@ -36,18 +38,170 @@ type protocolLiveInput struct {
 }
 
 type protocolLiveOutcome struct {
-	Draft            ProtocolDraft
-	Validation       ProtocolValidationResult
-	Response         ResponseModel
-	ExecutionMetrics OperationExecutionMetrics
-	AnswerMode       answerMode
-	BlockedReason    string
-	ResolvedSlots    map[string]any
-	CandidateCount   int
-	IdempotencyKey   string
-	WorkflowDecision WorkflowDecision
-	WorkflowAfter    *WorkflowSnapshot
-	ClearWorkflow    bool
+	RequestID               string
+	Draft                   ProtocolDraft
+	Validation              ProtocolValidationResult
+	Response                ResponseModel
+	ExecutionMetrics        OperationExecutionMetrics
+	AnswerMode              answerMode
+	BlockedReason           string
+	CompilerStatus          string
+	CompilerLatencyMs       int64
+	IntentDraftJSON         string
+	CatalogValidationCode   string
+	ResolvedSlots           map[string]any
+	CandidateCount          int
+	IdempotencyKey          string
+	EntityResolutionStatus  string
+	PrePolicyResult         string
+	ResourcePolicyResult    string
+	WriteGuardResult        string
+	ExecutorStatus          string
+	RendererName            string
+	FailureLayer            FailureLayer
+	LegacyCalled            bool
+	WorkflowDecision        WorkflowDecision
+	WorkflowInterruptReason string
+	WorkflowAfter           *WorkflowSnapshot
+	ClearWorkflow           bool
+}
+
+var protocolLiveRequestSeq uint64
+
+func newProtocolLiveRequestID(now time.Time) string {
+	seq := atomic.AddUint64(&protocolLiveRequestSeq, 1)
+	if now.IsZero() {
+		now = time.Now()
+	}
+	return fmt.Sprintf("plive-%d-%d", now.UnixNano(), seq)
+}
+
+func finalizeProtocolLiveOutcome(outcome *protocolLiveOutcome) {
+	if outcome == nil {
+		return
+	}
+	if outcome.RequestID == "" {
+		outcome.RequestID = newProtocolLiveRequestID(time.Now())
+	}
+	if outcome.RendererName == "" {
+		outcome.RendererName = "response_renderer"
+	}
+	if outcome.CatalogValidationCode == "" {
+		outcome.CatalogValidationCode = outcome.Validation.ValidationCode
+	}
+	if outcome.PrePolicyResult == "" {
+		outcome.PrePolicyResult = protocolPrePolicyResult(outcome.Validation)
+	}
+	if outcome.BlockedReason == "" {
+		outcome.BlockedReason = protocolResponseBlockedReason(outcome.Response, outcome.Validation)
+	}
+	if outcome.EntityResolutionStatus == "" {
+		outcome.EntityResolutionStatus = protocolEntityResolutionStatus(*outcome)
+	}
+	if outcome.WriteGuardResult == "" {
+		outcome.WriteGuardResult = protocolWriteGuardResult(*outcome)
+	}
+	if outcome.ExecutorStatus == "" {
+		outcome.ExecutorStatus = protocolExecutorStatus(outcome.Response)
+	}
+	if outcome.FailureLayer == "" {
+		outcome.FailureLayer = inferFailureLayer(*outcome)
+	}
+}
+
+func compactIntentDraft(draft ProtocolDraft) string {
+	data, err := json.Marshal(draft)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func protocolPrePolicyResult(validation ProtocolValidationResult) string {
+	if validation.AllowExecution || validation.ResponseKind == ResponseAnswer || validation.UseActiveWorkflow {
+		return "allow"
+	}
+	if strings.TrimSpace(validation.ValidationCode) == "" {
+		return ""
+	}
+	return "deny:" + validation.ValidationCode
+}
+
+func protocolEntityResolutionStatus(outcome protocolLiveOutcome) string {
+	if len(outcome.ResolvedSlots) > 0 {
+		return string(ResolveResolved)
+	}
+	if outcome.Response.Kind == ResponseSelectOptions || outcome.CandidateCount > 0 {
+		return string(ResolveAmbiguous)
+	}
+	if strings.HasPrefix(outcome.BlockedReason, "missing_") {
+		return string(ResolveNotFound)
+	}
+	return ""
+}
+
+func protocolWriteGuardResult(outcome protocolLiveOutcome) string {
+	manifest, ok := lookupOperation(outcome.Draft.Operation)
+	if !ok {
+		return ""
+	}
+	if !manifest.IsWrite {
+		return "not_required"
+	}
+	if strings.TrimSpace(outcome.IdempotencyKey) != "" && outcome.FailureLayer != FailureWriteGuardBlocked {
+		return "allow"
+	}
+	if outcome.FailureLayer == FailureWriteGuardBlocked {
+		return "block:" + outcome.BlockedReason
+	}
+	return ""
+}
+
+func protocolExecutorStatus(response ResponseModel) string {
+	switch response.Kind {
+	case ResponseResult, ResponseAnswer, ResponseSelectOptions:
+		return "success"
+	case ResponseRefuse:
+		return "failed"
+	case ResponseClarify, ResponseConfirm:
+		return "skipped"
+	default:
+		return ""
+	}
+}
+
+func inferFailureLayer(outcome protocolLiveOutcome) FailureLayer {
+	if outcome.Response.Kind == ResponseResult || outcome.Response.Kind == ResponseAnswer {
+		return ""
+	}
+	reason := firstNonEmpty(outcome.BlockedReason, outcome.Validation.ValidationCode)
+	switch reason {
+	case "", "missing_scope", "subscription_missing_fields":
+		return ""
+	case "empty_message", "unknown_intent", "intent_parse_failed", "intent_timeout", "intent_compiler_unavailable":
+		return FailureIntent
+	case "operation_not_allowed", "act_operation_mismatch", "read_query_cannot_write", "write_request_cannot_read", "unsupported_act", "domain_operation_mismatch":
+		return FailureCatalog
+	case "workflow_missing", "workflow_operation_mismatch", "workflow_store_failed", "subscription_invalid_shape":
+		return FailureWorkflow
+	case "role_denied", "conversation_scope_denied":
+		return FailurePrePolicyDenied
+	case "subscription_conversation_mismatch", "schedule_user_visibility_denied", "department_scope_denied", "department_scope_unverified", "group_chat_required", "subscription_scope_invalid":
+		return FailureResourcePolicyDenied
+	case "write_confirmation_required", "idempotency_key_missing":
+		return FailureWriteGuardBlocked
+	default:
+		if strings.Contains(reason, "ambiguous") {
+			return FailureEntityAmbiguous
+		}
+		if strings.Contains(reason, "not_found") || strings.HasPrefix(reason, "missing_user") || strings.HasPrefix(reason, "missing_dept") {
+			return FailureEntityNotFound
+		}
+	}
+	if outcome.Response.Kind == ResponseRefuse {
+		return FailureExecutor
+	}
+	return ""
 }
 
 func newProtocolLivePipeline(deps protocolLivePipelineDeps) protocolLivePipeline {
@@ -82,24 +236,35 @@ func (p protocolLivePipeline) writeGuard() WriteGuard {
 	return newWriteGuard()
 }
 
-func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInput) protocolLiveOutcome {
+func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInput) (outcome protocolLiveOutcome) {
+	outcome.RequestID = newProtocolLiveRequestID(time.Now())
+	outcome.RendererName = "response_renderer"
+	defer finalizeProtocolLiveOutcome(&outcome)
+
 	receivedWorkflow := input.ActiveWorkflow
 	activeWorkflow := receivedWorkflow
 	if workflowExpired(activeWorkflow, p.now()) {
 		activeWorkflow = nil
 	}
 	workflowCtx := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
+	compileStart := time.Now()
 	draft, err := compileProtocolWithCompiler(ctx, protocolInput{
 		Message:        input.Message,
 		ActiveWorkflow: workflowCtx,
 	}, p.deps.Compiler)
+	outcome.CompilerLatencyMs = elapsedMs(compileStart)
+	outcome.CompilerStatus = "ok"
 	if err != nil {
 		reason := "intent_parse_failed"
 		if errors.Is(err, context.DeadlineExceeded) {
 			reason = "intent_timeout"
+			outcome.CompilerStatus = "timeout"
+		} else {
+			outcome.CompilerStatus = "error"
 		}
 		draft = unknownIntentDraft(reason)
 	}
+	outcome.IntentDraftJSON = compactIntentDraft(draft)
 
 	validation := p.prePolicyGate().Validate(PrePolicyGateInput{
 		Draft:            draft,
@@ -108,23 +273,25 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 		UserRole:         inputUserRole(input.User),
 		HasUserContext:   input.User != nil,
 	})
-	outcome := protocolLiveOutcome{
-		Draft:      draft,
-		Validation: validation,
-		AnswerMode: answerModeReject,
-	}
+	outcome.Draft = draft
+	outcome.Validation = validation
+	outcome.AnswerMode = answerModeReject
+	outcome.CatalogValidationCode = validation.ValidationCode
+	outcome.PrePolicyResult = protocolPrePolicyResult(validation)
 	arbiterDecision := newWorkflowArbiter(p.now).Decide(WorkflowArbiterInput{
 		Draft:          draft,
 		ActiveWorkflow: receivedWorkflow,
 	})
 	if arbiterDecision.Expired {
 		outcome.WorkflowDecision = arbiterDecision.Decision
+		outcome.WorkflowInterruptReason = "expired"
 		outcome.ClearWorkflow = true
 	}
 
 	if validation.InterruptActiveWorkflow {
 		result := interruptActiveWorkflow(nil, "", activeWorkflow, draft)
 		outcome.WorkflowDecision = result.Decision
+		outcome.WorkflowInterruptReason = string(draft.Act)
 		outcome.ClearWorkflow = workflowResultTerminal(result)
 		activeWorkflow = nil
 	}
@@ -134,6 +301,8 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 		outcome.Validation.ResponseKind = ResponseRefuse
 		setProtocolOutcomeResponse(&outcome, response, answerModeReject)
 		outcome.BlockedReason = "role_denied"
+		outcome.PrePolicyResult = "deny:role_denied"
+		outcome.FailureLayer = FailurePrePolicyDenied
 		return outcome
 	}
 
@@ -340,6 +509,8 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 		Request: req,
 		Dept:    p.deps.Dept,
 	}); !resource.Allow {
+		outcome.ResourcePolicyResult = "deny:" + resource.BlockedReason
+		outcome.FailureLayer = FailureResourcePolicyDenied
 		kind := resource.ResponseKind
 		if kind == "" {
 			kind = ResponseRefuse
@@ -351,6 +522,7 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 		outcome.BlockedReason = resource.BlockedReason
 		return outcome
 	}
+	outcome.ResourcePolicyResult = "allow"
 	if manifest, ok := lookupOperation(req.Operation); ok && manifest.IsWrite {
 		guard := p.writeGuard().Check(WriteGuardInput{
 			User:     uctx,
@@ -361,6 +533,8 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 		outcome.IdempotencyKey = guard.IdempotencyKey
 		req.IdempotencyKey = guard.IdempotencyKey
 		if !guard.Allow {
+			outcome.WriteGuardResult = "block:" + guard.BlockedReason
+			outcome.FailureLayer = FailureWriteGuardBlocked
 			kind := guard.ResponseKind
 			if kind == "" {
 				kind = ResponseRefuse
@@ -372,6 +546,9 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 			outcome.BlockedReason = guard.BlockedReason
 			return outcome
 		}
+		outcome.WriteGuardResult = "allow"
+	} else if outcome.WriteGuardResult == "" {
+		outcome.WriteGuardResult = "not_required"
 	}
 	result := p.deps.Executor.Execute(ctx, req)
 	setProtocolOutcomeResponse(&outcome, result.Response, result.Metrics.AnswerMode)
@@ -379,6 +556,7 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 		outcome.ResolvedSlots = mergeProtocolResolvedSlots(outcome.ResolvedSlots, protocolResolvedSlotsFromParams(req.TrustedParams))
 	}
 	outcome.ExecutionMetrics = result.Metrics
+	outcome.ExecutorStatus = protocolExecutorStatus(result.Response)
 	return outcome
 }
 
