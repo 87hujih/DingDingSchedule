@@ -2131,8 +2131,8 @@ func TestSubscriptionWorkflowRefusesOrdinaryUserStartInProtocolLive(t *testing.T
 	if log.ExecutionAllowed {
 		t.Fatalf("ExecutionAllowed = true, want false")
 	}
-	if log.ProtocolValidationCode != "allowed_write_request" {
-		t.Fatalf("ProtocolValidationCode = %q, want allowed_write_request", log.ProtocolValidationCode)
+	if log.ProtocolValidationCode != "role_denied" {
+		t.Fatalf("ProtocolValidationCode = %q, want role_denied", log.ProtocolValidationCode)
 	}
 	if log.ProtocolBlockedReason != "role_denied" {
 		t.Fatalf("ProtocolBlockedReason = %q, want role_denied", log.ProtocolBlockedReason)
@@ -2547,8 +2547,8 @@ func TestSubscriptionWorkflowRefusesOrdinaryUserCancelInProtocolLive(t *testing.
 	if log.ExecutionAllowed {
 		t.Fatalf("ExecutionAllowed = true, want false")
 	}
-	if log.ProtocolValidationCode != "allowed_write_request" {
-		t.Fatalf("ProtocolValidationCode = %q, want allowed_write_request", log.ProtocolValidationCode)
+	if log.ProtocolValidationCode != "role_denied" {
+		t.Fatalf("ProtocolValidationCode = %q, want role_denied", log.ProtocolValidationCode)
 	}
 	if log.ProtocolBlockedReason != "role_denied" {
 		t.Fatalf("ProtocolBlockedReason = %q, want role_denied", log.ProtocolBlockedReason)

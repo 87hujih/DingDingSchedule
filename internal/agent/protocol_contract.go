@@ -39,6 +39,7 @@ const (
 	ResponseClarify       ResponseKind = "clarify"
 	ResponseSelectOptions ResponseKind = "select_options"
 	ResponseRefuse        ResponseKind = "refuse"
+	ResponseConfirm       ResponseKind = "confirm"
 )
 
 type SlotDraft struct {
@@ -85,8 +86,12 @@ type TrustedParam struct {
 }
 
 type OperationRequest struct {
-	Operation     string
-	TrustedParams map[string]TrustedParam
+	Operation      string
+	TenantID       uint
+	ActorUserID    uint
+	ConversationID string
+	TrustedParams  map[string]TrustedParam
+	IdempotencyKey string
 }
 
 // protocolModes handles protocol modes.
@@ -117,5 +122,6 @@ func responseKinds() []ResponseKind {
 		ResponseClarify,
 		ResponseSelectOptions,
 		ResponseRefuse,
+		ResponseConfirm,
 	}
 }

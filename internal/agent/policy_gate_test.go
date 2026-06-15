@@ -57,6 +57,81 @@ func TestCatalogValidatorRejectsOperationOutsideCatalog(t *testing.T) {
 	}
 }
 
+func TestPrePolicyGateEnforcesConversationScopeBeforeResolution(t *testing.T) {
+	t.Parallel()
+
+	result := newPrePolicyGate().Validate(PrePolicyGateInput{
+		Draft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.96,
+		},
+		ConversationType: "1",
+		UserRole:         1,
+		HasUserContext:   true,
+	})
+
+	if result.AllowExecution {
+		t.Fatalf("AllowExecution = true, want false")
+	}
+	if result.ValidationCode != "conversation_scope_denied" {
+		t.Fatalf("ValidationCode = %q, want conversation_scope_denied", result.ValidationCode)
+	}
+	if result.ResponseKind != ResponseRefuse {
+		t.Fatalf("ResponseKind = %q, want %q", result.ResponseKind, ResponseRefuse)
+	}
+}
+
+func TestPrePolicyGateEnforcesMinRoleBeforeResolution(t *testing.T) {
+	t.Parallel()
+
+	result := newPrePolicyGate().Validate(PrePolicyGateInput{
+		Draft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.cancel",
+			Confidence: 0.96,
+		},
+		ConversationType: "2",
+		UserRole:         0,
+		HasUserContext:   true,
+	})
+
+	if result.AllowExecution {
+		t.Fatalf("AllowExecution = true, want false")
+	}
+	if result.ValidationCode != "role_denied" {
+		t.Fatalf("ValidationCode = %q, want role_denied", result.ValidationCode)
+	}
+	if result.ResponseKind != ResponseRefuse {
+		t.Fatalf("ResponseKind = %q, want %q", result.ResponseKind, ResponseRefuse)
+	}
+}
+
+func TestPrePolicyGateAllowsGroupAdminSubscriptionWrite(t *testing.T) {
+	t.Parallel()
+
+	result := newPrePolicyGate().Validate(PrePolicyGateInput{
+		Draft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.cancel",
+			Confidence: 0.96,
+		},
+		ConversationType: "2",
+		UserRole:         1,
+		HasUserContext:   true,
+	})
+
+	if !result.AllowExecution {
+		t.Fatalf("AllowExecution = false, want true: %+v", result)
+	}
+	if result.ValidationCode != "allowed_write_request" {
+		t.Fatalf("ValidationCode = %q, want allowed_write_request", result.ValidationCode)
+	}
+}
+
 func TestCatalogValidatorUsesManifestRendererKind(t *testing.T) {
 	t.Parallel()
 

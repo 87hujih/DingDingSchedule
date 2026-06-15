@@ -146,13 +146,25 @@ func TestResponseRendererSanitizesAllFreeTextChannels(t *testing.T) {
 	}
 }
 
-func TestResponseModelHasNoConfirmOrInternalErrorFields(t *testing.T) {
+func TestRenderProtocolResponseConfirmUsesPlainText(t *testing.T) {
+	t.Parallel()
+
+	reply := renderProtocolResponse(ResponseModel{
+		Kind:    ResponseConfirm,
+		Message: "请确认是否执行该写操作。",
+	})
+	if !strings.Contains(reply, "请确认") {
+		t.Fatalf("reply = %q, want confirmation prompt", reply)
+	}
+	if strings.Contains(reply, "**") || strings.Contains(reply, "|") {
+		t.Fatalf("reply = %q, should stay plain text", reply)
+	}
+}
+
+func TestResponseModelHasNoInternalErrorField(t *testing.T) {
 	t.Parallel()
 
 	modelType := reflect.TypeOf(ResponseModel{})
-	if _, ok := modelType.FieldByName("ConfirmText"); ok {
-		t.Fatalf("ResponseModel should not expose ConfirmText")
-	}
 	if _, ok := modelType.FieldByName("InternalError"); ok {
 		t.Fatalf("ResponseModel should not expose InternalError")
 	}

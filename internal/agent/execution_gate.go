@@ -1,6 +1,15 @@
 package agent
 
-import "time"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"schedule_server/internal/agent/tools"
+)
 
 type trustedEntities struct {
 	TenantID       uint
@@ -16,6 +25,166 @@ type trustedEntities struct {
 	QueryShape     string
 	UserRole       int
 	TrustedParams  map[string]TrustedParam
+}
+
+type WriteGuard interface {
+	Check(input WriteGuardInput) WriteGuardResult
+}
+
+type WriteGuardInput struct {
+	User      *tools.UserContext
+	Manifest  OperationManifest
+	Request   OperationRequest
+	Workflow  *WorkflowSnapshot
+	Confirmed bool
+}
+
+type WriteGuardResult struct {
+	Allow          bool
+	ResponseKind   ResponseKind
+	BlockedReason  string
+	IdempotencyKey string
+}
+
+type writeGuard struct{}
+
+func newWriteGuard() WriteGuard {
+	return writeGuard{}
+}
+
+func (writeGuard) Check(input WriteGuardInput) WriteGuardResult {
+	manifest, ok := writeGuardManifest(input)
+	if !ok {
+		return WriteGuardResult{ResponseKind: ResponseRefuse, BlockedReason: "operation_not_allowed"}
+	}
+	if !manifest.IsWrite {
+		return WriteGuardResult{Allow: true, ResponseKind: manifestResponseKind(manifest)}
+	}
+	if writeRequiresConfirmation(manifest.Risk) && !input.Confirmed {
+		return WriteGuardResult{
+			ResponseKind:   ResponseConfirm,
+			BlockedReason:  "write_confirmation_required",
+			IdempotencyKey: buildIdempotencyKey(manifest, input),
+		}
+	}
+	key := buildIdempotencyKey(manifest, input)
+	if key == "" {
+		return WriteGuardResult{ResponseKind: ResponseRefuse, BlockedReason: "idempotency_key_missing"}
+	}
+	return WriteGuardResult{
+		Allow:          true,
+		ResponseKind:   manifestResponseKind(manifest),
+		IdempotencyKey: key,
+	}
+}
+
+func writeGuardManifest(input WriteGuardInput) (OperationManifest, bool) {
+	if input.Manifest.Name != "" {
+		return input.Manifest, true
+	}
+	return lookupOperation(input.Request.Operation)
+}
+
+func writeRequiresConfirmation(risk RiskLevel) bool {
+	return risk == RiskWriteMedium || risk == RiskWriteHigh
+}
+
+func manifestResponseKind(manifest OperationManifest) ResponseKind {
+	if manifest.Renderer.Kind != "" {
+		return manifest.Renderer.Kind
+	}
+	return ResponseResult
+}
+
+func buildIdempotencyKey(manifest OperationManifest, input WriteGuardInput) string {
+	if len(manifest.Idempotency.KeyFields) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(manifest.Idempotency.KeyFields))
+	for _, field := range manifest.Idempotency.KeyFields {
+		value, ok := idempotencyFieldValue(field, input)
+		if !ok {
+			return ""
+		}
+		parts = append(parts, field+"="+value)
+	}
+	raw := strings.Join(parts, "|")
+	sum := sha256.Sum256([]byte(raw))
+	encoded := hex.EncodeToString(sum[:])
+	return fmt.Sprintf("%s:%s", manifest.Name, encoded[:16])
+}
+
+func idempotencyFieldValue(field string, input WriteGuardInput) (string, bool) {
+	switch field {
+	case "tenant_id":
+		if input.Request.TenantID != 0 {
+			return fmt.Sprint(input.Request.TenantID), true
+		}
+		if input.User != nil && input.User.TenantID != 0 {
+			return fmt.Sprint(input.User.TenantID), true
+		}
+	case "actor_user_id":
+		if input.Request.ActorUserID != 0 {
+			return fmt.Sprint(input.Request.ActorUserID), true
+		}
+		if input.User != nil && input.User.UserID != 0 {
+			return fmt.Sprint(input.User.UserID), true
+		}
+	case "conversation_id":
+		if strings.TrimSpace(input.Request.ConversationID) != "" {
+			return strings.TrimSpace(input.Request.ConversationID), true
+		}
+		if value, ok := extractParamString(input.Request.TrustedParams, "conversation_id"); ok {
+			return value, true
+		}
+		if input.User != nil && strings.TrimSpace(input.User.ConversationID) != "" {
+			return strings.TrimSpace(input.User.ConversationID), true
+		}
+	case "operation":
+		if strings.TrimSpace(input.Request.Operation) != "" {
+			return strings.TrimSpace(input.Request.Operation), true
+		}
+	case "workflow_id":
+		if input.Workflow != nil && strings.TrimSpace(input.Workflow.ID) != "" {
+			return strings.TrimSpace(input.Workflow.ID), true
+		}
+	case "dept_ids":
+		value, ok := trustedParamConcreteValue(input.Request.TrustedParams, field)
+		if !ok {
+			return "none", true
+		}
+		return canonicalIdempotencyValue(value), true
+	default:
+		value, ok := trustedParamConcreteValue(input.Request.TrustedParams, field)
+		if !ok {
+			return "", false
+		}
+		return canonicalIdempotencyValue(value), true
+	}
+	return "", false
+}
+
+func canonicalIdempotencyValue(value any) string {
+	switch typed := value.(type) {
+	case []int64:
+		values := append([]int64(nil), typed...)
+		sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+		parts := make([]string, 0, len(values))
+		for _, item := range values {
+			parts = append(parts, fmt.Sprint(item))
+		}
+		return strings.Join(parts, ",")
+	case []int:
+		values := append([]int(nil), typed...)
+		sort.Ints(values)
+		parts := make([]string, 0, len(values))
+		for _, item := range values {
+			parts = append(parts, fmt.Sprint(item))
+		}
+		return strings.Join(parts, ",")
+	default:
+		return fmt.Sprint(value)
+	}
 }
 
 // buildOperationRequest builds an operation request from validated trusted entities.

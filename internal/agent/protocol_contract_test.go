@@ -27,12 +27,12 @@ func TestNormalizeProtocolModeDefaultsInvalidValueToLegacy(t *testing.T) {
 	}
 }
 
-func TestResponseKindsExcludeConfirm(t *testing.T) {
+func TestResponseKindsIncludeConfirm(t *testing.T) {
 	t.Parallel()
 
 	kinds := responseKinds()
-	if containsResponseKind(kinds, ResponseKind("confirm")) {
-		t.Fatalf("response kinds must not include confirm: %v", kinds)
+	if !containsResponseKind(kinds, ResponseConfirm) {
+		t.Fatalf("response kinds must include confirm: %v", kinds)
 	}
 	want := []ResponseKind{
 		ResponseAnswer,
@@ -40,6 +40,7 @@ func TestResponseKindsExcludeConfirm(t *testing.T) {
 		ResponseClarify,
 		ResponseSelectOptions,
 		ResponseRefuse,
+		ResponseConfirm,
 	}
 	if !reflect.DeepEqual(kinds, want) {
 		t.Fatalf("responseKinds() = %v, want %v", kinds, want)

@@ -14,6 +14,9 @@ import (
 type protocolLivePipelineDeps struct {
 	Compiler       IntentCompiler
 	Validator      CatalogValidator
+	PrePolicy      PrePolicyGate
+	ResourcePolicy ResourcePolicyGate
+	WriteGuard     WriteGuard
 	Executor       operationExecutor
 	User           UserPort
 	Dept           DeptPort
@@ -41,6 +44,7 @@ type protocolLiveOutcome struct {
 	BlockedReason    string
 	ResolvedSlots    map[string]any
 	CandidateCount   int
+	IdempotencyKey   string
 	WorkflowDecision WorkflowDecision
 	WorkflowAfter    *WorkflowSnapshot
 	ClearWorkflow    bool
@@ -55,6 +59,27 @@ func (p protocolLivePipeline) catalogValidator() CatalogValidator {
 		return p.deps.Validator
 	}
 	return newCatalogValidator()
+}
+
+func (p protocolLivePipeline) prePolicyGate() PrePolicyGate {
+	if p.deps.PrePolicy != nil {
+		return p.deps.PrePolicy
+	}
+	return newPrePolicyGate()
+}
+
+func (p protocolLivePipeline) resourcePolicyGate() ResourcePolicyGate {
+	if p.deps.ResourcePolicy != nil {
+		return p.deps.ResourcePolicy
+	}
+	return newResourcePolicyGate()
+}
+
+func (p protocolLivePipeline) writeGuard() WriteGuard {
+	if p.deps.WriteGuard != nil {
+		return p.deps.WriteGuard
+	}
+	return newWriteGuard()
 }
 
 func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInput) protocolLiveOutcome {
@@ -76,7 +101,13 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 		draft = unknownIntentDraft(reason)
 	}
 
-	validation := p.catalogValidator().Validate(draft, workflowCtx)
+	validation := p.prePolicyGate().Validate(PrePolicyGateInput{
+		Draft:            draft,
+		ActiveWorkflow:   workflowCtx,
+		ConversationType: userConversationType(input.User),
+		UserRole:         inputUserRole(input.User),
+		HasUserContext:   input.User != nil,
+	})
 	outcome := protocolLiveOutcome{
 		Draft:      draft,
 		Validation: validation,
@@ -134,7 +165,10 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 		return p.handleSubscription(ctx, input, draft, activeWorkflow, outcome)
 	case "subscription.query_status", "subscription.cancel":
 		req := OperationRequest{
-			Operation: draft.Operation,
+			Operation:      draft.Operation,
+			TenantID:       userTenantID(input.User),
+			ActorUserID:    userActorUserID(input.User),
+			ConversationID: userConversationID(input.User),
 			TrustedParams: trustedParamsFromValues(userTenantID(input.User), TrustedParamSource{
 				Kind:     TrustedParamSourceRuntime,
 				Resolver: "conversation_runtime",
@@ -275,9 +309,13 @@ func (p protocolLivePipeline) continueSubscription(ctx context.Context, input pr
 			return outcome
 		}
 		deptIDs := subscriptionDeptIDsFromTrusted(result.Workflow.Trusted)
+		outcome.WorkflowAfter = result.Workflow
 		executed := p.execute(ctx, input.User, OperationRequest{
-			Operation:     "subscription.start",
-			TrustedParams: subscriptionStartTrustedParams(input.User, result.Workflow.Trusted, deptIDs),
+			Operation:      "subscription.start",
+			TenantID:       userTenantID(input.User),
+			ActorUserID:    userActorUserID(input.User),
+			ConversationID: userConversationID(input.User),
+			TrustedParams:  subscriptionStartTrustedParams(input.User, result.Workflow.Trusted, deptIDs),
 		}, outcome)
 		if executed.Response.Kind == ResponseResult {
 			completed := completeWorkflow(*result.Workflow)
@@ -296,6 +334,45 @@ func (p protocolLivePipeline) continueSubscription(ctx context.Context, input pr
 }
 
 func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserContext, req OperationRequest, outcome protocolLiveOutcome) protocolLiveOutcome {
+	req = enrichOperationRequestFromUser(req, uctx)
+	if resource := p.resourcePolicyGate().Validate(ctx, ResourcePolicyGateInput{
+		User:    uctx,
+		Request: req,
+		Dept:    p.deps.Dept,
+	}); !resource.Allow {
+		kind := resource.ResponseKind
+		if kind == "" {
+			kind = ResponseRefuse
+		}
+		setProtocolOutcomeResponse(&outcome, ResponseModel{
+			Kind:          kind,
+			RefusalReason: resourceRefusalText(resource.BlockedReason),
+		}, answerModeReject)
+		outcome.BlockedReason = resource.BlockedReason
+		return outcome
+	}
+	if manifest, ok := lookupOperation(req.Operation); ok && manifest.IsWrite {
+		guard := p.writeGuard().Check(WriteGuardInput{
+			User:     uctx,
+			Manifest: manifest,
+			Request:  req,
+			Workflow: outcome.WorkflowAfter,
+		})
+		outcome.IdempotencyKey = guard.IdempotencyKey
+		req.IdempotencyKey = guard.IdempotencyKey
+		if !guard.Allow {
+			kind := guard.ResponseKind
+			if kind == "" {
+				kind = ResponseRefuse
+			}
+			setProtocolOutcomeResponse(&outcome, ResponseModel{
+				Kind:    kind,
+				Message: writeGuardResponseText(guard.BlockedReason),
+			}, answerModeReject)
+			outcome.BlockedReason = guard.BlockedReason
+			return outcome
+		}
+	}
 	result := p.deps.Executor.Execute(ctx, uctx, req)
 	setProtocolOutcomeResponse(&outcome, result.Response, result.Metrics.AnswerMode)
 	if len(req.TrustedParams) > 0 {
@@ -303,6 +380,50 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 	}
 	outcome.ExecutionMetrics = result.Metrics
 	return outcome
+}
+
+func enrichOperationRequestFromUser(req OperationRequest, uctx *tools.UserContext) OperationRequest {
+	if uctx == nil {
+		return req
+	}
+	if req.TenantID == 0 {
+		req.TenantID = uctx.TenantID
+	}
+	if req.ActorUserID == 0 {
+		req.ActorUserID = uctx.UserID
+	}
+	if strings.TrimSpace(req.ConversationID) == "" {
+		if value, ok := extractParamString(req.TrustedParams, "conversation_id"); ok {
+			req.ConversationID = value
+		} else {
+			req.ConversationID = strings.TrimSpace(uctx.ConversationID)
+		}
+	}
+	return req
+}
+
+func resourceRefusalText(reason string) string {
+	switch reason {
+	case "subscription_conversation_mismatch":
+		return "只能操作当前群聊的考勤订阅。请在对应群聊里再告诉我。"
+	case "schedule_user_visibility_denied":
+		return "抱歉，你当前不能查看该用户的课表。"
+	case "department_scope_denied":
+		return "只能选择当前租户可访问的部门。请重新选择部门。"
+	case "group_chat_required":
+		return "该操作只能在群聊中使用。请在对应群聊里再告诉我。"
+	default:
+		return "抱歉，我当前不能直接执行这个请求。"
+	}
+}
+
+func writeGuardResponseText(reason string) string {
+	switch reason {
+	case "write_confirmation_required":
+		return "请确认是否执行该写操作。"
+	default:
+		return "抱歉，我当前不能直接执行这个请求。"
+	}
 }
 
 func setProtocolOutcomeResponse(outcome *protocolLiveOutcome, response ResponseModel, mode answerMode) {
@@ -822,7 +943,12 @@ func protocolLiveGuardrailResponse(draft ProtocolDraft, validation ProtocolValid
 		return ResponseModel{Kind: ResponseClarify, ClarifyReason: protocolUnknownIntentReasonCode(draft)}, answerModeReject
 	default:
 		switch validation.ValidationCode {
-		case "operation_not_allowed", "act_operation_mismatch", "read_query_cannot_write", "unsupported_act", "domain_operation_mismatch", "workflow_operation_mismatch":
+		case "conversation_scope_denied":
+			if draft.Domain == DomainSubscription {
+				return ResponseModel{Kind: ResponseRefuse, RefusalReason: "群考勤订阅只能在群聊中使用。请在对应群聊里再告诉我。"}, answerModeReject
+			}
+			return ResponseModel{Kind: ResponseRefuse, RefusalReason: "抱歉，我当前不能直接执行这个请求。"}, answerModeReject
+		case "operation_not_allowed", "act_operation_mismatch", "read_query_cannot_write", "unsupported_act", "domain_operation_mismatch", "workflow_operation_mismatch", "role_denied":
 			return ResponseModel{Kind: ResponseRefuse, RefusalReason: "抱歉，我当前不能直接执行这个请求。"}, answerModeReject
 		case "low_confidence_write":
 			return ResponseModel{Kind: ResponseClarify, ClarifyReason: "unknown_intent"}, answerModeReject
@@ -886,6 +1012,20 @@ func userConversationID(uctx *tools.UserContext) string {
 		return ""
 	}
 	return uctx.ConversationID
+}
+
+func userConversationType(uctx *tools.UserContext) string {
+	if uctx == nil {
+		return ""
+	}
+	return uctx.ConversationType
+}
+
+func userActorUserID(uctx *tools.UserContext) uint {
+	if uctx == nil {
+		return 0
+	}
+	return uctx.UserID
 }
 
 func firstNonEmpty(values ...string) string {

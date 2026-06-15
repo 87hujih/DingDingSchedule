@@ -413,11 +413,73 @@ func TestProtocolLivePipelineRoleDeniedRequestInterruptsActiveWorkflow(t *testin
 	if outcome.WorkflowDecision != WorkflowInterrupted || !outcome.ClearWorkflow {
 		t.Fatalf("WorkflowDecision=%q ClearWorkflow=%v, want interrupted and clear", outcome.WorkflowDecision, outcome.ClearWorkflow)
 	}
-	if outcome.Validation.ValidationCode != "allowed_write_request" {
-		t.Fatalf("ValidationCode = %q, want allowed_write_request", outcome.Validation.ValidationCode)
+	if outcome.Validation.ValidationCode != "role_denied" {
+		t.Fatalf("ValidationCode = %q, want role_denied", outcome.Validation.ValidationCode)
 	}
 	if outcome.BlockedReason != "role_denied" {
 		t.Fatalf("BlockedReason = %q, want role_denied", outcome.BlockedReason)
+	}
+}
+
+func TestProtocolLivePipelineResourcePolicyDenialStopsBeforeExecutor(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.cancel",
+			Confidence: 0.96,
+		}},
+		Executor:       newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+		ResourcePolicy: pipelineDenyResourcePolicy{reason: "subscription_conversation_mismatch"},
+	})
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message: "取消本群考勤订阅",
+		User:    executorUserContext(),
+	})
+
+	if outcome.Response.Kind != ResponseRefuse {
+		t.Fatalf("Response = %+v, want refuse", outcome.Response)
+	}
+	if outcome.BlockedReason != "subscription_conversation_mismatch" {
+		t.Fatalf("BlockedReason = %q, want subscription_conversation_mismatch", outcome.BlockedReason)
+	}
+	if groupSub.unsubscribeCalls != 0 {
+		t.Fatalf("Unsubscribe calls = %d, want 0 when resource policy denies", groupSub.unsubscribeCalls)
+	}
+}
+
+func TestProtocolLivePipelineCarriesWriteGuardIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.cancel",
+			Confidence: 0.96,
+		}},
+		Executor:   newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+		WriteGuard: pipelineAllowWriteGuard{key: "idem-subscription-cancel"},
+	})
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message: "取消本群考勤订阅",
+		User:    executorUserContext(),
+	})
+
+	if outcome.Response.Kind != ResponseResult {
+		t.Fatalf("Response = %+v, want result", outcome.Response)
+	}
+	if outcome.IdempotencyKey != "idem-subscription-cancel" {
+		t.Fatalf("IdempotencyKey = %q, want fake write guard key", outcome.IdempotencyKey)
+	}
+	if groupSub.unsubscribeCalls != 1 {
+		t.Fatalf("Unsubscribe calls = %d, want 1", groupSub.unsubscribeCalls)
 	}
 }
 
@@ -826,4 +888,28 @@ func (p *pipelineSearchUserPort) FindByDingUserID(context.Context, string) (*too
 func (p *pipelineSearchUserPort) SearchByName(context.Context, string) ([]tools.UserInfo, error) {
 	p.searchCalls++
 	return append([]tools.UserInfo(nil), p.users...), nil
+}
+
+type pipelineDenyResourcePolicy struct {
+	reason string
+}
+
+func (p pipelineDenyResourcePolicy) Validate(context.Context, ResourcePolicyGateInput) ResourcePolicyGateResult {
+	return ResourcePolicyGateResult{
+		Allow:         false,
+		BlockedReason: p.reason,
+		ResponseKind:  ResponseRefuse,
+	}
+}
+
+type pipelineAllowWriteGuard struct {
+	key string
+}
+
+func (p pipelineAllowWriteGuard) Check(WriteGuardInput) WriteGuardResult {
+	return WriteGuardResult{
+		Allow:          true,
+		ResponseKind:   ResponseResult,
+		IdempotencyKey: p.key,
+	}
 }

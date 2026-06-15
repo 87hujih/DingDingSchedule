@@ -86,6 +86,11 @@ func renderProtocolResponse(model ResponseModel) string {
 			return text
 		}
 		return "抱歉，我当前不能直接执行这个请求。"
+	case ResponseConfirm:
+		if text := safeProtocolText(model.Message); text != "" {
+			return text
+		}
+		return "请确认是否执行该操作。"
 	default:
 		return "请再明确一下你的需求。"
 	}
