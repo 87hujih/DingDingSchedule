@@ -355,6 +355,15 @@ func canonicalTrustedParamValue(field string, value any) (any, bool) {
 	case "query_shape":
 		typed, ok := value.(string)
 		return typed, ok && typed != ""
+	case operationParamActorRole:
+		typed, ok := value.(int)
+		return typed, ok && typed >= 0
+	case operationParamConversationType:
+		typed, ok := value.(string)
+		return typed, ok && typed != ""
+	case operationParamConversationTitle:
+		typed, ok := value.(string)
+		return typed, ok
 	default:
 		return nil, false
 	}

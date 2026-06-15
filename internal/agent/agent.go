@@ -1463,7 +1463,7 @@ func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserCo
 }
 
 func (a *Agent) executeProtocolOperation(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, req OperationRequest) (bool, string, error) {
-	result := a.operationExecutor().Execute(ctx, uctx, req)
+	result := a.operationExecutor().Execute(ctx, enrichOperationRequestFromUser(req, uctx))
 	applyOperationExecutionMetrics(metrics, result)
 	reply := renderProtocolResponse(result.Response)
 	a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
@@ -1804,29 +1804,6 @@ func extractDateToken(message string) string {
 		}
 	}
 	return ""
-}
-
-// buildAttendanceStatusReply builds the plain-text reply for an attendance query result.
-func buildAttendanceStatusReply(result *tools.AttendanceResult) string {
-	if result == nil {
-		return "未查询到相关考勤数据。"
-	}
-
-	notArrivedLabel := "未到"
-	if result.ViewMode == "current" {
-		notArrivedLabel = "当前未到"
-	}
-
-	return fmt.Sprintf("%s第%d节考勤状态：应到%d人，正常%d人，迟到%d人，请假%d人，%s%d人。",
-		result.Date,
-		result.Section,
-		result.ShouldAttend,
-		result.OnTimeCount,
-		result.LateCount,
-		result.LeaveCount,
-		notArrivedLabel,
-		result.AbsentCount,
-	)
 }
 
 // buildManualSignCapabilityReply builds the capability-only reply for manual sign questions.
@@ -2186,10 +2163,10 @@ func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *too
 		if len(deptIDs) > 0 {
 			params["dept_ids"] = deptIDs
 		}
-		execResult := a.operationExecutor().Execute(ctx, uctx, OperationRequest{
+		execResult := a.operationExecutor().Execute(ctx, enrichOperationRequestFromUser(OperationRequest{
 			Operation:     "subscription.start",
 			TrustedParams: trustedParamsFromValues(userTenantID(uctx), TrustedParamSource{Kind: TrustedParamSourceWorkflow, Resolver: "subscription_workflow"}, params),
-		})
+		}, uctx))
 		applyOperationExecutionMetrics(metrics, execResult)
 		if execResult.Response.Kind == ResponseResult {
 			a.sessions.applyWorkflowResult(sessionKey, completeWorkflow(*result.Workflow))
@@ -2412,18 +2389,6 @@ func buildClarifyReply(plan clarifyPlan, toolResult string) (string, error) {
 	default:
 		return plan.FollowUpPrompt, nil
 	}
-}
-
-func buildSubscriptionStatusReply(info *tools.GroupSubInfo) string {
-	if info == nil || !info.Subscribed {
-		return "当前群还没有订阅考勤推送。"
-	}
-
-	reply := "当前群已订阅考勤推送。"
-	if len(info.DeptIDs) > 0 {
-		reply += "目前是按指定部门范围推送。"
-	}
-	return reply
 }
 
 // extractToolError extracts a structured tool error payload from a tool result.

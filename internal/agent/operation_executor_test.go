@@ -25,7 +25,7 @@ func TestOperationExecutorAttendanceSlotStatusUsesAttendancePort(t *testing.T) {
 	}
 	executor := newOperationExecutor(operationExecutorDeps{Attendance: attendance})
 
-	result := executor.Execute(context.Background(), executorUserContext(), OperationRequest{
+	result := executor.Execute(context.Background(), OperationRequest{
 		Operation: "attendance.query_status",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"query_shape": "slot_status",
@@ -47,8 +47,44 @@ func TestOperationExecutorAttendanceSlotStatusUsesAttendancePort(t *testing.T) {
 	if attendance.lastQuery.Date != "2026-06-06" || attendance.lastQuery.Week != 10 || attendance.lastQuery.Section != 2 {
 		t.Fatalf("lastQuery = %+v", attendance.lastQuery)
 	}
+	payload, ok := result.Response.Payload.(AttendanceStatusPayload)
+	if !ok || payload.Result == nil {
+		t.Fatalf("Payload = %#v, want AttendanceStatusPayload", result.Response.Payload)
+	}
+	if result.Response.ResultText != "" {
+		t.Fatalf("ResultText = %q, want renderer-owned text", result.Response.ResultText)
+	}
 	if !strings.Contains(renderProtocolResponse(result.Response), "2026-06-06第2节考勤状态") {
 		t.Fatalf("reply = %q, want deterministic attendance status", renderProtocolResponse(result.Response))
+	}
+}
+
+func TestOperationExecutorExecuteSignatureConsumesOnlyRequest(t *testing.T) {
+	t.Parallel()
+
+	method, ok := reflect.TypeOf(operationExecutor{}).MethodByName("Execute")
+	if !ok {
+		t.Fatalf("operationExecutor.Execute missing")
+	}
+	if method.Type.NumIn() != 3 {
+		t.Fatalf("Execute inputs = %d, want receiver, context.Context, OperationRequest", method.Type.NumIn())
+	}
+	if method.Type.In(1) != reflect.TypeOf((*context.Context)(nil)).Elem() {
+		t.Fatalf("Execute arg1 = %v, want context.Context", method.Type.In(1))
+	}
+	if method.Type.In(2) != reflect.TypeOf(OperationRequest{}) {
+		t.Fatalf("Execute arg2 = %v, want OperationRequest", method.Type.In(2))
+	}
+}
+
+func TestOperationExecutorHasDomainBindingsForActiveOperations(t *testing.T) {
+	t.Parallel()
+
+	bindings := operationDomainBindings()
+	for _, domain := range []BusinessDomain{DomainSystem, DomainAttendance, DomainSchedule, DomainSubscription, DomainManualSign} {
+		if _, ok := bindings[domain]; !ok {
+			t.Fatalf("operationDomainBindings missing %s binding", domain)
+		}
 	}
 }
 
@@ -70,7 +106,7 @@ func TestOperationExecutorAttendanceSlotStatusRequiresTrustedWeek(t *testing.T) 
 		Semester:   semester,
 	})
 
-	result := executor.Execute(context.Background(), executorUserContext(), OperationRequest{
+	result := executor.Execute(context.Background(), OperationRequest{
 		Operation: "attendance.query_status",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"query_shape": "slot_status",
@@ -110,7 +146,7 @@ func TestOperationExecutorAttendanceUserDayStatusUsesUserDayPort(t *testing.T) {
 		AttendanceUserDayStatus: userDay,
 	})
 
-	result := executor.Execute(context.Background(), executorUserContext(), OperationRequest{
+	result := executor.Execute(context.Background(), OperationRequest{
 		Operation: "attendance.query_status",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"query_shape": "user_day_status",
@@ -145,12 +181,12 @@ func TestOperationExecutorScheduleQueriesUseSchedulePort(t *testing.T) {
 	executor := newOperationExecutor(operationExecutorDeps{Schedule: schedule})
 	uctx := executorUserContext()
 
-	myResult := executor.Execute(context.Background(), uctx, OperationRequest{
+	myResult := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "schedule.query_my_schedule",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"week": 6,
 		}),
-	})
+	}, uctx))
 	if myResult.Response.Kind != ResponseResult {
 		t.Fatalf("my schedule Kind = %q, want %q", myResult.Response.Kind, ResponseResult)
 	}
@@ -161,13 +197,13 @@ func TestOperationExecutorScheduleQueriesUseSchedulePort(t *testing.T) {
 		t.Fatalf("my schedule reply = %q, want course name", renderProtocolResponse(myResult.Response))
 	}
 
-	userResult := executor.Execute(context.Background(), uctx, OperationRequest{
+	userResult := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "schedule.query_user_schedule",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"user_id": uint(9),
 			"week":    6,
 		}),
-	})
+	}, uctx))
 	if userResult.Response.Kind != ResponseResult {
 		t.Fatalf("user schedule Kind = %q, want %q", userResult.Response.Kind, ResponseResult)
 	}
@@ -190,13 +226,13 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 	uctx.ConversationID = "conv-runtime"
 	uctx.ConversationTitle = "测试群"
 
-	startAll := executor.Execute(context.Background(), uctx, OperationRequest{
+	startAll := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.start",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-runtime",
 			"scope":           "all",
 		}),
-	})
+	}, uctx))
 	if startAll.Response.Kind != ResponseResult {
 		t.Fatalf("startAll Kind = %q, want %q", startAll.Response.Kind, ResponseResult)
 	}
@@ -204,14 +240,14 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 		t.Fatalf("Subscribe all calls=%d conversation=%q deptIDs=%v", groupSub.subscribeCalls, groupSub.lastConversationID, groupSub.lastDeptIDs)
 	}
 
-	startDept := executor.Execute(context.Background(), uctx, OperationRequest{
+	startDept := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.start",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-runtime",
 			"scope":           "department",
 			"dept_ids":        []int64{101, 102},
 		}),
-	})
+	}, uctx))
 	if startDept.Response.Kind != ResponseResult {
 		t.Fatalf("startDept Kind = %q, want %q", startDept.Response.Kind, ResponseResult)
 	}
@@ -219,12 +255,12 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 		t.Fatalf("Subscribe dept calls=%d deptIDs=%v", groupSub.subscribeCalls, groupSub.lastDeptIDs)
 	}
 
-	status := executor.Execute(context.Background(), uctx, OperationRequest{
+	status := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.query_status",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-runtime",
 		}),
-	})
+	}, uctx))
 	if status.Response.Kind != ResponseResult || !strings.Contains(renderProtocolResponse(status.Response), "已订阅") {
 		t.Fatalf("status = %+v reply=%q, want subscribed result", status, renderProtocolResponse(status.Response))
 	}
@@ -232,7 +268,7 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 		t.Fatalf("GetSubscription calls = %d, want 1", groupSub.getCalls)
 	}
 
-	options := executor.Execute(context.Background(), uctx, OperationRequest{Operation: "subscription.list_departments"})
+	options := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{Operation: "subscription.list_departments"}, uctx))
 	if options.Response.Kind != ResponseSelectOptions {
 		t.Fatalf("department list Kind = %q, want %q", options.Response.Kind, ResponseSelectOptions)
 	}
@@ -240,12 +276,12 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 		t.Fatalf("department options = %+v", options.Response.Options)
 	}
 
-	cancel := executor.Execute(context.Background(), uctx, OperationRequest{
+	cancel := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.cancel",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-runtime",
 		}),
-	})
+	}, uctx))
 	if cancel.Response.Kind != ResponseResult {
 		t.Fatalf("cancel Kind = %q, want %q", cancel.Response.Kind, ResponseResult)
 	}
@@ -261,13 +297,13 @@ func TestOperationExecutorSubscriptionStartRejectsInvalidScope(t *testing.T) {
 	executor := newOperationExecutor(operationExecutorDeps{GroupSub: groupSub})
 	uctx := executorUserContext()
 
-	result := executor.Execute(context.Background(), uctx, OperationRequest{
+	result := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.start",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": uctx.ConversationID,
 			"scope":           "everyone",
 		}),
-	})
+	}, uctx))
 
 	if result.Response.Kind != ResponseRefuse {
 		t.Fatalf("Kind = %q, want %q", result.Response.Kind, ResponseRefuse)
@@ -285,13 +321,13 @@ func TestOperationExecutorSubscriptionOperationsBindConversationIDToRuntimeGroup
 	uctx := executorUserContext()
 	uctx.ConversationID = "conv-runtime"
 
-	start := executor.Execute(context.Background(), uctx, OperationRequest{
+	start := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.start",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-other",
 			"scope":           "all",
 		}),
-	})
+	}, uctx))
 	if start.Response.Kind != ResponseRefuse {
 		t.Fatalf("start Kind = %q, want %q", start.Response.Kind, ResponseRefuse)
 	}
@@ -299,12 +335,12 @@ func TestOperationExecutorSubscriptionOperationsBindConversationIDToRuntimeGroup
 		t.Fatalf("Subscribe calls = %d, want 0", groupSub.subscribeCalls)
 	}
 
-	status := executor.Execute(context.Background(), uctx, OperationRequest{
+	status := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.query_status",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-other",
 		}),
-	})
+	}, uctx))
 	if status.Response.Kind != ResponseRefuse {
 		t.Fatalf("status Kind = %q, want %q", status.Response.Kind, ResponseRefuse)
 	}
@@ -312,12 +348,12 @@ func TestOperationExecutorSubscriptionOperationsBindConversationIDToRuntimeGroup
 		t.Fatalf("GetSubscription calls = %d, want 0", groupSub.getCalls)
 	}
 
-	cancel := executor.Execute(context.Background(), uctx, OperationRequest{
+	cancel := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.cancel",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-other",
 		}),
-	})
+	}, uctx))
 	if cancel.Response.Kind != ResponseRefuse {
 		t.Fatalf("cancel Kind = %q, want %q", cancel.Response.Kind, ResponseRefuse)
 	}
@@ -335,12 +371,12 @@ func TestOperationExecutorSubscriptionCancelRequiresGroupChat(t *testing.T) {
 	uctx.ConversationType = "1"
 	uctx.ConversationID = "single-conv"
 
-	result := executor.Execute(context.Background(), uctx, OperationRequest{
+	result := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.cancel",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "single-conv",
 		}),
-	})
+	}, uctx))
 
 	if result.Response.Kind != ResponseRefuse {
 		t.Fatalf("Kind = %q, want %q", result.Response.Kind, ResponseRefuse)
@@ -359,13 +395,13 @@ func TestOperationExecutorSubscriptionStartRequiresGroupChat(t *testing.T) {
 	uctx.ConversationType = "1"
 	uctx.ConversationID = "single-conv"
 
-	result := executor.Execute(context.Background(), uctx, OperationRequest{
+	result := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.start",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "single-conv",
 			"scope":           "all",
 		}),
-	})
+	}, uctx))
 
 	if result.Response.Kind != ResponseRefuse {
 		t.Fatalf("Kind = %q, want %q", result.Response.Kind, ResponseRefuse)
@@ -388,7 +424,7 @@ func TestOperationExecutorCapabilityAndRuleAnswersDoNotUseBusinessTools(t *testi
 	})
 	uctx := executorUserContext()
 
-	capability := executor.Execute(context.Background(), uctx, OperationRequest{Operation: "manual_sign.describe_capability"})
+	capability := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{Operation: "manual_sign.describe_capability"}, uctx))
 	if capability.Response.Kind != ResponseAnswer || !strings.Contains(renderProtocolResponse(capability.Response), "代签") {
 		t.Fatalf("capability = %+v reply=%q, want manual sign answer", capability, renderProtocolResponse(capability.Response))
 	}
@@ -396,12 +432,12 @@ func TestOperationExecutorCapabilityAndRuleAnswersDoNotUseBusinessTools(t *testi
 		t.Fatalf("attendance detail calls = %d, want 0 for capability answer", attendance.detailCalls)
 	}
 
-	rule := executor.Execute(context.Background(), uctx, OperationRequest{
+	rule := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "attendance.rule_explain",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"rule_topic": "迟到规则",
 		}),
-	})
+	}, uctx))
 	if rule.Response.Kind != ResponseAnswer || !strings.Contains(renderProtocolResponse(rule.Response), "迟到按上课开始时间判定") {
 		t.Fatalf("rule = %+v reply=%q, want knowledge answer", rule, renderProtocolResponse(rule.Response))
 	}
@@ -410,12 +446,12 @@ func TestOperationExecutorCapabilityAndRuleAnswersDoNotUseBusinessTools(t *testi
 	}
 
 	knowledge.hits = nil
-	noHit := executor.Execute(context.Background(), uctx, OperationRequest{
+	noHit := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "attendance.rule_explain",
 		TrustedParams: executorTrustedParams(map[string]any{
 			"rule_topic": "迟到规则",
 		}),
-	})
+	}, uctx))
 	if noHit.Response.Kind != ResponseAnswer || noHit.Response.BusinessError != "no_knowledge_hit" {
 		t.Fatalf("noHit = %+v, want no_knowledge_hit answer", noHit)
 	}
@@ -426,7 +462,7 @@ func TestOperationExecutorUnsupportedOperationRefuses(t *testing.T) {
 
 	executor := newOperationExecutor(operationExecutorDeps{})
 
-	result := executor.Execute(context.Background(), executorUserContext(), OperationRequest{
+	result := executor.Execute(context.Background(), OperationRequest{
 		Operation: "manual_sign.create",
 	})
 

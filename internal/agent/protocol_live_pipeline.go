@@ -373,33 +373,13 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 			return outcome
 		}
 	}
-	result := p.deps.Executor.Execute(ctx, uctx, req)
+	result := p.deps.Executor.Execute(ctx, req)
 	setProtocolOutcomeResponse(&outcome, result.Response, result.Metrics.AnswerMode)
 	if len(req.TrustedParams) > 0 {
 		outcome.ResolvedSlots = mergeProtocolResolvedSlots(outcome.ResolvedSlots, protocolResolvedSlotsFromParams(req.TrustedParams))
 	}
 	outcome.ExecutionMetrics = result.Metrics
 	return outcome
-}
-
-func enrichOperationRequestFromUser(req OperationRequest, uctx *tools.UserContext) OperationRequest {
-	if uctx == nil {
-		return req
-	}
-	if req.TenantID == 0 {
-		req.TenantID = uctx.TenantID
-	}
-	if req.ActorUserID == 0 {
-		req.ActorUserID = uctx.UserID
-	}
-	if strings.TrimSpace(req.ConversationID) == "" {
-		if value, ok := extractParamString(req.TrustedParams, "conversation_id"); ok {
-			req.ConversationID = value
-		} else {
-			req.ConversationID = strings.TrimSpace(uctx.ConversationID)
-		}
-	}
-	return req
 }
 
 func resourceRefusalText(reason string) string {
