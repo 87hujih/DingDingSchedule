@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -16,19 +17,24 @@ type session struct {
 	messages   []tools.Message
 	activeTask *ActiveTask
 	taskMemory *TaskInstance
-	workflow   *WorkflowSnapshot
 	updatedAt  time.Time
 }
 
 type sessionManager struct {
-	mu       sync.RWMutex
-	sessions map[string]*session
+	mu            sync.RWMutex
+	sessions      map[string]*session
+	workflowStore WorkflowStore
 }
 
 // newSessionManager creates the in-memory session manager.
-func newSessionManager() *sessionManager {
+func newSessionManager(stores ...WorkflowStore) *sessionManager {
+	store := WorkflowStore(newMemoryWorkflowStore(nil))
+	if len(stores) > 0 && stores[0] != nil {
+		store = stores[0]
+	}
 	return &sessionManager{
-		sessions: make(map[string]*session),
+		sessions:      make(map[string]*session),
+		workflowStore: store,
 	}
 }
 
@@ -86,17 +92,21 @@ func (sm *sessionManager) getTaskState(key string) ([]tools.Message, *TaskInstan
 
 // getWorkflowState handles get workflow state.
 func (sm *sessionManager) getWorkflowState(key string) ([]tools.Message, *WorkflowSnapshot) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	sm.mu.RLock()
 
 	s, ok := sm.sessions[key]
 	if !ok {
-		return nil, nil
+		sm.mu.RUnlock()
+		workflow, _ := sm.workflowStore.Load(context.Background(), workflowKeyFromSessionKey(key, nil))
+		return nil, workflow
 	}
 
 	msgs := make([]tools.Message, len(s.messages))
 	copy(msgs, s.messages)
-	return msgs, cloneWorkflowSnapshot(s.workflow)
+	sm.mu.RUnlock()
+
+	workflow, _ := sm.workflowStore.Load(context.Background(), workflowKeyFromSessionKey(key, nil))
+	return msgs, workflow
 }
 
 // appendMessages 追加消息到 session，并裁剪超长历史
@@ -159,19 +169,22 @@ func (sm *sessionManager) setTaskInstance(key string, task *TaskInstance) {
 
 // setWorkflowState handles set workflow state.
 func (sm *sessionManager) setWorkflowState(key string, workflow *WorkflowSnapshot) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	s, ok := sm.sessions[key]
-	if !ok {
-		s = &session{
-			messages: make([]tools.Message, 0, maxHistory),
-		}
-		sm.sessions[key] = s
+	if workflow == nil {
+		sm.clearWorkflowState(key)
+		return
 	}
+	keyParts := workflowKeyFromSessionKey(key, nil)
+	next := cloneWorkflowSnapshot(workflow)
+	next.TenantID = keyParts.TenantID
+	next.ConversationID = keyParts.ConversationID
+	next.ActorUserID = keyParts.ActorUserID
+	_ = sm.workflowStore.Save(context.Background(), next)
 
-	s.workflow = cloneWorkflowSnapshot(workflow)
-	s.updatedAt = time.Now()
+	sm.mu.Lock()
+	if s, ok := sm.sessions[key]; ok {
+		s.updatedAt = time.Now()
+	}
+	sm.mu.Unlock()
 }
 
 // clearActiveTask handles clear active task.
@@ -185,7 +198,6 @@ func (sm *sessionManager) clearActiveTask(key string) {
 	}
 	s.activeTask = nil
 	s.taskMemory = nil
-	s.workflow = nil
 	s.updatedAt = time.Now()
 }
 
@@ -200,21 +212,18 @@ func (sm *sessionManager) clearTaskInstance(key string) {
 	}
 	s.activeTask = nil
 	s.taskMemory = nil
-	s.workflow = nil
 	s.updatedAt = time.Now()
 }
 
 // clearWorkflowState handles clear workflow state.
 func (sm *sessionManager) clearWorkflowState(key string) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	_ = sm.workflowStore.Clear(context.Background(), workflowKeyFromSessionKey(key, nil), "session_clear")
 
-	s, ok := sm.sessions[key]
-	if !ok {
-		return
+	sm.mu.Lock()
+	if s, ok := sm.sessions[key]; ok {
+		s.updatedAt = time.Now()
 	}
-	s.workflow = nil
-	s.updatedAt = time.Now()
+	sm.mu.Unlock()
 }
 
 // applyWorkflowResult applies workflow lifecycle result to session state.

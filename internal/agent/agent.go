@@ -37,6 +37,7 @@ type Deps struct {
 	ProtocolMode          string
 	IntentCompiler        IntentCompiler
 	IntentCompilerTimeout time.Duration
+	WorkflowStore         WorkflowStore
 
 	Schedule                SchedulePort
 	Attendance              AttendancePort
@@ -69,6 +70,7 @@ type Agent struct {
 	runtime        *taskRuntime
 	taskCatalog    *taskCatalog
 	sessions       *sessionManager
+	workflowStore  WorkflowStore
 	limiter        *rateLimiter
 	logWriter      *callLogWriter
 	stopCleanup    chan struct{}
@@ -105,6 +107,11 @@ func NewAgent(deps Deps) *Agent {
 		intentCompiler = newLLMIntentCompiler(mainClient, intentCompilerOptions{Timeout: deps.IntentCompilerTimeout})
 	}
 
+	workflowStore := deps.WorkflowStore
+	if workflowStore == nil {
+		workflowStore = newMemoryWorkflowStore(nil)
+	}
+
 	a := &Agent{
 		deps:           deps,
 		llmClient:      mainClient,
@@ -112,7 +119,8 @@ func NewAgent(deps Deps) *Agent {
 		routeMode:      routeMode,
 		protocolMode:   protocolMode,
 		intentCompiler: intentCompiler,
-		sessions:       newSessionManager(),
+		workflowStore:  workflowStore,
+		sessions:       newSessionManager(workflowStore),
 		limiter:        newRateLimiter(),
 		stopCleanup:    make(chan struct{}),
 	}
@@ -207,16 +215,40 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 
 	// 2. protocol_live 作为独占主链。shadow 模式只记录协议草稿，不抢占 route / legacy 主流程。
 	if primaryChain == decisionChainProtocol {
-		_, activeWorkflow := a.sessions.getWorkflowState(sessionKey)
-		if activeWorkflow != nil {
-			metrics.Wf.IDBefore = activeWorkflow.ID
-		}
-		outcome := a.protocolLivePipeline().Handle(ctx, protocolLiveInput{
-			Message:        msg.Content,
-			User:           uctx,
-			ActiveWorkflow: activeWorkflow,
+		workflowKey := workflowKeyFromUserContext(uctx)
+		_, legacyWorkflow := a.sessions.getWorkflowState(sessionKey)
+		var workflowBefore *WorkflowSnapshot
+		var outcome protocolLiveOutcome
+		lockErr := a.workflowStore.WithLock(ctx, workflowKey, func(activeWorkflow *WorkflowSnapshot) (*WorkflowSnapshot, error) {
+			if activeWorkflow == nil {
+				activeWorkflow = legacyWorkflow
+			}
+			workflowBefore = cloneWorkflowSnapshot(activeWorkflow)
+			if activeWorkflow != nil {
+				metrics.Wf.IDBefore = activeWorkflow.ID
+			}
+			outcome = a.protocolLivePipeline().Handle(ctx, protocolLiveInput{
+				Message:        msg.Content,
+				User:           uctx,
+				ActiveWorkflow: activeWorkflow,
+			})
+			if outcome.ClearWorkflow {
+				return nil, nil
+			}
+			if outcome.WorkflowAfter != nil {
+				next := cloneWorkflowSnapshot(outcome.WorkflowAfter)
+				next.TenantID = workflowKey.TenantID
+				next.ConversationID = workflowKey.ConversationID
+				next.ActorUserID = workflowKey.ActorUserID
+				return next, nil
+			}
+			return activeWorkflow, nil
 		})
-		a.applyProtocolLiveOutcome(sessionKey, &metrics, outcome)
+		if lockErr != nil {
+			a.deps.Logger.Warnw("更新 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", lockErr)
+			outcome = workflowStoreFailureOutcome()
+		}
+		a.applyProtocolLiveOutcomeAfterStore(sessionKey, &metrics, outcome, workflowBefore)
 		reply := renderProtocolResponse(outcome.Response)
 		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
@@ -1465,16 +1497,43 @@ func (a *Agent) protocolLivePipeline() protocolLivePipeline {
 }
 
 func (a *Agent) applyProtocolLiveOutcome(sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome) {
+	a.applyProtocolLiveOutcomeForKey(context.Background(), workflowKeyFromSessionKey(sessionKey, nil), sessionKey, metrics, outcome)
+}
+
+func (a *Agent) applyProtocolLiveOutcomeForKey(ctx context.Context, workflowKey WorkflowKey, sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome) {
 	var workflowBefore *WorkflowSnapshot
-	if a != nil && a.sessions != nil {
+	if a != nil && a.workflowStore != nil {
+		if loaded, err := a.workflowStore.Load(ctx, workflowKey); err == nil {
+			workflowBefore = loaded
+		}
+	}
+	if workflowBefore == nil && a != nil && a.sessions != nil {
 		_, workflowBefore = a.sessions.getWorkflowState(sessionKey)
 	}
 
-	if outcome.ClearWorkflow {
-		a.sessions.clearWorkflowState(sessionKey)
+	if a != nil && a.workflowStore != nil {
+		if outcome.ClearWorkflow {
+			_ = a.workflowStore.Clear(ctx, workflowKey, string(outcome.WorkflowDecision))
+		}
+		if outcome.WorkflowAfter != nil {
+			next := cloneWorkflowSnapshot(outcome.WorkflowAfter)
+			next.TenantID = workflowKey.TenantID
+			next.ConversationID = workflowKey.ConversationID
+			next.ActorUserID = workflowKey.ActorUserID
+			_ = a.workflowStore.Save(ctx, next)
+		}
 	}
-	if outcome.WorkflowAfter != nil {
-		a.sessions.setWorkflowState(sessionKey, outcome.WorkflowAfter)
+	a.applyProtocolLiveOutcomeAfterStore(sessionKey, metrics, outcome, workflowBefore)
+}
+
+func (a *Agent) applyProtocolLiveOutcomeAfterStore(sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome, workflowBefore *WorkflowSnapshot) {
+	if a != nil && a.sessions != nil {
+		if outcome.ClearWorkflow {
+			a.sessions.clearWorkflowState(sessionKey)
+		}
+		if outcome.WorkflowAfter != nil {
+			a.sessions.setWorkflowState(sessionKey, outcome.WorkflowAfter)
+		}
 	}
 
 	applyProtocolMetrics(metrics, outcome.Draft, outcome.Validation)
@@ -1511,6 +1570,21 @@ func (a *Agent) applyProtocolLiveOutcome(sessionKey string, metrics *callMetrics
 	} else if outcome.ClearWorkflow {
 		metrics.Wf.IDAfter = ""
 		metrics.Wf.StateAfter = workflowStateAfterFromDecision(outcome.WorkflowDecision)
+	}
+}
+
+func workflowStoreFailureOutcome() protocolLiveOutcome {
+	draft := unknownIntentDraft("workflow_store_failed")
+	validation := ProtocolValidationResult{
+		ValidationCode: "workflow_store_failed",
+		ResponseKind:   ResponseRefuse,
+	}
+	return protocolLiveOutcome{
+		Draft:         draft,
+		Validation:    validation,
+		Response:      ResponseModel{Kind: ResponseRefuse, RefusalReason: "系统暂时无法处理当前任务状态，请稍后重试。"},
+		AnswerMode:    answerModeReject,
+		BlockedReason: "workflow_store_failed",
 	}
 }
 
@@ -1666,7 +1740,7 @@ func protocolWorkflowContextFromWorkflowSnapshot(workflow *WorkflowSnapshot) *pr
 	}
 	return &protocolWorkflowContext{
 		Type:          string(workflow.Type),
-		MissingFields: append([]string(nil), workflow.MissingSlots...),
+		MissingFields: cloneStringSlice(workflowMissingFields(workflow)),
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,8 +56,14 @@ func (p protocolLivePipeline) catalogValidator() CatalogValidator {
 	}
 	return newCatalogValidator()
 }
+
 func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInput) protocolLiveOutcome {
-	workflowCtx := protocolWorkflowContextFromWorkflowSnapshot(input.ActiveWorkflow)
+	receivedWorkflow := input.ActiveWorkflow
+	activeWorkflow := receivedWorkflow
+	if workflowExpired(activeWorkflow, p.now()) {
+		activeWorkflow = nil
+	}
+	workflowCtx := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
 	draft, err := compileProtocolWithCompiler(ctx, protocolInput{
 		Message:        input.Message,
 		ActiveWorkflow: workflowCtx,
@@ -75,8 +82,15 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 		Validation: validation,
 		AnswerMode: answerModeReject,
 	}
+	arbiterDecision := newWorkflowArbiter(p.now).Decide(WorkflowArbiterInput{
+		Draft:          draft,
+		ActiveWorkflow: receivedWorkflow,
+	})
+	if arbiterDecision.Expired {
+		outcome.WorkflowDecision = arbiterDecision.Decision
+		outcome.ClearWorkflow = true
+	}
 
-	activeWorkflow := input.ActiveWorkflow
 	if validation.InterruptActiveWorkflow {
 		result := interruptActiveWorkflow(nil, "", activeWorkflow, draft)
 		outcome.WorkflowDecision = result.Decision
@@ -99,12 +113,12 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 	}
 
 	if draft.Act == ActWorkflowCancel {
-		if input.ActiveWorkflow == nil {
+		if activeWorkflow == nil {
 			response, mode := protocolLiveGuardrailResponse(draft, validation, input.User)
 			setProtocolOutcomeResponse(&outcome, response, mode)
 			return outcome
 		}
-		result := continueWorkflow(*input.ActiveWorkflow, draft, trustedEntities{})
+		result := continueWorkflow(*activeWorkflow, draft, trustedEntities{})
 		outcome.WorkflowDecision = result.Decision
 		outcome.ClearWorkflow = workflowResultTerminal(result)
 		setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseResult, ResultText: "已取消当前任务。如需继续，请重新告诉我。"}, answerModeToolFirst)
@@ -170,7 +184,9 @@ func (p protocolLivePipeline) handleSubscription(ctx context.Context, input prot
 			outcome.WorkflowAfter = cloneWorkflowSnapshot(activeWorkflow)
 			outcome.WorkflowDecision = WorkflowMetaResult
 		}
-		return p.execute(ctx, input.User, OperationRequest{Operation: "subscription.list_departments"}, outcome)
+		executed := p.execute(ctx, input.User, OperationRequest{Operation: "subscription.list_departments"}, outcome)
+		persistWorkflowCandidatesFromResponse(executed.WorkflowAfter, "dept_ids", executed.Response.Options)
+		return executed
 	}
 
 	if input.User == nil || input.User.ConversationType != "2" {
@@ -196,7 +212,7 @@ func (p protocolLivePipeline) handleSubscription(ctx context.Context, input prot
 			continueDraft.Act = ActWorkflowContinue
 			return p.continueSubscription(ctx, input, continueDraft, &workflow, trusted, outcome)
 		}
-		outcome.WorkflowDecision = WorkflowContinueDecision
+		outcome.WorkflowDecision = WorkflowStartNew
 		outcome.WorkflowAfter = &workflow
 		setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseClarify, ClarifyReason: "subscription_missing_fields"}, answerModeToolFirst)
 		outcome.BlockedReason = "missing_scope"
@@ -240,7 +256,9 @@ func (p protocolLivePipeline) continueSubscription(ctx context.Context, input pr
 		}
 		outcome.WorkflowAfter = result.Workflow
 		outcome.ResolvedSlots = protocolResolvedSlotsFromTrusted(result.Workflow.Trusted)
-		return p.execute(ctx, input.User, OperationRequest{Operation: "subscription.list_departments"}, outcome)
+		executed := p.execute(ctx, input.User, OperationRequest{Operation: "subscription.list_departments"}, outcome)
+		persistWorkflowCandidatesFromResponse(executed.WorkflowAfter, "dept_ids", executed.Response.Options)
+		return executed
 	case WorkflowReadyToExecute:
 		if result.Workflow == nil {
 			response, mode := protocolLiveGuardrailResponse(draft, outcome.Validation, input.User)
@@ -510,9 +528,99 @@ func (p protocolLivePipeline) resolveSubscriptionTrustedEntities(ctx context.Con
 			return p.resolveSubscriptionDepartmentSelection(ctx, message)
 		}
 	case WorkflowCollectDepartments:
+		if trusted, handled, ok := workflowDepartmentCandidateSelection(workflow, message); handled {
+			return trusted, ok
+		}
 		return p.resolveSubscriptionDepartmentSelection(ctx, message)
 	default:
 		return trustedEntities{}, false
+	}
+}
+
+func persistWorkflowCandidatesFromResponse(workflow *WorkflowSnapshot, field string, options []ResponseOption) {
+	if workflow == nil || len(options) == 0 {
+		return
+	}
+	candidates := make([]Candidate, 0, len(options))
+	for _, option := range options {
+		id := strings.TrimSpace(option.Value)
+		label := strings.TrimSpace(option.Label)
+		if id == "" && label == "" {
+			continue
+		}
+		candidates = append(candidates, Candidate{
+			ID:    id,
+			Label: firstNonEmpty(label, id),
+			Value: id,
+		})
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	if workflow.Candidates == nil {
+		workflow.Candidates = make(map[string][]Candidate)
+	}
+	workflow.Candidates[field] = candidates
+}
+
+func workflowDepartmentCandidateSelection(workflow *WorkflowSnapshot, message string) (trustedEntities, bool, bool) {
+	ordinal, ok := parseCandidateOrdinal(message)
+	if !ok {
+		return trustedEntities{}, false, false
+	}
+	if workflow == nil || len(workflow.Candidates["dept_ids"]) < ordinal {
+		return trustedEntities{}, true, false
+	}
+	candidate := workflow.Candidates["dept_ids"][ordinal-1]
+	deptID, ok := candidateInt64(candidate)
+	if !ok || deptID == 0 {
+		return trustedEntities{}, true, false
+	}
+	return trustedEntities{
+		Scope:        "department",
+		DepartmentID: deptID,
+		DeptIDs:      []int64{deptID},
+	}, true, true
+}
+
+func parseCandidateOrdinal(message string) (int, bool) {
+	normalized := normalizeQuery(message)
+	normalized = strings.TrimPrefix(normalized, "选择")
+	normalized = strings.TrimPrefix(normalized, "选")
+	normalized = strings.TrimPrefix(normalized, "第")
+	normalized = strings.TrimSuffix(normalized, "个")
+	normalized = strings.TrimSuffix(normalized, "项")
+	normalized = strings.TrimSuffix(normalized, "号")
+	if normalized == "" {
+		return 0, false
+	}
+	if value, err := strconv.Atoi(normalized); err == nil && value > 0 {
+		return value, true
+	}
+	if value, ok := parseChinesePositiveInt(normalized); ok && value > 0 {
+		return value, true
+	}
+	return 0, false
+}
+
+func candidateInt64(candidate Candidate) (int64, bool) {
+	if id := strings.TrimSpace(candidate.ID); id != "" {
+		if parsed, err := strconv.ParseInt(id, 10, 64); err == nil {
+			return parsed, true
+		}
+	}
+	switch value := candidate.Value.(type) {
+	case int64:
+		return value, true
+	case int:
+		return int64(value), true
+	case uint:
+		return int64(value), true
+	case string:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		return parsed, err == nil
+	default:
+		return 0, false
 	}
 }
 

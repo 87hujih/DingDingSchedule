@@ -10,10 +10,11 @@ func startWorkflow(draft ProtocolDraft) (WorkflowSnapshot, bool) {
 	switch draft.Operation {
 	case "subscription.start":
 		return WorkflowSnapshot{
-			ID:           fmt.Sprintf("wf-%d", time.Now().UnixNano()),
-			Type:         WorkflowSubscriptionStart,
-			State:        WorkflowCollectScope,
-			MissingSlots: []string{"scope"},
+			ID:            fmt.Sprintf("wf-%d", time.Now().UnixNano()),
+			Type:          WorkflowSubscriptionStart,
+			State:         WorkflowCollectScope,
+			MissingFields: []string{"scope"},
+			MissingSlots:  []string{"scope"},
 		}, true
 	default:
 		return WorkflowSnapshot{}, false
@@ -24,13 +25,13 @@ func startWorkflow(draft ProtocolDraft) (WorkflowSnapshot, bool) {
 func continueWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft, trusted trustedEntities) WorkflowResult {
 	if draft.Act == ActWorkflowCancel {
 		workflow.State = WorkflowCancelled
-		workflow.MissingSlots = nil
+		setWorkflowMissingFields(&workflow, nil)
 		return WorkflowResult{Decision: WorkflowCanceled, Workflow: &workflow}
 	}
 
 	if isExplicitNewRequest(draft.Act) {
 		workflow.State = WorkflowInterruptedState
-		workflow.MissingSlots = nil
+		setWorkflowMissingFields(&workflow, nil)
 		return WorkflowResult{Decision: WorkflowInterrupted, Workflow: &workflow}
 	}
 
@@ -48,7 +49,7 @@ func continueWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft, trusted tr
 // completeWorkflow marks an executed workflow as completed.
 func completeWorkflow(workflow WorkflowSnapshot) WorkflowResult {
 	workflow.State = WorkflowCompleted
-	workflow.MissingSlots = nil
+	setWorkflowMissingFields(&workflow, nil)
 	return WorkflowResult{Decision: WorkflowCompletedDecision, Workflow: &workflow}
 }
 
@@ -61,7 +62,7 @@ func interruptActiveWorkflow(sessions *sessionManager, sessionKey string, workfl
 	if result.Decision != WorkflowInterrupted {
 		next := cloneWorkflowSnapshot(workflow)
 		next.State = WorkflowInterruptedState
-		next.MissingSlots = nil
+		setWorkflowMissingFields(next, nil)
 		result = WorkflowResult{Decision: WorkflowInterrupted, Workflow: next}
 	}
 	if sessions != nil {
@@ -85,7 +86,7 @@ func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft
 		case "all":
 			workflow.Trusted.Scope = trusted.Scope
 			workflow.State = WorkflowReady
-			workflow.MissingSlots = nil
+			setWorkflowMissingFields(&workflow, nil)
 			return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}
 		case "department":
 			workflow.Trusted.Scope = trusted.Scope
@@ -97,11 +98,11 @@ func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft
 				workflow.Trusted.DepartmentID = deptIDs[0]
 				workflow.Trusted.DeptIDs = append([]int64(nil), deptIDs...)
 				workflow.State = WorkflowReady
-				workflow.MissingSlots = nil
+				setWorkflowMissingFields(&workflow, nil)
 				return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}
 			}
 			workflow.State = WorkflowCollectDepartments
-			workflow.MissingSlots = []string{"dept_names"}
+			setWorkflowMissingFields(&workflow, []string{"dept_names"})
 			return WorkflowResult{Decision: WorkflowContinueDecision, Workflow: &workflow}
 		default:
 			return WorkflowResult{Decision: WorkflowRejectInvalidShape, Workflow: &workflow}
@@ -117,7 +118,7 @@ func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft
 		workflow.Trusted.DepartmentID = deptIDs[0]
 		workflow.Trusted.DeptIDs = append([]int64(nil), deptIDs...)
 		workflow.State = WorkflowReady
-		workflow.MissingSlots = nil
+		setWorkflowMissingFields(&workflow, nil)
 		return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}
 	default:
 		return WorkflowResult{Decision: WorkflowRejectInvalidShape, Workflow: &workflow}
@@ -139,7 +140,7 @@ func continueManualSignWorkflow(workflow WorkflowSnapshot, trusted trustedEntiti
 		workflow.Trusted.Section = trusted.Section
 	}
 
-	workflow.MissingSlots = workflowMissingSlots(workflow.Trusted)
+	setWorkflowMissingFields(&workflow, workflowMissingSlots(workflow.Trusted))
 	if len(workflow.MissingSlots) == 0 {
 		workflow.State = WorkflowReady
 		return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}

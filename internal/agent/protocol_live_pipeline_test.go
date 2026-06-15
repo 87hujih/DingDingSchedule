@@ -134,6 +134,7 @@ func TestProtocolLivePipelineIgnoresTrustedIDSlotFromDraft(t *testing.T) {
 		t.Fatalf("detailCalls = %d, want 0 without trusted user resolver output", attendance.detailCalls)
 	}
 }
+
 func TestProtocolLivePipelineSubscriptionWorkflowClarifiesAndExecutesAllScope(t *testing.T) {
 	t.Parallel()
 
@@ -379,6 +380,7 @@ func TestProtocolLivePipelineCompilerTimeoutFailsClosed(t *testing.T) {
 		t.Fatalf("detailCalls = %d, want 0 after compiler timeout", attendance.detailCalls)
 	}
 }
+
 func TestProtocolLivePipelineRoleDeniedRequestInterruptsActiveWorkflow(t *testing.T) {
 	t.Parallel()
 
@@ -495,6 +497,10 @@ func TestProtocolLivePipelineDepartmentListChoosesDepartmentScopeDuringScopeColl
 	if outcome.ResolvedSlots["scope"] != "department" {
 		t.Fatalf("ResolvedSlots = %#v, want department scope", outcome.ResolvedSlots)
 	}
+	candidates := outcome.WorkflowAfter.Candidates["dept_ids"]
+	if len(candidates) != 1 || candidates[0].ID != "101" || candidates[0].Label != "信工24级" {
+		t.Fatalf("WorkflowAfter candidates = %+v, want persisted department candidate", candidates)
+	}
 }
 
 func TestProtocolLivePipelineDepartmentNameChoosesDepartmentScopeDuringScopeCollection(t *testing.T) {
@@ -539,6 +545,55 @@ func TestProtocolLivePipelineDepartmentNameChoosesDepartmentScopeDuringScopeColl
 	}
 	if outcome.ResolvedSlots["scope"] != "department" {
 		t.Fatalf("ResolvedSlots = %#v, want department scope", outcome.ResolvedSlots)
+	}
+}
+
+func TestProtocolLivePipelineDepartmentOrdinalUsesCurrentWorkflowCandidates(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.9,
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+		Dept: executorFakeDeptPort{depts: []tools.DeptItem{
+			{DeptID: 999, Name: "当前库里的第二项"},
+		}},
+	})
+	workflow := &WorkflowSnapshot{
+		ID:           "wf-sub",
+		Type:         WorkflowSubscriptionStart,
+		State:        WorkflowCollectDepartments,
+		MissingSlots: []string{"dept_names"},
+		Trusted: trustedEntities{
+			Scope: "department",
+		},
+		Candidates: map[string][]Candidate{
+			"dept_ids": {
+				{ID: "101", Label: "信工24级", Value: int64(101)},
+				{ID: "125", Label: "信工25级", Value: int64(125)},
+			},
+		},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "第 2 个",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if outcome.Response.Kind != ResponseResult {
+		t.Fatalf("Response = %+v, want result", outcome.Response)
+	}
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 125 {
+		t.Fatalf("lastDeptIDs = %v, want [125] from workflow candidates", groupSub.lastDeptIDs)
 	}
 }
 

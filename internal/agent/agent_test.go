@@ -245,6 +245,7 @@ func TestNewAgentAppliesConfiguredIntentCompilerTimeout(t *testing.T) {
 		t.Fatalf("compiler.timeout = %s, want 3s", compiler.timeout)
 	}
 }
+
 func TestNewAgentDoesNotCreateProtocolLiveIntentCompilerForPortZeroURLWithPath(t *testing.T) {
 	t.Parallel()
 
@@ -357,6 +358,96 @@ func TestApplyProtocolLiveOutcomeRecordsTerminalWorkflowState(t *testing.T) {
 	if active != nil {
 		t.Fatalf("active workflow = %+v, want cleared", active)
 	}
+}
+
+func TestProtocolLiveChatUsesWorkflowStoreLock(t *testing.T) {
+	t.Parallel()
+
+	store := newRecordingWorkflowStore()
+	a := NewAgent(Deps{
+		LLMBaseURL:   "http://127.0.0.1:0",
+		LLMAPIKey:    "test-key",
+		LLMModel:     "test-model",
+		ProtocolMode: string(ProtocolModeLive),
+		IntentCompiler: fixedIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.96,
+		}},
+		WorkflowStore: store,
+		User:          testUserPort{},
+		Tenant:        testTenantPort{},
+		Logger:        zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "开启本群考勤订阅",
+		ConversationID:    "conv-lock",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+
+	if store.withLockCalls() != 1 {
+		t.Fatalf("WithLock calls = %d, want 1", store.withLockCalls())
+	}
+	workflow, err := store.Load(context.Background(), WorkflowKey{TenantID: 42, ConversationID: "conv-lock", ActorUserID: 7})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if workflow == nil || workflow.State != WorkflowCollectScope {
+		t.Fatalf("workflow = %+v, want collect_scope saved under structured key", workflow)
+	}
+}
+
+type fixedIntentCompiler struct {
+	draft ProtocolDraft
+}
+
+func (c fixedIntentCompiler) Compile(context.Context, IntentCompileRequest) (IntentDraft, error) {
+	return c.draft, nil
+}
+
+type recordingWorkflowStore struct {
+	inner *memoryWorkflowStore
+	mu    sync.Mutex
+	locks int
+}
+
+func newRecordingWorkflowStore() *recordingWorkflowStore {
+	return &recordingWorkflowStore{inner: newMemoryWorkflowStore(nil)}
+}
+
+func (s *recordingWorkflowStore) Load(ctx context.Context, key WorkflowKey) (*WorkflowSnapshot, error) {
+	return s.inner.Load(ctx, key)
+}
+
+func (s *recordingWorkflowStore) Save(ctx context.Context, workflow *WorkflowSnapshot) error {
+	return s.inner.Save(ctx, workflow)
+}
+
+func (s *recordingWorkflowStore) Clear(ctx context.Context, key WorkflowKey, reason string) error {
+	return s.inner.Clear(ctx, key, reason)
+}
+
+func (s *recordingWorkflowStore) WithLock(ctx context.Context, key WorkflowKey, fn func(*WorkflowSnapshot) (*WorkflowSnapshot, error)) error {
+	s.mu.Lock()
+	s.locks++
+	s.mu.Unlock()
+	return s.inner.WithLock(ctx, key, fn)
+}
+
+func (s *recordingWorkflowStore) withLockCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.locks
 }
 
 func TestChatUsesRouteAsSinglePrimaryChainWhenProtocolIsShadow(t *testing.T) {
