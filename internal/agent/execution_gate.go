@@ -27,14 +27,15 @@ func buildOperationRequest(draft ProtocolDraft, trusted trustedEntities) (Operat
 		return OperationRequest{}, true
 	}
 
-	requiredParams := metadata.RequiredTrustedParams
-	params := make(map[string]any, len(requiredParams)+len(metadata.OptionalTrustedParams)+1)
+	requiredParams := paramNames(metadata.RequiredTrustedParams)
+	optionalParams := paramNames(metadata.OptionalTrustedParams)
+	params := make(map[string]any, len(requiredParams)+len(optionalParams)+1)
 	if len(metadata.QueryShapes) > 0 {
 		shape, ok := selectQueryShape(metadata, trusted)
 		if !ok {
 			return OperationRequest{}, true
 		}
-		requiredParams = shape.RequiredTrustedParams
+		requiredParams = paramNames(shape.RequiredTrustedParams)
 		params["query_shape"] = shape.Name
 	}
 
@@ -45,7 +46,7 @@ func buildOperationRequest(draft ProtocolDraft, trusted trustedEntities) (Operat
 		}
 		params[field] = value
 	}
-	for _, field := range metadata.OptionalTrustedParams {
+	for _, field := range optionalParams {
 		value, ok := trustedParamValue(trusted, field)
 		if ok {
 			params[field] = value
@@ -71,7 +72,7 @@ func selectQueryShape(metadata OperationMetadata, trusted trustedEntities) (Quer
 		return QueryShapeMetadata{}, false
 	}
 	for _, shape := range metadata.QueryShapes {
-		if trustedHasRequiredParams(trusted, shape.RequiredTrustedParams) {
+		if trustedHasRequiredParams(trusted, paramNames(shape.RequiredTrustedParams)) {
 			return shape, true
 		}
 	}

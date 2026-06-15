@@ -1359,6 +1359,12 @@ func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserCo
 		metrics.Wf.IDAfter = ""
 	}
 
+	if manifest, ok := lookupOperation(draft.Operation); ok && manifest.Capability != nil {
+		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
+			Operation: draft.Operation,
+		})
+	}
+
 	switch draft.Operation {
 	case "subscription.query_status":
 		if !validation.AllowExecution {
@@ -1386,10 +1392,6 @@ func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserCo
 		return a.handleProtocolSubscriptionPrimary(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, draft, activeWorkflow)
 	case "manual_sign.create":
 		return a.handleProtocolManualSignPrimary(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, draft, activeWorkflow)
-	case "manual_sign.describe_capability":
-		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
-			Operation: draft.Operation,
-		})
 	case "attendance.query_status":
 		if !validation.AllowExecution || a.deps.Attendance == nil {
 			return false, "", nil
@@ -1824,39 +1826,16 @@ func buildProtocolCapabilityReply(domain BusinessDomain, uctx *tools.UserContext
 		}
 		return entry.Description
 	}
-	switch domain {
-	case DomainManualSign:
-		return buildManualSignCapabilityReply(uctx)
-	case DomainSubscription:
-		return "我可以帮助开启、取消或查询当前群的考勤订阅。"
-	case DomainAttendance:
-		return "我可以帮助查询指定日期和节次的考勤状态。"
-	case DomainSchedule:
-		return "我可以帮助查询课表、空闲人员和节次时间。"
-	case DomainLeave:
-		return "我可以帮助查询请假信息。"
-	case DomainAnalytics:
-		return "我可以帮助查询考勤统计分析。"
-	default:
-		return buildHelpReply(uctx)
-	}
+	return buildHelpReply(uctx)
 }
 
 func capabilityOperationForDomain(domain BusinessDomain) string {
-	switch domain {
-	case DomainSystem:
-		return "system.describe_capability"
-	case DomainAttendance:
-		return "attendance.describe_capability"
-	case DomainSchedule:
-		return "schedule.describe_capability"
-	case DomainSubscription:
-		return "subscription.describe_capability"
-	case DomainManualSign:
-		return "manual_sign.describe_capability"
-	default:
-		return ""
+	for _, manifest := range operationManifests() {
+		if manifest.Domain == domain && manifest.Capability != nil {
+			return manifest.Name
+		}
 	}
+	return ""
 }
 
 type manualSignResolution struct {

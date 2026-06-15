@@ -285,7 +285,7 @@ func buildIntentCompilerSystemPrompt() string {
 	b.WriteString("slots 必须是数组，每项只能包含 field 和 raw；raw 只是用户原文片段，不是可信实体值。\n")
 	b.WriteString("只允许使用下面 operation catalog 中的 operation；不确定时输出 act=unknown、domain=unknown、operation 为空字符串。\n")
 	b.WriteString("operation catalog:\n")
-	for _, metadata := range operationCatalogEntries {
+	for _, metadata := range promptOperationEntries() {
 		b.WriteString("- operation=")
 		b.WriteString(metadata.Name)
 		b.WriteString("; domain=")

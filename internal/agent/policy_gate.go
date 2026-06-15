@@ -1,7 +1,5 @@
 package agent
 
-import "strings"
-
 const lowConfidenceWriteThreshold = 0.75
 
 type ProtocolValidationResult struct {
@@ -79,7 +77,7 @@ func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowConte
 
 	switch draft.Act {
 	case ActCapabilityQuestion:
-		if !strings.HasSuffix(draft.Operation, ".describe_capability") {
+		if metadata.Capability == nil {
 			return ProtocolValidationResult{
 				ValidationCode: "act_operation_mismatch",
 				ResponseKind:   ResponseRefuse,
@@ -91,19 +89,13 @@ func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowConte
 			ResponseKind:            ResponseAnswer,
 		}
 	case ActRuleQuestion:
-		if !strings.HasSuffix(draft.Operation, ".rule_explain") {
-			return ProtocolValidationResult{
-				ValidationCode: "act_operation_mismatch",
-				ResponseKind:   ResponseRefuse,
-			}
-		}
 		return ProtocolValidationResult{
 			ValidationCode:          "rule_non_executable",
 			InterruptActiveWorkflow: interrupt,
 			ResponseKind:            ResponseAnswer,
 		}
 	case ActHelp:
-		if draft.Operation != "system.describe_capability" {
+		if metadata.Capability == nil || metadata.Domain != DomainSystem {
 			return ProtocolValidationResult{
 				ValidationCode: "act_operation_mismatch",
 				ResponseKind:   ResponseRefuse,

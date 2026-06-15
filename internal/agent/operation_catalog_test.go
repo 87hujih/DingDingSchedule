@@ -94,6 +94,83 @@ func TestOperationCatalogSubscriptionWritesRequireAdminRole(t *testing.T) {
 	}
 }
 
+func TestOperationCatalogLintPasses(t *testing.T) {
+	t.Parallel()
+
+	if errs := lintOperationCatalog(operationManifests()); len(errs) > 0 {
+		t.Fatalf("lintOperationCatalog() errors = %v", errs)
+	}
+}
+
+func TestOperationCatalogWriteManifestsDeclareSafetyBindings(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"subscription.start", "subscription.cancel"} {
+		manifest, ok := lookupOperation(name)
+		if !ok {
+			t.Fatalf("%s missing", name)
+		}
+		if manifest.Risk != RiskWriteLow {
+			t.Fatalf("%s Risk = %q, want %q", name, manifest.Risk, RiskWriteLow)
+		}
+		if manifest.Scope != ConversationScopeGroup {
+			t.Fatalf("%s Scope = %q, want %q", name, manifest.Scope, ConversationScopeGroup)
+		}
+		if manifest.Workflow == nil {
+			t.Fatalf("%s Workflow = nil, want declared workflow boundary", name)
+		}
+		if len(manifest.Policies) == 0 {
+			t.Fatalf("%s Policies = empty, want policy binding", name)
+		}
+		if manifest.Executor.Name == "" {
+			t.Fatalf("%s Executor.Name is empty", name)
+		}
+		if len(manifest.Idempotency.KeyFields) == 0 {
+			t.Fatalf("%s Idempotency.KeyFields = empty", name)
+		}
+	}
+}
+
+func TestOperationCatalogEveryManifestHasRendererAndEvalBinding(t *testing.T) {
+	t.Parallel()
+
+	for _, manifest := range operationManifests() {
+		if manifest.Renderer.Name == "" {
+			t.Fatalf("%s Renderer.Name is empty", manifest.Name)
+		}
+		if len(manifest.Eval.CaseIDs) == 0 {
+			t.Fatalf("%s Eval.CaseIDs is empty", manifest.Name)
+		}
+	}
+}
+
+func TestOperationCatalogCapabilityOperationsCarryCapabilityBinding(t *testing.T) {
+	t.Parallel()
+
+	for _, domain := range []BusinessDomain{
+		DomainSystem,
+		DomainAttendance,
+		DomainSchedule,
+		DomainSubscription,
+		DomainManualSign,
+	} {
+		name := capabilityOperationForDomain(domain)
+		manifest, ok := lookupOperation(name)
+		if !ok {
+			t.Fatalf("capability operation for domain %q = %q not found", domain, name)
+		}
+		if manifest.Domain != domain {
+			t.Fatalf("%s Domain = %q, want %q", name, manifest.Domain, domain)
+		}
+		if manifest.Capability == nil {
+			t.Fatalf("%s Capability = nil, want catalog capability binding", name)
+		}
+		if manifest.Executor.Name == "" || manifest.Renderer.Name == "" {
+			t.Fatalf("%s executor/renderer binding missing: %+v %+v", name, manifest.Executor, manifest.Renderer)
+		}
+	}
+}
+
 func assertQueryShape(t *testing.T, metadata OperationMetadata, name string, requiredParams []string) {
 	t.Helper()
 
@@ -101,9 +178,10 @@ func assertQueryShape(t *testing.T, metadata OperationMetadata, name string, req
 		if shape.Name != name {
 			continue
 		}
-		if !reflect.DeepEqual(shape.RequiredTrustedParams, requiredParams) {
+		got := paramNames(shape.RequiredTrustedParams)
+		if !reflect.DeepEqual(got, requiredParams) {
 			t.Fatalf("%s query shape %s RequiredTrustedParams = %v, want %v",
-				metadata.Name, name, shape.RequiredTrustedParams, requiredParams)
+				metadata.Name, name, got, requiredParams)
 		}
 		return
 	}

@@ -69,6 +69,38 @@ func TestManualSignCapabilityIsAnswerOnly(t *testing.T) {
 	}
 }
 
+func TestCapabilityCatalogEntriesAreDerivedFromOperationManifestBindings(t *testing.T) {
+	t.Parallel()
+
+	want := 0
+	for _, manifest := range operationManifests() {
+		if manifest.Capability != nil {
+			want++
+		}
+	}
+
+	entries := capabilityCatalogEntries()
+	if len(entries) != want {
+		t.Fatalf("capabilityCatalogEntries() len = %d, want %d derived manifest capabilities", len(entries), want)
+	}
+	for _, entry := range entries {
+		manifest, ok := lookupOperation(entry.OperationScope)
+		if !ok {
+			t.Fatalf("capability %q has no operation manifest", entry.OperationScope)
+		}
+		if manifest.Capability == nil {
+			t.Fatalf("capability %q is not backed by a manifest capability binding", entry.OperationScope)
+		}
+		if entry.Title != manifest.Capability.Title || entry.Description != manifest.Capability.Description {
+			t.Fatalf("capability %q = %+v, want catalog binding %+v", entry.OperationScope, entry, manifest.Capability)
+		}
+		if entry.MinRole != manifest.MinRole || entry.ConversationScope != string(manifest.Scope) {
+			t.Fatalf("capability %q role/scope = %d/%q, want %d/%q",
+				entry.OperationScope, entry.MinRole, entry.ConversationScope, manifest.MinRole, manifest.Scope)
+		}
+	}
+}
+
 func TestProtocolHelpDoesNotAdvertiseManualSignAsDirectExecution(t *testing.T) {
 	t.Parallel()
 

@@ -99,6 +99,10 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 		return outcome
 	}
 
+	if manifest, ok := lookupOperation(draft.Operation); ok && manifest.Capability != nil {
+		return p.execute(ctx, input.User, OperationRequest{Operation: draft.Operation}, outcome)
+	}
+
 	switch draft.Operation {
 	case "subscription.start", "subscription.list_departments":
 		return p.handleSubscription(ctx, input, draft, activeWorkflow, outcome)
@@ -124,8 +128,6 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 			return outcome
 		}
 		return p.execute(ctx, input.User, req, outcome)
-	case "system.describe_capability", "attendance.describe_capability", "schedule.describe_capability", "subscription.describe_capability", "manual_sign.describe_capability":
-		return p.execute(ctx, input.User, OperationRequest{Operation: draft.Operation}, outcome)
 	case "attendance.rule_explain", "schedule.rule_explain", "subscription.rule_explain":
 		req, blocked := buildOperationRequest(draft, trustedEntities{
 			UserRole: inputUserRole(input.User),

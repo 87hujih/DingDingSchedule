@@ -43,6 +43,13 @@ func newOperationExecutor(deps operationExecutorDeps) operationExecutor {
 }
 
 func (e operationExecutor) Execute(ctx context.Context, uctx *tools.UserContext, req OperationRequest) OperationExecutionResult {
+	if manifest, ok := lookupOperation(req.Operation); ok && manifest.Capability != nil {
+		if manifest.Domain == DomainSystem {
+			return operationExecutionResult(ResponseModel{Kind: ResponseAnswer, Answer: buildHelpReply(uctx)}, answerModeToolFirst)
+		}
+		return operationExecutionResult(ResponseModel{Kind: ResponseAnswer, Answer: buildProtocolCapabilityReply(manifest.Domain, uctx)}, answerModeToolFirst)
+	}
+
 	switch req.Operation {
 	case "attendance.query_status":
 		return e.executeAttendanceQuery(ctx, req)
@@ -58,14 +65,6 @@ func (e operationExecutor) Execute(ctx context.Context, uctx *tools.UserContext,
 		return e.executeSubscriptionStatus(ctx, uctx, req)
 	case "subscription.list_departments":
 		return e.executeListDepartments(ctx)
-	case "system.describe_capability":
-		return operationExecutionResult(ResponseModel{Kind: ResponseAnswer, Answer: buildHelpReply(uctx)}, answerModeToolFirst)
-	case "attendance.describe_capability", "schedule.describe_capability", "subscription.describe_capability", "manual_sign.describe_capability":
-		metadata, ok := lookupOperation(req.Operation)
-		if !ok {
-			return operationExecutionResult(unsupportedOperationResponse(), answerModeReject)
-		}
-		return operationExecutionResult(ResponseModel{Kind: ResponseAnswer, Answer: buildProtocolCapabilityReply(metadata.Domain, uctx)}, answerModeToolFirst)
 	case "attendance.rule_explain", "schedule.rule_explain", "subscription.rule_explain":
 		return e.executeRuleExplain(ctx, uctx, req)
 	default:

@@ -382,10 +382,14 @@ type evalProtocolCompiler struct{}
 func (evalProtocolCompiler) Compile(_ context.Context, req IntentCompileRequest) (IntentDraft, error) {
 	normalized := normalizeQuery(req.Message)
 	if hasHelpIntent(normalized) {
+		operation, ok := operationNameForActDomain(ActHelp, DomainSystem)
+		if !ok {
+			return unknownIntentDraft("operation_not_allowed"), nil
+		}
 		return IntentDraft{
 			Act:        ActHelp,
 			Domain:     DomainSystem,
-			Operation:  "system.describe_capability",
+			Operation:  operation,
 			Confidence: 1,
 		}, nil
 	}

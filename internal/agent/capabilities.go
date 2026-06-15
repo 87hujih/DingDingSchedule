@@ -141,5 +141,6 @@ func buildHelpReply(uctx *tools.UserContext) string {
 }
 
 func directlyUsableCapability(entry CapabilityEntry) bool {
-	return entry.OperationScope != "manual_sign.describe_capability"
+	manifest, ok := lookupOperation(entry.OperationScope)
+	return ok && manifest.Capability != nil && manifest.Capability.DirectlyUsable
 }

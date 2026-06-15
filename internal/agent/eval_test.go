@@ -37,6 +37,27 @@ func (p *tenantRecordingEvalKnowledgePort) seenTenants() []uint {
 	return append([]uint(nil), p.tenants...)
 }
 
+func TestEvalOperationEntriesAreDerivedFromOperationCatalog(t *testing.T) {
+	t.Parallel()
+
+	entries := evalOperationEntries()
+	if len(entries) != len(operationManifests()) {
+		t.Fatalf("evalOperationEntries() len = %d, want %d", len(entries), len(operationManifests()))
+	}
+	for _, entry := range entries {
+		manifest, ok := lookupOperation(entry.Name)
+		if !ok {
+			t.Fatalf("eval operation %q has no manifest", entry.Name)
+		}
+		if len(entry.CaseIDs) == 0 {
+			t.Fatalf("eval operation %q CaseIDs is empty", entry.Name)
+		}
+		if len(entry.CaseIDs) != len(manifest.Eval.CaseIDs) {
+			t.Fatalf("eval operation %q CaseIDs len = %d, want %d", entry.Name, len(entry.CaseIDs), len(manifest.Eval.CaseIDs))
+		}
+	}
+}
+
 // TestEvaluateCasesAggregatesRouteRetrievalToolAndKeywordMatches 验证评测摘要会汇总多种命中结果。
 func TestEvaluateCasesAggregatesRouteRetrievalToolAndKeywordMatches(t *testing.T) {
 	t.Parallel()

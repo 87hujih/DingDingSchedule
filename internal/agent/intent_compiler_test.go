@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -222,6 +223,26 @@ func TestIntentCompilerPromptIncludesCatalogAndUsesNoTools(t *testing.T) {
 	}
 }
 
+func TestPromptOperationEntriesAreDerivedFromOperationCatalog(t *testing.T) {
+	t.Parallel()
+
+	entries := promptOperationEntries()
+	if len(entries) != len(operationManifests()) {
+		t.Fatalf("promptOperationEntries() len = %d, want %d", len(entries), len(operationManifests()))
+	}
+	for _, entry := range entries {
+		manifest, ok := lookupOperation(entry.Name)
+		if !ok {
+			t.Fatalf("prompt operation %q has no manifest", entry.Name)
+		}
+		if entry.Domain != manifest.Domain {
+			t.Fatalf("%s Domain = %q, want %q", entry.Name, entry.Domain, manifest.Domain)
+		}
+		if !reflect.DeepEqual(entry.AllowedActs, manifest.AllowedActs) {
+			t.Fatalf("%s AllowedActs = %v, want %v", entry.Name, entry.AllowedActs, manifest.AllowedActs)
+		}
+	}
+}
 func TestIntentCompilerPromptIncludesActiveWorkflowContext(t *testing.T) {
 	t.Parallel()
 
