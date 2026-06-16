@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -307,92 +309,97 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	adapter := &callLogAdapter{db: db}
 
 	adapter.Write(context.Background(), agenttool.CallLog{
-		TenantID:                1,
-		UserID:                  7,
-		UserName:                "Alice",
-		ConvType:                "1",
-		QueryType:               "rag",
-		ConversationEvent:       "task_follow_up",
-		ActiveTaskType:          "subscribe_attendance_push",
-		TaskStatusBefore:        "waiting_slots",
-		TaskStatusAfter:         "completed",
-		DomainResult:            "in_domain",
-		DomainHint:              "unknown",
-		PlanKind:                "clarify",
-		KnowledgeStrength:       "weak",
-		PlannerReason:           "weak_domain_match",
-		PlannerAction:           "continue_task",
-		PlannerConfidence:       0.82,
-		TaskID:                  "task-123",
-		TaskKeepOpen:            true,
-		TaskSwitch:              false,
-		LastErrorCode:           "department_name_not_found",
-		ShadowPlannerAction:     "clarify",
-		ShadowPlannerMatched:    false,
-		RouteKind:               "rag_query",
-		RouteConfidence:         0.91,
-		RouteReasonCode:         "rule_query",
-		RouteSource:             "semantic_router",
-		ClarifyCode:             "ambiguous_intent",
-		SoftNoticeCode:          "task_switched",
-		ExecutorName:            "rag_executor",
-		ToolPool:                "knowledge_only",
-		RouterLatencyMs:         7,
-		ExecutorLatencyMs:       28,
-		ShadowRouteKind:         "tool_query",
-		ShadowRouteMatched:      false,
-		ProtocolMode:            "protocol_shadow",
-		ProtocolAct:             "read_query",
-		ProtocolDomain:          "attendance",
-		ProtocolOperation:       "attendance.query_status",
-		ProtocolValidationCode:  "allowed_read_query",
-		ProtocolBlockedReason:   "missing_scope",
-		ProtocolResolvedSlots:   `{"date":"2026-06-06","section":2}`,
-		ProtocolCandidateCount:  2,
-		RequestID:               "req-v2-1",
-		ConversationID:          "conv-v2-1",
-		CompilerStatus:          "ok",
-		CompilerLatencyMs:       11,
-		IntentDraftJSON:         `{"operation":"attendance.query_status","raw":"手机号 13812345678"}`,
-		CatalogValidationCode:   "allowed_read_query",
-		WorkflowDecision:        "single_turn",
-		WorkflowInterruptReason: "new_read_query",
-		ResolvedSlotsJSON:       `{"date":"2026-06-06","section":2}`,
-		EntityResolutionStatus:  "resolved",
-		PrePolicyResult:         "allow",
-		ResourcePolicyResult:    "allow",
-		BlockedReason:           "missing_scope",
-		WriteGuardResult:        "not_required",
-		IdempotencyKey:          "idem-1",
-		ExecutorStatus:          "success",
-		RendererName:            "response_renderer",
-		FailureLayer:            "",
-		LegacyCalled:            false,
-		ReplayCaseID:            "replay-1",
-		WorkflowIDBefore:        "wf-before",
-		WorkflowIDAfter:         "wf-after",
-		WorkflowStateBefore:     "collect_scope",
-		WorkflowStateAfter:      "ready",
-		ResponseKind:            "clarify",
-		ExecutionAllowed:        false,
-		AnswerMode:              "knowledge-only",
-		Question:                "如果请假信息没能同步到位，会出现什么情况",
-		ToolsCalled:             []string{"get_current_time"},
-		ToolCallCount:           1,
-		Reply:                   "同步失败不会直接覆盖已生成快照。",
-		SourceRefs:              []string{"请假同步说明#3"},
-		RetrievalHitCount:       1,
-		RetrievalCandidateCount: 3,
-		RetrievalTopRefs:        []string{"请假同步说明#3", "系统总览#1"},
-		RetrievalScores:         []int{18, 9},
-		FollowUpMatchedSlots:    []string{"dept_names", "scope"},
-		RetrievalFilteredReason: "no_hits",
-		KnowledgeDocTypes:       []string{"rule", "overview"},
-		RetrievalDurationMs:     12,
-		LLMDurationMs:           34,
-		Rounds:                  1,
-		DurationMs:              56,
-		Status:                  "success",
+		TenantID:                   1,
+		UserID:                     7,
+		UserRole:                   1,
+		UserName:                   "Alice",
+		ConvType:                   "1",
+		QueryType:                  "rag",
+		ConversationEvent:          "task_follow_up",
+		ActiveTaskType:             "subscribe_attendance_push",
+		TaskStatusBefore:           "waiting_slots",
+		TaskStatusAfter:            "completed",
+		DomainResult:               "in_domain",
+		DomainHint:                 "unknown",
+		PlanKind:                   "clarify",
+		KnowledgeStrength:          "weak",
+		PlannerReason:              "weak_domain_match",
+		PlannerAction:              "continue_task",
+		PlannerConfidence:          0.82,
+		TaskID:                     "task-123",
+		TaskKeepOpen:               true,
+		TaskSwitch:                 false,
+		LastErrorCode:              "department_name_not_found",
+		ShadowPlannerAction:        "clarify",
+		ShadowPlannerMatched:       false,
+		RouteKind:                  "rag_query",
+		RouteConfidence:            0.91,
+		RouteReasonCode:            "rule_query",
+		RouteSource:                "semantic_router",
+		ClarifyCode:                "ambiguous_intent",
+		SoftNoticeCode:             "task_switched",
+		ExecutorName:               "rag_executor",
+		ToolPool:                   "knowledge_only",
+		RouterLatencyMs:            7,
+		ExecutorLatencyMs:          28,
+		ShadowRouteKind:            "tool_query",
+		ShadowRouteMatched:         false,
+		ProtocolMode:               "protocol_shadow",
+		ProtocolAct:                "read_query",
+		ProtocolDomain:             "attendance",
+		ProtocolOperation:          "attendance.query_status",
+		ProtocolValidationCode:     "allowed_read_query",
+		ProtocolBlockedReason:      "missing_scope",
+		ProtocolResolvedSlots:      `{"date":"2026-06-06","section":2}`,
+		ProtocolCandidateCount:     2,
+		RequestID:                  "req-v2-1",
+		ConversationID:             "conv-v2-1",
+		CompilerStatus:             "ok",
+		CompilerLatencyMs:          11,
+		IntentDraftJSON:            `{"operation":"attendance.query_status","raw":"手机号 13812345678"}`,
+		CatalogValidationCode:      "allowed_read_query",
+		WorkflowDecision:           "single_turn",
+		WorkflowInterruptReason:    "new_read_query",
+		ResolvedSlotsJSON:          `{"date":"2026-06-06","section":2}`,
+		EntityResolutionStatus:     "resolved",
+		PrePolicyResult:            "allow",
+		ResourcePolicyResult:       "allow",
+		BlockedReason:              "missing_scope",
+		WriteGuardResult:           "not_required",
+		IdempotencyKey:             "idem-1",
+		ExecutorStatus:             "success",
+		RendererName:               "response_renderer",
+		FailureLayer:               "",
+		LegacyCalled:               false,
+		ReplayCaseID:               "replay-1",
+		WorkflowIDBefore:           "wf-before",
+		WorkflowIDAfter:            "wf-after",
+		WorkflowTypeBefore:         "subscription.start",
+		WorkflowTypeAfter:          "subscription.start",
+		WorkflowStateBefore:        "collect_scope",
+		WorkflowStateAfter:         "ready",
+		WorkflowSnapshotBeforeJSON: `{"type":"subscription.start","state":"collect_scope","candidates":{"dept_ids":[{"id":"101","label":"信工25级","tenant_id":1}]}}`,
+		WorkflowSnapshotAfterJSON:  `{"type":"subscription.start","state":"ready"}`,
+		ResponseKind:               "clarify",
+		ExecutionAllowed:           false,
+		AnswerMode:                 "knowledge-only",
+		Question:                   "如果请假信息没能同步到位，会出现什么情况",
+		ToolsCalled:                []string{"get_current_time"},
+		ToolCallCount:              1,
+		Reply:                      "同步失败不会直接覆盖已生成快照。",
+		SourceRefs:                 []string{"请假同步说明#3"},
+		RetrievalHitCount:          1,
+		RetrievalCandidateCount:    3,
+		RetrievalTopRefs:           []string{"请假同步说明#3", "系统总览#1"},
+		RetrievalScores:            []int{18, 9},
+		FollowUpMatchedSlots:       []string{"dept_names", "scope"},
+		RetrievalFilteredReason:    "no_hits",
+		KnowledgeDocTypes:          []string{"rule", "overview"},
+		RetrievalDurationMs:        12,
+		LLMDurationMs:              34,
+		Rounds:                     1,
+		DurationMs:                 56,
+		Status:                     "success",
 	})
 
 	var row model.AgentCallLog
@@ -401,6 +408,9 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	}
 	if row.DomainResult != "in_domain" {
 		t.Fatalf("DomainResult = %q, want in_domain", row.DomainResult)
+	}
+	if row.UserRole != 1 {
+		t.Fatalf("UserRole = %d, want 1", row.UserRole)
 	}
 	if row.DomainHint != "unknown" {
 		t.Fatalf("DomainHint = %q, want unknown", row.DomainHint)
@@ -552,11 +562,21 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	if row.WorkflowIDAfter != "wf-after" {
 		t.Fatalf("WorkflowIDAfter = %q, want wf-after", row.WorkflowIDAfter)
 	}
+	if row.WorkflowTypeBefore != "subscription.start" || row.WorkflowTypeAfter != "subscription.start" {
+		t.Fatalf("workflow types = %q/%q, want subscription.start/subscription.start", row.WorkflowTypeBefore, row.WorkflowTypeAfter)
+	}
 	if row.WorkflowStateBefore != "collect_scope" {
 		t.Fatalf("WorkflowStateBefore = %q, want collect_scope", row.WorkflowStateBefore)
 	}
 	if row.WorkflowStateAfter != "ready" {
 		t.Fatalf("WorkflowStateAfter = %q, want ready", row.WorkflowStateAfter)
+	}
+	if !strings.Contains(row.WorkflowSnapshotBeforeJSON, `"type":"subscription.start"`) ||
+		!strings.Contains(row.WorkflowSnapshotBeforeJSON, `"dept_ids"`) {
+		t.Fatalf("WorkflowSnapshotBeforeJSON = %q, want replay type and candidates", row.WorkflowSnapshotBeforeJSON)
+	}
+	if !strings.Contains(row.WorkflowSnapshotAfterJSON, `"state":"ready"`) {
+		t.Fatalf("WorkflowSnapshotAfterJSON = %q, want ready state", row.WorkflowSnapshotAfterJSON)
 	}
 	if row.ResponseKind != "clarify" {
 		t.Fatalf("ResponseKind = %q, want clarify", row.ResponseKind)
@@ -649,6 +669,58 @@ func TestCallLogAdapterBoundsProtocolBlockedReason(t *testing.T) {
 	}
 	if row.ProtocolBlockedReason == longReason {
 		t.Fatalf("ProtocolBlockedReason was not bounded")
+	}
+}
+
+func TestCallLogAdapterKeepsLargeWorkflowSnapshotJSONValid(t *testing.T) {
+	db := newCallLogTestDB(t)
+	adapter := &callLogAdapter{db: db}
+
+	var snapshot strings.Builder
+	snapshot.WriteString(`{"type":"subscription.start","state":"collect_departments","candidates":{"dept_ids":[`)
+	for i := 0; i < 120; i++ {
+		if i > 0 {
+			snapshot.WriteString(",")
+		}
+		snapshot.WriteString(`{"id":"`)
+		snapshot.WriteString(strconv.Itoa(1000 + i))
+		snapshot.WriteString(`","label":"信工25级 replay candidate `)
+		snapshot.WriteString(strconv.Itoa(i))
+		snapshot.WriteString(`","tenant_id":1}`)
+	}
+	snapshot.WriteString(`]}}`)
+
+	adapter.Write(context.Background(), agenttool.CallLog{
+		TenantID:                   1,
+		UserID:                     7,
+		WorkflowSnapshotBeforeJSON: snapshot.String(),
+		Status:                     "success",
+	})
+
+	var row model.AgentCallLog
+	if err := db.First(&row).Error; err != nil {
+		t.Fatalf("query call log: %v", err)
+	}
+	if !json.Valid([]byte(row.WorkflowSnapshotBeforeJSON)) {
+		t.Fatalf("WorkflowSnapshotBeforeJSON is invalid after persistence: length=%d", len([]rune(row.WorkflowSnapshotBeforeJSON)))
+	}
+	if !strings.Contains(row.WorkflowSnapshotBeforeJSON, `"dept_ids"`) {
+		t.Fatalf("WorkflowSnapshotBeforeJSON = %q, want persisted candidates", row.WorkflowSnapshotBeforeJSON)
+	}
+}
+
+func TestBoundedAgentCallLogWorkflowSnapshotJSONCapsMySQLTextBytes(t *testing.T) {
+	raw := `{"type":"subscription.start","state":"collect_departments","candidates":{"dept_ids":[{"id":"1","label":"` +
+		strings.Repeat("信", 25000) +
+		`","tenant_id":1}]}}`
+
+	got := boundedAgentCallLogWorkflowSnapshotJSON(raw)
+
+	if len([]byte(got)) > agentCallLogMaxWorkflowSnapshotJSONBytes {
+		t.Fatalf("workflow snapshot bytes = %d, want <= %d", len([]byte(got)), agentCallLogMaxWorkflowSnapshotJSONBytes)
+	}
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("workflow snapshot JSON is invalid after bounding")
 	}
 }
 

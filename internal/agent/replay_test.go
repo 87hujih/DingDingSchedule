@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"schedule_server/internal/agent/tools"
 	"schedule_server/internal/model"
 
 	"gorm.io/driver/sqlite"
@@ -55,6 +56,74 @@ func TestReplayCaseFromCallLogUsesStructuredFields(t *testing.T) {
 	}
 	if tc.ActiveWorkflowBefore == nil || tc.ActiveWorkflowBefore.ID != "wf-before" || tc.ActiveWorkflowBefore.State != WorkflowCollectScope {
 		t.Fatalf("ActiveWorkflowBefore = %+v, want workflow snapshot from log", tc.ActiveWorkflowBefore)
+	}
+}
+
+func TestReplayCaseFromCallLogRestoresWorkflowTypeStateAndCandidates(t *testing.T) {
+	t.Parallel()
+
+	row := model.AgentCallLog{
+		ID:                         100,
+		TenantID:                   42,
+		UserID:                     7,
+		ConversationID:             "conv-replay",
+		Question:                   "都有哪些部门",
+		ProtocolMode:               string(ProtocolModeLive),
+		ProtocolAct:                string(ActReadQuery),
+		ProtocolDomain:             string(DomainSubscription),
+		ProtocolOperation:          "subscription.list_departments",
+		ResponseKind:               string(ResponseSelectOptions),
+		WorkflowTypeBefore:         string(WorkflowSubscriptionStart),
+		WorkflowStateBefore:        string(WorkflowCollectScope),
+		WorkflowIDBefore:           "wf-before",
+		WorkflowSnapshotBeforeJSON: `{"id":"wf-before","type":"subscription.start","state":"collect_scope","tenant_id":42,"actor_user_id":7,"conversation_id":"conv-replay","missing_fields":["scope"],"candidates":{"dept_ids":[{"id":"101","label":"信工25级","value":"101","tenant_id":42}]}}`,
+	}
+
+	tc := ReplayCaseFromCallLog(row)
+
+	if tc.ActiveWorkflowBefore == nil {
+		t.Fatalf("ActiveWorkflowBefore = nil, want restored workflow")
+	}
+	if tc.ActiveWorkflowBefore.Type != WorkflowSubscriptionStart {
+		t.Fatalf("workflow type = %q, want %q", tc.ActiveWorkflowBefore.Type, WorkflowSubscriptionStart)
+	}
+	if tc.ActiveWorkflowBefore.State != WorkflowCollectScope {
+		t.Fatalf("workflow state = %q, want %q", tc.ActiveWorkflowBefore.State, WorkflowCollectScope)
+	}
+	candidates := tc.ActiveWorkflowBefore.Candidates["dept_ids"]
+	if len(candidates) != 1 || candidates[0].ID != "101" || candidates[0].TenantID != 42 {
+		t.Fatalf("workflow candidates = %+v, want restored dept candidate", candidates)
+	}
+}
+
+func TestReplayCaseFromOldCallLogInfersWorkflowTypeFromState(t *testing.T) {
+	t.Parallel()
+
+	row := model.AgentCallLog{
+		ID:                  102,
+		TenantID:            42,
+		UserID:              7,
+		ConversationID:      "conv-replay",
+		Question:            "有哪些部门",
+		ProtocolMode:        string(ProtocolModeLive),
+		ProtocolAct:         string(ActWorkflowContinue),
+		ProtocolDomain:      string(DomainSubscription),
+		ProtocolOperation:   "subscription.list_departments",
+		ResponseKind:        string(ResponseSelectOptions),
+		WorkflowStateBefore: string(WorkflowCollectScope),
+		WorkflowIDBefore:    "wf-before",
+	}
+
+	tc := ReplayCaseFromCallLog(row)
+
+	if tc.ActiveWorkflowBefore == nil {
+		t.Fatalf("ActiveWorkflowBefore = nil, want restored workflow")
+	}
+	if tc.ActiveWorkflowBefore.Type != WorkflowSubscriptionStart {
+		t.Fatalf("workflow type = %q, want inferred %q for legacy log", tc.ActiveWorkflowBefore.Type, WorkflowSubscriptionStart)
+	}
+	if got := tc.ActiveWorkflowBefore.MissingFields; len(got) != 1 || got[0] != "scope" {
+		t.Fatalf("MissingFields = %v, want [scope]", got)
 	}
 }
 
@@ -116,14 +185,136 @@ func TestFailureLayerReportSummarizesWhereFailuresCluster(t *testing.T) {
 	}
 }
 
-func TestReplayRunnerDoesNotExecuteWritesByDefault(t *testing.T) {
+func TestReplayRunnerReplaysProtocolLiveCaseAndComparesStableFields(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true}}
+	runner := NewReplayRunner(ReplayRunnerOptions{GroupSub: groupSub})
+	result := runner.RunCase(context.Background(), ReplayCase{
+		Question:         "查这个群有没有开启考勤订阅",
+		TenantID:         42,
+		UserID:           7,
+		UserRole:         1,
+		ConversationID:   "conv-replay",
+		ConversationType: "2",
+		ProtocolMode:     string(ProtocolModeLive),
+		IntentDraft: ProtocolDraft{
+			Act:        ActReadQuery,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.query_status",
+			Confidence: 0.97,
+		},
+		Expected: ReplayExpected{
+			Act:          string(ActReadQuery),
+			Domain:       string(DomainSubscription),
+			Operation:    "subscription.query_status",
+			ResponseKind: string(ResponseResult),
+			FailureLayer: "",
+			LegacyCalled: false,
+		},
+	})
+
+	if result.Status != ReplayMatched {
+		t.Fatalf("Status = %q mismatches=%+v, want %q", result.Status, result.Mismatches, ReplayMatched)
+	}
+	if groupSub.getCalls != 1 {
+		t.Fatalf("GetSubscription calls = %d, want protocol_live pipeline replay", groupSub.getCalls)
+	}
+	if result.Actual.Operation != "subscription.query_status" || result.Actual.ResponseKind != string(ResponseResult) {
+		t.Fatalf("Actual = %+v, want replayed protocol fields", result.Actual)
+	}
+}
+
+func TestReplayRunnerReportsStableProtocolFieldMismatches(t *testing.T) {
+	t.Parallel()
+
+	runner := NewReplayRunner(ReplayRunnerOptions{
+		GroupSub: &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true}},
+	})
+	result := runner.RunCase(context.Background(), ReplayCase{
+		Question:         "查这个群有没有开启考勤订阅",
+		TenantID:         42,
+		UserID:           7,
+		UserRole:         1,
+		ConversationID:   "conv-replay",
+		ConversationType: "2",
+		ProtocolMode:     string(ProtocolModeLive),
+		IntentDraft: ProtocolDraft{
+			Act:        ActReadQuery,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.query_status",
+			Confidence: 0.97,
+		},
+		Expected: ReplayExpected{
+			Act:           string(ActWriteRequest),
+			Domain:        string(DomainAttendance),
+			Operation:     "attendance.query_status",
+			ResponseKind:  string(ResponseClarify),
+			BlockedReason: "missing_scope",
+			FailureLayer:  string(FailureIntent),
+			LegacyCalled:  false,
+		},
+	})
+
+	if result.Status != ReplayMismatched {
+		t.Fatalf("Status = %q, want %q", result.Status, ReplayMismatched)
+	}
+	for _, field := range []string{"act", "domain", "operation", "response_kind", "blocked_reason", "failure_layer"} {
+		if !replayMismatchContains(result.Mismatches, field) {
+			t.Fatalf("mismatches = %+v, want field %q", result.Mismatches, field)
+		}
+	}
+}
+
+func TestReplayRunnerFailsWhenLegacyCalledTrue(t *testing.T) {
 	t.Parallel()
 
 	runner := NewReplayRunner(ReplayRunnerOptions{})
 	result := runner.RunCase(context.Background(), ReplayCase{
-		Question: "开启本群全部人员考勤订阅",
+		ProtocolMode: string(ProtocolModeLive),
 		Expected: ReplayExpected{
-			Operation: "subscription.start",
+			Operation:    "subscription.query_status",
+			LegacyCalled: true,
+		},
+	})
+
+	if result.Status != ReplayMismatched {
+		t.Fatalf("Status = %q, want %q", result.Status, ReplayMismatched)
+	}
+	if !replayMismatchContains(result.Mismatches, "legacy_called") {
+		t.Fatalf("mismatches = %+v, want legacy_called failure", result.Mismatches)
+	}
+}
+
+func TestReplayRunnerDryRunWriteRerunsPipelineWithoutCallingWritePort(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	runner := NewReplayRunner(ReplayRunnerOptions{GroupSub: groupSub})
+	result := runner.RunCase(context.Background(), ReplayCase{
+		Question:         "开启本群全部人员考勤订阅",
+		TenantID:         42,
+		UserID:           7,
+		UserRole:         1,
+		ConversationID:   "conv-replay",
+		ConversationType: "2",
+		ProtocolMode:     string(ProtocolModeLive),
+		IntentDraft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.97,
+			Slots: map[string]SlotDraft{
+				"scope": {Field: "scope", Raw: "全部人员"},
+			},
+		},
+		Expected: ReplayExpected{
+			Act:          string(ActWriteRequest),
+			Domain:       string(DomainSubscription),
+			Operation:    "subscription.start",
+			ResponseKind: string(ResponseResult),
+			FailureLayer: "",
+			LegacyCalled: false,
 		},
 	})
 
@@ -133,9 +324,61 @@ func TestReplayRunnerDoesNotExecuteWritesByDefault(t *testing.T) {
 	if result.RealWriteAttempted {
 		t.Fatalf("RealWriteAttempted = true, replay must not execute real writes by default")
 	}
-	if result.Status != ReplaySkippedWrite {
-		t.Fatalf("Status = %q, want %q", result.Status, ReplaySkippedWrite)
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want dry-run replay to avoid real write port", groupSub.subscribeCalls)
 	}
+	if result.Status != ReplayMatched {
+		t.Fatalf("Status = %q mismatches=%+v, want %q", result.Status, result.Mismatches, ReplayMatched)
+	}
+}
+
+func TestReplayRunnerReplaysWorkflowContinueFromCallLog(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	row := model.AgentCallLog{
+		ID:                         101,
+		TenantID:                   42,
+		UserID:                     7,
+		UserRole:                   1,
+		ConvType:                   "2",
+		ConversationID:             "conv-replay",
+		Question:                   "全部人员",
+		ProtocolMode:               string(ProtocolModeLive),
+		ProtocolAct:                string(ActWorkflowContinue),
+		ProtocolDomain:             string(DomainSubscription),
+		ProtocolOperation:          "subscription.start",
+		ResponseKind:               string(ResponseResult),
+		WorkflowDecision:           string(WorkflowCompletedDecision),
+		WorkflowTypeBefore:         string(WorkflowSubscriptionStart),
+		WorkflowStateBefore:        string(WorkflowCollectScope),
+		WorkflowIDBefore:           "wf-before",
+		WorkflowSnapshotBeforeJSON: `{"id":"wf-before","type":"subscription.start","state":"collect_scope","tenant_id":42,"actor_user_id":7,"conversation_id":"conv-replay","missing_fields":["scope"]}`,
+		IntentDraftJSON:            `{"Act":"workflow_continue","Domain":"subscription","Operation":"subscription.start","Confidence":0.97}`,
+	}
+	tc := ReplayCaseFromCallLog(row)
+	runner := NewReplayRunner(ReplayRunnerOptions{GroupSub: groupSub})
+
+	result := runner.RunCase(context.Background(), tc)
+
+	if result.Status != ReplayMatched {
+		t.Fatalf("Status = %q mismatches=%+v actual=%+v, want %q", result.Status, result.Mismatches, result.Actual, ReplayMatched)
+	}
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want dry-run replay to avoid real write port", groupSub.subscribeCalls)
+	}
+	if result.Actual.WorkflowDecision != string(WorkflowCompletedDecision) {
+		t.Fatalf("WorkflowDecision = %q, want %q", result.Actual.WorkflowDecision, WorkflowCompletedDecision)
+	}
+}
+
+func replayMismatchContains(mismatches []ReplayFieldMismatch, field string) bool {
+	for _, mismatch := range mismatches {
+		if mismatch.Field == field {
+			return true
+		}
+	}
+	return false
 }
 
 func newReplayTestDB(t *testing.T) *gorm.DB {

@@ -105,10 +105,14 @@ type protocolMetrics struct {
 }
 
 type workflowMetrics struct {
-	IDBefore    string
-	IDAfter     string
-	StateBefore string
-	StateAfter  string
+	IDBefore           string
+	IDAfter            string
+	TypeBefore         string
+	TypeAfter          string
+	StateBefore        string
+	StateAfter         string
+	SnapshotBeforeJSON string
+	SnapshotAfterJSON  string
 }
 
 type retrievalMetrics struct {

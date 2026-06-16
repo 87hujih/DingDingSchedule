@@ -19,12 +19,16 @@ type protocolLivePipelineDeps struct {
 	PrePolicy      PrePolicyGate
 	ResourcePolicy ResourcePolicyGate
 	WriteGuard     WriteGuard
-	Executor       operationExecutor
+	Executor       protocolOperationExecutor
 	User           UserPort
 	Dept           DeptPort
 	Semester       SemesterPort
 	SchedulePeriod SchedulePeriodPort
 	Clock          func() time.Time
+}
+
+type protocolOperationExecutor interface {
+	Execute(context.Context, OperationRequest) OperationExecutionResult
 }
 
 type protocolLivePipeline struct {
@@ -234,6 +238,13 @@ func (p protocolLivePipeline) writeGuard() WriteGuard {
 		return p.deps.WriteGuard
 	}
 	return newWriteGuard()
+}
+
+func (p protocolLivePipeline) executor() protocolOperationExecutor {
+	if p.deps.Executor != nil {
+		return p.deps.Executor
+	}
+	return newOperationExecutor(operationExecutorDeps{})
 }
 
 func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInput) (outcome protocolLiveOutcome) {
@@ -550,7 +561,7 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 	} else if outcome.WriteGuardResult == "" {
 		outcome.WriteGuardResult = "not_required"
 	}
-	result := p.deps.Executor.Execute(ctx, req)
+	result := p.executor().Execute(ctx, req)
 	setProtocolOutcomeResponse(&outcome, result.Response, result.Metrics.AnswerMode)
 	if len(req.TrustedParams) > 0 {
 		outcome.ResolvedSlots = mergeProtocolResolvedSlots(outcome.ResolvedSlots, protocolResolvedSlotsFromParams(req.TrustedParams))
