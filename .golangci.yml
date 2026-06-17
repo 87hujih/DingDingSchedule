@@ -6,15 +6,12 @@ run:
   issues-exit-code: 1
   # 包含测试文件
   tests: true
-  # 跳过目录
-  skip-dirs:
-    - vendor
-    - .git
 
 # 输出设置
 output:
   # 输出格式：colored-line-number, line-number, json, tab, checkstyle, code-climate
-  format: colored-line-number
+  formats:
+    - format: colored-line-number
   # 打印有问题的行
   print-issued-lines: true
   # 打印 linter 名称
@@ -84,6 +81,11 @@ linters-settings:
 
 # 问题过滤（排除误报）
 issues:
+  # 跳过目录
+  exclude-dirs:
+    - vendor
+    - .git
+
   # 不要在以下情况报错
   exclude-rules:
     # 测试文件中，忽略一些严格检查
