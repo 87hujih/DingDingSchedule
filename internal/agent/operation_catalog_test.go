@@ -106,7 +106,15 @@ func TestOperationCatalogLintPasses(t *testing.T) {
 func TestOperationCatalogWriteManifestsDeclareSafetyBindings(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{"subscription.start", "subscription.cancel"} {
+	tests := []struct {
+		name      string
+		guarantee IdempotencyGuarantee
+	}{
+		{name: "subscription.start", guarantee: IdempotencyGuaranteeRepositoryUniqueUpsert},
+		{name: "subscription.cancel", guarantee: IdempotencyGuaranteeRepositorySoftDelete},
+	}
+	for _, tt := range tests {
+		name := tt.name
 		manifest, ok := lookupOperation(name)
 		if !ok {
 			t.Fatalf("%s missing", name)
@@ -128,6 +136,9 @@ func TestOperationCatalogWriteManifestsDeclareSafetyBindings(t *testing.T) {
 		}
 		if len(manifest.Idempotency.KeyFields) == 0 {
 			t.Fatalf("%s Idempotency.KeyFields = empty", name)
+		}
+		if manifest.Idempotency.Guarantee != tt.guarantee {
+			t.Fatalf("%s Idempotency.Guarantee = %q, want %q", name, manifest.Idempotency.Guarantee, tt.guarantee)
 		}
 	}
 }

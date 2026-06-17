@@ -2345,7 +2345,7 @@ func TestSubscriptionWorkflowCancelsOnExplicitWriteRequestInProtocolLive(t *test
 	t.Parallel()
 
 	callLog := newTestCallLogPort()
-	groupSub := &testGroupSubPort{}
+	groupSub := &testGroupSubPort{info: &agenttools.GroupSubInfo{Subscribed: true}}
 	a := NewAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",

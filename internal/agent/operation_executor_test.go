@@ -264,8 +264,8 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 	if status.Response.Kind != ResponseResult || !strings.Contains(renderProtocolResponse(status.Response), "已订阅") {
 		t.Fatalf("status = %+v reply=%q, want subscribed result", status, renderProtocolResponse(status.Response))
 	}
-	if groupSub.getCalls != 1 {
-		t.Fatalf("GetSubscription calls = %d, want 1", groupSub.getCalls)
+	if groupSub.getCalls != 3 {
+		t.Fatalf("GetSubscription calls = %d, want 3", groupSub.getCalls)
 	}
 
 	options := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{Operation: "subscription.list_departments"}, uctx))
@@ -310,6 +310,129 @@ func TestOperationExecutorSubscriptionStartRejectsInvalidScope(t *testing.T) {
 	}
 	if groupSub.subscribeCalls != 0 {
 		t.Fatalf("Subscribe calls = %d, want 0", groupSub.subscribeCalls)
+	}
+}
+
+func TestOperationExecutorSubscriptionStartReturnsStableWriteStatuses(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		existing           *tools.GroupSubInfo
+		scope              string
+		deptIDs            []int64
+		wantStatus         WriteStatus
+		wantSubscribeCalls int
+	}{
+		{
+			name:               "creates missing subscription",
+			existing:           &tools.GroupSubInfo{Subscribed: false},
+			scope:              "all",
+			wantStatus:         WriteStatusCreated,
+			wantSubscribeCalls: 1,
+		},
+		{
+			name:               "already exists with same all scope",
+			existing:           &tools.GroupSubInfo{Subscribed: true},
+			scope:              "all",
+			wantStatus:         WriteStatusAlreadyExists,
+			wantSubscribeCalls: 0,
+		},
+		{
+			name:               "updates changed department scope",
+			existing:           &tools.GroupSubInfo{Subscribed: true, DeptIDs: []int64{101}},
+			scope:              "department",
+			deptIDs:            []int64{102, 103},
+			wantStatus:         WriteStatusUpdated,
+			wantSubscribeCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			groupSub := &executorFakeGroupSubPort{info: tt.existing}
+			executor := newOperationExecutor(operationExecutorDeps{GroupSub: groupSub})
+			uctx := executorUserContext()
+			params := map[string]any{
+				"conversation_id": uctx.ConversationID,
+				"scope":           tt.scope,
+			}
+			if len(tt.deptIDs) > 0 {
+				params["dept_ids"] = tt.deptIDs
+			}
+
+			result := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
+				Operation:     "subscription.start",
+				TrustedParams: executorTrustedParams(params),
+			}, uctx))
+
+			payload, ok := result.Response.Payload.(OperationStatusPayload)
+			if !ok {
+				t.Fatalf("Payload = %T, want OperationStatusPayload", result.Response.Payload)
+			}
+			if payload.Status != tt.wantStatus {
+				t.Fatalf("Status = %q, want %q", payload.Status, tt.wantStatus)
+			}
+			if groupSub.subscribeCalls != tt.wantSubscribeCalls {
+				t.Fatalf("Subscribe() calls = %d, want %d", groupSub.subscribeCalls, tt.wantSubscribeCalls)
+			}
+		})
+	}
+}
+
+func TestOperationExecutorSubscriptionCancelReturnsStableWriteStatuses(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		existing             *tools.GroupSubInfo
+		wantStatus           WriteStatus
+		wantUnsubscribeCalls int
+	}{
+		{
+			name:                 "no active subscription is no op",
+			existing:             &tools.GroupSubInfo{Subscribed: false},
+			wantStatus:           WriteStatusNoOp,
+			wantUnsubscribeCalls: 0,
+		},
+		{
+			name:                 "active subscription is updated",
+			existing:             &tools.GroupSubInfo{Subscribed: true},
+			wantStatus:           WriteStatusUpdated,
+			wantUnsubscribeCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			groupSub := &executorFakeGroupSubPort{info: tt.existing}
+			executor := newOperationExecutor(operationExecutorDeps{GroupSub: groupSub})
+			uctx := executorUserContext()
+
+			result := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
+				Operation: "subscription.cancel",
+				TrustedParams: executorTrustedParams(map[string]any{
+					"conversation_id": uctx.ConversationID,
+				}),
+			}, uctx))
+
+			payload, ok := result.Response.Payload.(OperationStatusPayload)
+			if !ok {
+				t.Fatalf("Payload = %T, want OperationStatusPayload", result.Response.Payload)
+			}
+			if payload.Status != tt.wantStatus {
+				t.Fatalf("Status = %q, want %q", payload.Status, tt.wantStatus)
+			}
+			if groupSub.unsubscribeCalls != tt.wantUnsubscribeCalls {
+				t.Fatalf("Unsubscribe() calls = %d, want %d", groupSub.unsubscribeCalls, tt.wantUnsubscribeCalls)
+			}
+		})
 	}
 }
 

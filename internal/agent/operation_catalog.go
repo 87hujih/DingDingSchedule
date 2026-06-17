@@ -89,8 +89,16 @@ type PolicySpec struct {
 	Name string
 }
 
+type IdempotencyGuarantee string
+
+const (
+	IdempotencyGuaranteeRepositoryUniqueUpsert IdempotencyGuarantee = "repository_unique_upsert"
+	IdempotencyGuaranteeRepositorySoftDelete   IdempotencyGuarantee = "repository_soft_delete"
+)
+
 type IdempotencySpec struct {
 	KeyFields []string
+	Guarantee IdempotencyGuarantee
 }
 
 type ExecutorBinding struct {
@@ -230,6 +238,7 @@ var operationCatalogEntries = []OperationManifest{
 		Policies: []PolicySpec{{Name: "admin_role"}, {Name: "group_conversation"}, {Name: "subscription_scope"}},
 		Idempotency: IdempotencySpec{
 			KeyFields: []string{"tenant_id", "conversation_id", "actor_user_id", "operation", "scope", "dept_ids", "workflow_id"},
+			Guarantee: IdempotencyGuaranteeRepositoryUniqueUpsert,
 		},
 		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingDefault},
 		Executor:   ExecutorBinding{Name: "operation_executor"},
@@ -258,6 +267,7 @@ var operationCatalogEntries = []OperationManifest{
 		Policies:  []PolicySpec{{Name: "admin_role"}, {Name: "group_conversation"}},
 		Idempotency: IdempotencySpec{
 			KeyFields: []string{"tenant_id", "conversation_id", "actor_user_id", "operation"},
+			Guarantee: IdempotencyGuaranteeRepositorySoftDelete,
 		},
 		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingDefault},
 		Executor:   ExecutorBinding{Name: "operation_executor"},
@@ -685,6 +695,9 @@ func lintWriteManifest(manifest OperationManifest) []string {
 	}
 	if len(manifest.Idempotency.KeyFields) == 0 {
 		errs = append(errs, prefix+": write idempotency key fields are required")
+	}
+	if manifest.Idempotency.Guarantee == "" {
+		errs = append(errs, prefix+": write idempotency guarantee is required")
 	}
 	return errs
 }

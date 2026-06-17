@@ -44,8 +44,18 @@ type SubscriptionStatusPayload struct {
 	Info *tools.GroupSubInfo
 }
 
+type WriteStatus string
+
+const (
+	WriteStatusCreated       WriteStatus = "created"
+	WriteStatusAlreadyExists WriteStatus = "already_exists"
+	WriteStatusUpdated       WriteStatus = "updated"
+	WriteStatusNoOp          WriteStatus = "no_op"
+)
+
 type OperationStatusPayload struct {
-	Code string
+	Code   string
+	Status WriteStatus
 }
 
 type KnowledgeAnswerPayload struct {
@@ -169,7 +179,7 @@ func renderResultPayload(payload any) string {
 	case SubscriptionStatusPayload:
 		return buildSubscriptionStatusReply(typed.Info)
 	case OperationStatusPayload:
-		return renderOperationStatus(typed.Code)
+		return renderOperationStatus(typed)
 	default:
 		return ""
 	}
@@ -183,12 +193,26 @@ func renderNumberedOptions(labels []string) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderOperationStatus(code string) string {
-	switch code {
+func renderOperationStatus(payload OperationStatusPayload) string {
+	switch payload.Code {
 	case "subscription_started":
-		return "已为此群开启考勤推送"
+		switch payload.Status {
+		case WriteStatusAlreadyExists:
+			return "此群已经开启考勤推送，无需重复开启。"
+		case WriteStatusUpdated:
+			return "已更新此群考勤推送范围。"
+		case WriteStatusNoOp:
+			return "此群考勤推送未发生变化。"
+		default:
+			return "已为此群开启考勤推送"
+		}
 	case "subscription_cancelled":
-		return "已取消此群的考勤自动推送"
+		switch payload.Status {
+		case WriteStatusNoOp:
+			return "当前群还没有开启考勤自动推送，无需取消。"
+		default:
+			return "已取消此群的考勤自动推送"
+		}
 	default:
 		return ""
 	}

@@ -477,7 +477,7 @@ func TestProtocolLivePipelineResourcePolicyDenialStopsBeforeExecutor(t *testing.
 func TestProtocolLivePipelineCarriesWriteGuardIdempotencyKey(t *testing.T) {
 	t.Parallel()
 
-	groupSub := &executorFakeGroupSubPort{}
+	groupSub := &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true}}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
 		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
 			Act:        ActWriteRequest,

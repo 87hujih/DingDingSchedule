@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"schedule_server/internal/agent/tools"
@@ -174,10 +175,27 @@ func (e operationExecutor) executeSubscriptionStart(ctx context.Context, req Ope
 	default:
 		return operationExecutionResult(ResponseModel{Kind: ResponseRefuse, RefusalReason: "订阅范围只能是全部人员或指定部门。请重新说明要订阅的范围。"}, answerModeReject)
 	}
+	current, err := e.deps.GroupSub.GetSubscription(ctx, req.TenantID, conversationID)
+	if err != nil {
+		return operationExecutionResult(operationErrorResponse(), answerModeReject)
+	}
+	status := WriteStatusCreated
+	if current != nil && current.Subscribed {
+		if sameSubscriptionDeptScope(current.DeptIDs, deptIDs) {
+			return operationExecutionResult(ResponseModel{
+				Kind:    ResponseResult,
+				Payload: OperationStatusPayload{Code: "subscription_started", Status: WriteStatusAlreadyExists},
+			}, answerModeToolFirst)
+		}
+		status = WriteStatusUpdated
+	}
 	if err := e.deps.GroupSub.Subscribe(ctx, req.TenantID, conversationID, operationRequestConversationTitle(req), req.ActorUserID, deptIDs); err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
-	return operationExecutionResult(ResponseModel{Kind: ResponseResult, Payload: OperationStatusPayload{Code: "subscription_started"}}, answerModeToolFirst)
+	return operationExecutionResult(ResponseModel{
+		Kind:    ResponseResult,
+		Payload: OperationStatusPayload{Code: "subscription_started", Status: status},
+	}, answerModeToolFirst)
 }
 
 func (e operationExecutor) executeSubscriptionCancel(ctx context.Context, req OperationRequest) OperationExecutionResult {
@@ -194,10 +212,23 @@ func (e operationExecutor) executeSubscriptionCancel(ctx context.Context, req Op
 	if req.ConversationID != "" && conversationID != strings.TrimSpace(req.ConversationID) {
 		return operationExecutionResult(subscriptionConversationMismatchResponse(), answerModeReject)
 	}
+	current, err := e.deps.GroupSub.GetSubscription(ctx, req.TenantID, conversationID)
+	if err != nil {
+		return operationExecutionResult(operationErrorResponse(), answerModeReject)
+	}
+	if current == nil || !current.Subscribed {
+		return operationExecutionResult(ResponseModel{
+			Kind:    ResponseResult,
+			Payload: OperationStatusPayload{Code: "subscription_cancelled", Status: WriteStatusNoOp},
+		}, answerModeToolFirst)
+	}
 	if err := e.deps.GroupSub.Unsubscribe(ctx, req.TenantID, conversationID); err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
-	return operationExecutionResult(ResponseModel{Kind: ResponseResult, Payload: OperationStatusPayload{Code: "subscription_cancelled"}}, answerModeToolFirst)
+	return operationExecutionResult(ResponseModel{
+		Kind:    ResponseResult,
+		Payload: OperationStatusPayload{Code: "subscription_cancelled", Status: WriteStatusUpdated},
+	}, answerModeToolFirst)
 }
 
 func (e operationExecutor) executeSubscriptionStatus(ctx context.Context, req OperationRequest) OperationExecutionResult {
@@ -223,6 +254,31 @@ func (e operationExecutor) executeSubscriptionStatus(ctx context.Context, req Op
 
 func subscriptionConversationMismatchResponse() ResponseModel {
 	return ResponseModel{Kind: ResponseRefuse, RefusalReason: "只能操作当前群聊的考勤订阅。请在对应群聊里再告诉我。"}
+}
+
+func sameSubscriptionDeptScope(left, right []int64) bool {
+	left = normalizedSubscriptionDeptIDs(left)
+	right = normalizedSubscriptionDeptIDs(right)
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizedSubscriptionDeptIDs(ids []int64) []int64 {
+	if len(ids) == 0 {
+		return nil
+	}
+	cloned := append([]int64(nil), ids...)
+	sort.Slice(cloned, func(i, j int) bool {
+		return cloned[i] < cloned[j]
+	})
+	return cloned
 }
 
 func (e operationExecutor) executeListDepartments(ctx context.Context) OperationExecutionResult {
