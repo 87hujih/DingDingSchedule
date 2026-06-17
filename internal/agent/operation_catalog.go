@@ -38,6 +38,26 @@ const (
 	WorkflowModeAuxiliary  WorkflowMode = "auxiliary"
 )
 
+type ProtocolLiveDispatchBinding struct {
+	Name string
+}
+
+type WriteGuardBinding struct {
+	Name string
+}
+
+const (
+	ProtocolLiveDispatchAttendance           = "attendance_request"
+	ProtocolLiveDispatchSubscriptionWorkflow = "subscription_workflow"
+	ProtocolLiveDispatchRuntimeConversation  = "runtime_conversation"
+	ProtocolLiveDispatchCapability           = "capability_answer"
+	ProtocolLiveDispatchRuleExplain          = "rule_explain"
+	ProtocolLiveDispatchSchedule             = "schedule_request"
+
+	WriteGuardBindingNotRequired = "not_required"
+	WriteGuardBindingDefault     = "write_guard"
+)
+
 type ParamSpec struct {
 	Name string
 }
@@ -110,9 +130,11 @@ type OperationManifest struct {
 	Defaults              map[string]SlotDefault
 
 	Workflow    *WorkflowSpec
+	Dispatch    ProtocolLiveDispatchBinding
 	Resolvers   []ResolverSpec
 	Policies    []PolicySpec
 	Idempotency IdempotencySpec
+	WriteGuard  WriteGuardBinding
 
 	Executor   ExecutorBinding
 	Renderer   RendererBinding
@@ -168,16 +190,19 @@ var operationCatalogEntries = []OperationManifest{
 		Defaults: map[string]SlotDefault{
 			"date": SlotDefaultToday,
 		},
+		Workflow: singleTurnWorkflowSpec(),
 		Resolvers: []ResolverSpec{
 			{Param: "date", Name: "date_slot"},
 			{Param: "section", Name: "section_slot"},
 			{Param: "user_id", Name: "user_resolver"},
 			{Param: "week", Name: "semester_default"},
 		},
-		Policies: []PolicySpec{{Name: "conversation_scope"}},
-		Executor: ExecutorBinding{Name: "operation_executor"},
-		Renderer: RendererBinding{Name: "response_renderer", Kind: ResponseResult},
-		Eval:     EvalBinding{CaseIDs: []string{"protocol-attendance-slot-status"}, ReplayTags: []string{"attendance"}},
+		Dispatch:   ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchAttendance},
+		Policies:   []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingNotRequired},
+		Executor:   ExecutorBinding{Name: "operation_executor"},
+		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseResult},
+		Eval:       EvalBinding{CaseIDs: []string{"protocol-attendance-slot-status"}, ReplayTags: []string{"attendance"}},
 	},
 	{
 		Name:                  "subscription.start",
@@ -201,12 +226,14 @@ var operationCatalogEntries = []OperationManifest{
 			{Param: "scope", Name: "subscription_scope"},
 			{Param: "dept_ids", Name: "department_resolver"},
 		},
+		Dispatch: ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchSubscriptionWorkflow},
 		Policies: []PolicySpec{{Name: "admin_role"}, {Name: "group_conversation"}, {Name: "subscription_scope"}},
 		Idempotency: IdempotencySpec{
 			KeyFields: []string{"tenant_id", "conversation_id", "actor_user_id", "operation", "scope", "dept_ids", "workflow_id"},
 		},
-		Executor: ExecutorBinding{Name: "operation_executor"},
-		Renderer: RendererBinding{Name: "response_renderer", Kind: ResponseResult},
+		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingDefault},
+		Executor:   ExecutorBinding{Name: "operation_executor"},
+		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseResult},
 		Eval: EvalBinding{
 			CaseIDs:    []string{"protocol-subscription-missing-scope", "protocol-subscription-first-turn-all"},
 			ReplayTags: []string{"subscription", "write_low"},
@@ -227,13 +254,15 @@ var operationCatalogEntries = []OperationManifest{
 			RequiredTrustedParams: params("conversation_id"),
 		},
 		Resolvers: []ResolverSpec{{Param: "conversation_id", Name: "runtime_conversation"}},
+		Dispatch:  ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchRuntimeConversation},
 		Policies:  []PolicySpec{{Name: "admin_role"}, {Name: "group_conversation"}},
 		Idempotency: IdempotencySpec{
 			KeyFields: []string{"tenant_id", "conversation_id", "actor_user_id", "operation"},
 		},
-		Executor: ExecutorBinding{Name: "operation_executor"},
-		Renderer: RendererBinding{Name: "response_renderer", Kind: ResponseResult},
-		Eval:     EvalBinding{CaseIDs: []string{"catalog-subscription-cancel"}, ReplayTags: []string{"subscription", "write_low"}},
+		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingDefault},
+		Executor:   ExecutorBinding{Name: "operation_executor"},
+		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseResult},
+		Eval:       EvalBinding{CaseIDs: []string{"catalog-subscription-cancel"}, ReplayTags: []string{"subscription", "write_low"}},
 	},
 	{
 		Name:                  "subscription.query_status",
@@ -243,8 +272,11 @@ var operationCatalogEntries = []OperationManifest{
 		Scope:                 ConversationScopeGroup,
 		MinRole:               0,
 		RequiredTrustedParams: params("conversation_id"),
+		Workflow:              singleTurnWorkflowSpec(),
 		Resolvers:             []ResolverSpec{{Param: "conversation_id", Name: "runtime_conversation"}},
+		Dispatch:              ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchRuntimeConversation},
 		Policies:              []PolicySpec{{Name: "group_conversation"}},
+		WriteGuard:            WriteGuardBinding{Name: WriteGuardBindingNotRequired},
 		Executor:              ExecutorBinding{Name: "operation_executor"},
 		Renderer:              RendererBinding{Name: "response_renderer", Kind: ResponseResult},
 		Eval:                  EvalBinding{CaseIDs: []string{"catalog-subscription-query-status"}, ReplayTags: []string{"subscription"}},
@@ -261,10 +293,12 @@ var operationCatalogEntries = []OperationManifest{
 			Mode:                WorkflowModeAuxiliary,
 			AuxiliaryOperations: []string{"subscription.start"},
 		},
-		Policies: []PolicySpec{{Name: "conversation_scope"}},
-		Executor: ExecutorBinding{Name: "operation_executor"},
-		Renderer: RendererBinding{Name: "response_renderer", Kind: ResponseSelectOptions},
-		Eval:     EvalBinding{CaseIDs: []string{"protocol-subscription-list-departments-workflow-meta"}, ReplayTags: []string{"subscription", "workflow"}},
+		Dispatch:   ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchSubscriptionWorkflow},
+		Policies:   []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingNotRequired},
+		Executor:   ExecutorBinding{Name: "operation_executor"},
+		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseSelectOptions},
+		Eval:       EvalBinding{CaseIDs: []string{"protocol-subscription-list-departments-workflow-meta"}, ReplayTags: []string{"subscription", "workflow"}},
 	},
 	{
 		Name:        "system.describe_capability",
@@ -273,7 +307,10 @@ var operationCatalogEntries = []OperationManifest{
 		Risk:        RiskRead,
 		Scope:       ConversationScopeBoth,
 		MinRole:     0,
+		Workflow:    singleTurnWorkflowSpec(),
+		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
 		Policies:    []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
 		Executor:    ExecutorBinding{Name: "operation_executor"},
 		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:        EvalBinding{CaseIDs: []string{"protocol-help-overview"}, ReplayTags: []string{"capability"}},
@@ -291,7 +328,10 @@ var operationCatalogEntries = []OperationManifest{
 		Risk:        RiskRead,
 		Scope:       ConversationScopeBoth,
 		MinRole:     0,
+		Workflow:    singleTurnWorkflowSpec(),
+		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
 		Policies:    []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
 		Executor:    ExecutorBinding{Name: "operation_executor"},
 		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:        EvalBinding{CaseIDs: []string{"catalog-attendance-describe-capability"}, ReplayTags: []string{"capability", "attendance"}},
@@ -309,7 +349,10 @@ var operationCatalogEntries = []OperationManifest{
 		Risk:        RiskRead,
 		Scope:       ConversationScopeBoth,
 		MinRole:     0,
+		Workflow:    singleTurnWorkflowSpec(),
+		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
 		Policies:    []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
 		Executor:    ExecutorBinding{Name: "operation_executor"},
 		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:        EvalBinding{CaseIDs: []string{"catalog-schedule-describe-capability"}, ReplayTags: []string{"capability", "schedule"}},
@@ -327,7 +370,10 @@ var operationCatalogEntries = []OperationManifest{
 		Risk:        RiskRead,
 		Scope:       ConversationScopeGroup,
 		MinRole:     0,
+		Workflow:    singleTurnWorkflowSpec(),
+		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
 		Policies:    []PolicySpec{{Name: "group_conversation"}},
+		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
 		Executor:    ExecutorBinding{Name: "operation_executor"},
 		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:        EvalBinding{CaseIDs: []string{"catalog-subscription-describe-capability"}, ReplayTags: []string{"capability", "subscription"}},
@@ -345,7 +391,10 @@ var operationCatalogEntries = []OperationManifest{
 		Risk:        RiskRead,
 		Scope:       ConversationScopeBoth,
 		MinRole:     0,
+		Workflow:    singleTurnWorkflowSpec(),
+		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
 		Policies:    []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
 		Executor:    ExecutorBinding{Name: "operation_executor"},
 		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval: EvalBinding{
@@ -367,8 +416,11 @@ var operationCatalogEntries = []OperationManifest{
 		Scope:                 ConversationScopeBoth,
 		MinRole:               0,
 		RequiredTrustedParams: params("rule_topic"),
+		Workflow:              singleTurnWorkflowSpec(),
 		Resolvers:             []ResolverSpec{{Param: "rule_topic", Name: "rule_topic_slot"}},
+		Dispatch:              ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchRuleExplain},
 		Policies:              []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard:            WriteGuardBinding{Name: WriteGuardBindingNotRequired},
 		Executor:              ExecutorBinding{Name: "operation_executor"},
 		Renderer:              RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:                  EvalBinding{CaseIDs: []string{"protocol-rule-no-hit"}, ReplayTags: []string{"rule", "attendance"}},
@@ -381,8 +433,11 @@ var operationCatalogEntries = []OperationManifest{
 		Scope:                 ConversationScopeBoth,
 		MinRole:               0,
 		RequiredTrustedParams: params("rule_topic"),
+		Workflow:              singleTurnWorkflowSpec(),
 		Resolvers:             []ResolverSpec{{Param: "rule_topic", Name: "rule_topic_slot"}},
+		Dispatch:              ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchRuleExplain},
 		Policies:              []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard:            WriteGuardBinding{Name: WriteGuardBindingNotRequired},
 		Executor:              ExecutorBinding{Name: "operation_executor"},
 		Renderer:              RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:                  EvalBinding{CaseIDs: []string{"catalog-schedule-rule-explain"}, ReplayTags: []string{"rule", "schedule"}},
@@ -395,8 +450,11 @@ var operationCatalogEntries = []OperationManifest{
 		Scope:                 ConversationScopeBoth,
 		MinRole:               0,
 		RequiredTrustedParams: params("rule_topic"),
+		Workflow:              singleTurnWorkflowSpec(),
 		Resolvers:             []ResolverSpec{{Param: "rule_topic", Name: "rule_topic_slot"}},
+		Dispatch:              ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchRuleExplain},
 		Policies:              []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard:            WriteGuardBinding{Name: WriteGuardBindingNotRequired},
 		Executor:              ExecutorBinding{Name: "operation_executor"},
 		Renderer:              RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:                  EvalBinding{CaseIDs: []string{"catalog-subscription-rule-explain"}, ReplayTags: []string{"rule", "subscription"}},
@@ -412,11 +470,14 @@ var operationCatalogEntries = []OperationManifest{
 		Defaults: map[string]SlotDefault{
 			"week": SlotDefaultCurrentWeek,
 		},
-		Resolvers: []ResolverSpec{{Param: "week", Name: "week_slot"}},
-		Policies:  []PolicySpec{{Name: "conversation_scope"}},
-		Executor:  ExecutorBinding{Name: "operation_executor"},
-		Renderer:  RendererBinding{Name: "response_renderer", Kind: ResponseResult},
-		Eval:      EvalBinding{CaseIDs: []string{"protocol-my-schedule"}, ReplayTags: []string{"schedule"}},
+		Workflow:   singleTurnWorkflowSpec(),
+		Resolvers:  []ResolverSpec{{Param: "week", Name: "week_slot"}},
+		Dispatch:   ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchSchedule},
+		Policies:   []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingNotRequired},
+		Executor:   ExecutorBinding{Name: "operation_executor"},
+		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseResult},
+		Eval:       EvalBinding{CaseIDs: []string{"protocol-my-schedule"}, ReplayTags: []string{"schedule"}},
 	},
 	{
 		Name:                  "schedule.query_user_schedule",
@@ -429,11 +490,14 @@ var operationCatalogEntries = []OperationManifest{
 		Defaults: map[string]SlotDefault{
 			"week": SlotDefaultCurrentWeek,
 		},
-		Resolvers: []ResolverSpec{{Param: "user_id", Name: "user_resolver"}, {Param: "week", Name: "week_slot"}},
-		Policies:  []PolicySpec{{Name: "conversation_scope"}, {Name: "schedule_user_visibility"}},
-		Executor:  ExecutorBinding{Name: "operation_executor"},
-		Renderer:  RendererBinding{Name: "response_renderer", Kind: ResponseResult},
-		Eval:      EvalBinding{CaseIDs: []string{"catalog-schedule-query-user-schedule"}, ReplayTags: []string{"schedule"}},
+		Workflow:   singleTurnWorkflowSpec(),
+		Resolvers:  []ResolverSpec{{Param: "user_id", Name: "user_resolver"}, {Param: "week", Name: "week_slot"}},
+		Dispatch:   ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchSchedule},
+		Policies:   []PolicySpec{{Name: "conversation_scope"}, {Name: "schedule_user_visibility"}},
+		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingNotRequired},
+		Executor:   ExecutorBinding{Name: "operation_executor"},
+		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseResult},
+		Eval:       EvalBinding{CaseIDs: []string{"catalog-schedule-query-user-schedule"}, ReplayTags: []string{"schedule"}},
 	},
 }
 
@@ -443,6 +507,10 @@ func params(names ...string) []ParamSpec {
 		specs = append(specs, ParamSpec{Name: name})
 	}
 	return specs
+}
+
+func singleTurnWorkflowSpec() *WorkflowSpec {
+	return &WorkflowSpec{Mode: WorkflowModeSingleTurn}
 }
 
 func paramNames(specs []ParamSpec) []string {
@@ -565,6 +633,19 @@ func lintOperationCatalog(entries []OperationManifest) []string {
 		if manifest.Scope == "" {
 			errs = append(errs, prefix+": conversation scope is required")
 		}
+		if manifest.Workflow == nil {
+			errs = append(errs, prefix+": workflow binding is required")
+		} else if manifest.Workflow.Mode == "" {
+			errs = append(errs, prefix+": workflow mode is required")
+		}
+		if manifest.Dispatch.Name == "" {
+			errs = append(errs, prefix+": protocol_live dispatch binding is required")
+		} else if _, ok := lookupProtocolLiveDispatch(manifest.Dispatch.Name); !ok {
+			errs = append(errs, prefix+": protocol_live dispatch binding is unknown")
+		}
+		if manifest.WriteGuard.Name == "" {
+			errs = append(errs, prefix+": write guard binding is required")
+		}
 		if manifest.Executor.Name == "" {
 			errs = append(errs, prefix+": executor binding is required")
 		}
@@ -576,6 +657,8 @@ func lintOperationCatalog(entries []OperationManifest) []string {
 		}
 		if manifest.IsWrite {
 			errs = append(errs, lintWriteManifest(manifest)...)
+		} else if manifest.WriteGuard.Name != WriteGuardBindingNotRequired {
+			errs = append(errs, prefix+": read operation write guard must be not_required")
 		}
 		errs = append(errs, lintParamResolution(manifest, manifest.RequiredTrustedParams)...)
 		for _, shape := range manifest.QueryShapes {
@@ -590,6 +673,9 @@ func lintWriteManifest(manifest OperationManifest) []string {
 	prefix := manifest.Name
 	if manifest.Risk == RiskRead {
 		errs = append(errs, prefix+": write operation cannot use read risk")
+	}
+	if manifest.WriteGuard.Name != WriteGuardBindingDefault {
+		errs = append(errs, prefix+": write operation must bind write_guard")
 	}
 	if manifest.Workflow == nil {
 		errs = append(errs, prefix+": write workflow is required")

@@ -145,6 +145,40 @@ func TestOperationCatalogEveryManifestHasRendererAndEvalBinding(t *testing.T) {
 	}
 }
 
+func TestOperationCatalogEveryManifestDeclaresProtocolLiveRuntimeBindings(t *testing.T) {
+	t.Parallel()
+
+	for _, manifest := range operationManifests() {
+		if manifest.Dispatch.Name == "" {
+			t.Fatalf("%s Dispatch.Name is empty", manifest.Name)
+		}
+		if _, ok := lookupProtocolLiveDispatch(manifest.Dispatch.Name); !ok {
+			t.Fatalf("%s Dispatch.Name %q has no protocol_live dispatch binding", manifest.Name, manifest.Dispatch.Name)
+		}
+		if manifest.Workflow == nil {
+			t.Fatalf("%s Workflow is nil", manifest.Name)
+		}
+		if manifest.Workflow.Mode == "" {
+			t.Fatalf("%s Workflow.Mode is empty", manifest.Name)
+		}
+		if manifest.Executor.Name == "" {
+			t.Fatalf("%s Executor.Name is empty", manifest.Name)
+		}
+		if manifest.Renderer.Name == "" {
+			t.Fatalf("%s Renderer.Name is empty", manifest.Name)
+		}
+		if manifest.IsWrite {
+			if manifest.WriteGuard.Name != WriteGuardBindingDefault {
+				t.Fatalf("%s WriteGuard.Name = %q, want %q", manifest.Name, manifest.WriteGuard.Name, WriteGuardBindingDefault)
+			}
+			continue
+		}
+		if manifest.WriteGuard.Name != WriteGuardBindingNotRequired {
+			t.Fatalf("%s WriteGuard.Name = %q, want %q", manifest.Name, manifest.WriteGuard.Name, WriteGuardBindingNotRequired)
+		}
+	}
+}
+
 func TestOperationCatalogEvalCaseIDsExistInFixture(t *testing.T) {
 	t.Parallel()
 

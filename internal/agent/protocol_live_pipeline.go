@@ -342,59 +342,18 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 		return outcome
 	}
 
-	if manifest, ok := lookupOperation(draft.Operation); ok && manifest.Capability != nil {
-		return p.execute(ctx, input.User, OperationRequest{Operation: draft.Operation}, outcome)
+	if manifest, ok := lookupOperation(draft.Operation); ok {
+		if manifest.Renderer.Name != "" {
+			outcome.RendererName = manifest.Renderer.Name
+		}
+		if dispatch, ok := lookupProtocolLiveDispatch(manifest.Dispatch.Name); ok {
+			return dispatch.Handle(ctx, p, input, draft, manifest, activeWorkflow, outcome)
+		}
 	}
 
-	switch draft.Operation {
-	case "subscription.start", "subscription.list_departments":
-		return p.handleSubscription(ctx, input, draft, activeWorkflow, outcome)
-	case "subscription.query_status", "subscription.cancel":
-		req := OperationRequest{
-			Operation:      draft.Operation,
-			TenantID:       userTenantID(input.User),
-			ActorUserID:    userActorUserID(input.User),
-			ConversationID: userConversationID(input.User),
-			TrustedParams: trustedParamsFromValues(userTenantID(input.User), TrustedParamSource{
-				Kind:     TrustedParamSourceRuntime,
-				Resolver: "conversation_runtime",
-			}, map[string]any{"conversation_id": userConversationID(input.User)}),
-		}
-		return p.execute(ctx, input.User, req, outcome)
-	case "attendance.query_status":
-		req, response, ok := p.attendanceRequest(ctx, input.Message, draft, userTenantID(input.User))
-		if !ok {
-			setProtocolOutcomeResponse(&outcome, response, answerModeToolFirst)
-			return outcome
-		}
-		return p.execute(ctx, input.User, req, outcome)
-	case "schedule.query_my_schedule", "schedule.query_user_schedule":
-		req, response, ok := p.scheduleRequest(ctx, input.Message, draft, userTenantID(input.User))
-		if !ok {
-			setProtocolOutcomeResponse(&outcome, response, answerModeToolFirst)
-			return outcome
-		}
-		return p.execute(ctx, input.User, req, outcome)
-	case "attendance.rule_explain", "schedule.rule_explain", "subscription.rule_explain":
-		req, blocked := buildOperationRequest(draft, trustedEntities{
-			UserRole: inputUserRole(input.User),
-			TenantID: userTenantID(input.User),
-			TrustedParams: trustedParamsFromValues(userTenantID(input.User), TrustedParamSource{
-				Kind:     TrustedParamSourceRawSlot,
-				Raw:      protocolRuleTopic(input.Message, draft),
-				Resolver: "rule_topic_slot",
-			}, map[string]any{"rule_topic": protocolRuleTopic(input.Message, draft)}),
-		})
-		if blocked {
-			setProtocolOutcomeResponse(&outcome, missingOperationParamsResponse(draft.Operation, []string{"rule_topic"}), answerModeToolFirst)
-			return outcome
-		}
-		return p.execute(ctx, input.User, req, outcome)
-	default:
-		response, mode := protocolLiveGuardrailResponse(draft, validation, input.User)
-		setProtocolOutcomeResponse(&outcome, response, mode)
-		return outcome
-	}
+	response, mode := protocolLiveGuardrailResponse(draft, validation, input.User)
+	setProtocolOutcomeResponse(&outcome, response, mode)
+	return outcome
 }
 
 func (p protocolLivePipeline) handleSubscription(ctx context.Context, input protocolLiveInput, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot, outcome protocolLiveOutcome) protocolLiveOutcome {

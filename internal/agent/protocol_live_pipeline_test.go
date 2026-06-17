@@ -2,12 +2,34 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"schedule_server/internal/agent/tools"
 )
+
+func TestProtocolLivePipelineDoesNotSwitchOnOperation(t *testing.T) {
+	t.Parallel()
+
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	pipelinePath := filepath.Join(filepath.Dir(testFile), "protocol_live_pipeline.go")
+	source, err := os.ReadFile(pipelinePath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", pipelinePath, err)
+	}
+	operationSwitch := regexp.MustCompile(`switch\s+(draft\.)?Operation|switch\s+.*Operation`)
+	if operationSwitch.Match(source) {
+		t.Fatalf("protocol_live_pipeline.go must dispatch operations through OperationCatalog, not switch on operation names")
+	}
+}
 
 func TestProtocolLivePipelineExplicitNewRequestInterruptsWorkflow(t *testing.T) {
 	t.Parallel()
