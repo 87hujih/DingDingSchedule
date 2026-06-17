@@ -1608,7 +1608,7 @@ func (a *Agent) applyProtocolLiveOutcomeAfterStore(sessionKey string, metrics *c
 		metrics.ResponseKind = string(outcome.Response.Kind)
 		metrics.AnswerMode = outcome.AnswerMode
 		metrics.QueryType = modeToQueryKind(outcome.AnswerMode)
-		if outcome.WorkflowDecision != "" {
+		if outcome.WorkflowDecision != "" && outcome.WorkflowDecision != WorkflowSingleTurn {
 			metrics.Route.ExecutorName = "protocol_live_workflow"
 		} else {
 			metrics.Route.ExecutorName = "protocol_live_guardrail"
@@ -1633,17 +1633,20 @@ func workflowStoreFailureOutcome() protocolLiveOutcome {
 		ValidationCode: "workflow_store_failed",
 		ResponseKind:   ResponseRefuse,
 	}
-	return protocolLiveOutcome{
-		Draft:          draft,
-		Validation:     validation,
-		Response:       ResponseModel{Kind: ResponseRefuse, RefusalReason: "系统暂时无法处理当前任务状态，请稍后重试。"},
-		AnswerMode:     answerModeReject,
-		BlockedReason:  "workflow_store_failed",
-		RequestID:      newProtocolLiveRequestID(time.Now()),
-		CompilerStatus: "skipped",
-		FailureLayer:   FailurePersistence,
-		RendererName:   "response_renderer",
+	outcome := protocolLiveOutcome{
+		Draft:           draft,
+		Validation:      validation,
+		Response:        ResponseModel{Kind: ResponseRefuse, RefusalReason: "系统暂时无法处理当前任务状态，请稍后重试。"},
+		AnswerMode:      answerModeReject,
+		BlockedReason:   "workflow_store_failed",
+		RequestID:       newProtocolLiveRequestID(time.Now()),
+		CompilerStatus:  "skipped",
+		IntentDraftJSON: compactIntentDraft(draft),
+		FailureLayer:    FailurePersistence,
+		RendererName:    "response_renderer",
 	}
+	finalizeProtocolLiveOutcome(&outcome)
+	return outcome
 }
 
 func workflowStateAfterFromDecision(decision WorkflowDecision) string {

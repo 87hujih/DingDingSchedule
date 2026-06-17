@@ -771,7 +771,7 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 		ProtocolOperation:          log.ProtocolOperation,
 		ProtocolValidationCode:     log.ProtocolValidationCode,
 		ProtocolBlockedReason:      boundedAgentCallLogCode(log.ProtocolBlockedReason, 64),
-		ProtocolResolvedSlots:      log.ProtocolResolvedSlots,
+		ProtocolResolvedSlots:      boundedAgentCallLogJSON(log.ProtocolResolvedSlots),
 		ProtocolCandidateCount:     log.ProtocolCandidateCount,
 		RequestID:                  boundedAgentCallLogCode(log.RequestID, agentCallLogMaxCodeRunes),
 		ConversationID:             boundedAgentCallLogCode(log.ConversationID, agentCallLogMaxKeyRunes),
@@ -804,10 +804,10 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 		ResponseKind:               log.ResponseKind,
 		ExecutionAllowed:           log.ExecutionAllowed,
 		AnswerMode:                 log.AnswerMode,
-		Question:                   log.Question,
+		Question:                   boundedAgentCallLogText(log.Question),
 		ToolsCalled:                toolsCalled,
 		ToolCallCount:              log.ToolCallCount,
-		Reply:                      log.Reply,
+		Reply:                      boundedAgentCallLogText(log.Reply),
 		SourceRefs:                 strings.Join(log.SourceRefs, ","),
 		RetrievalHitCount:          log.RetrievalHitCount,
 		RetrievalCandidateCount:    log.RetrievalCandidateCount,
@@ -849,6 +849,10 @@ func boundedAgentCallLogCode(value string, maxRunes int) string {
 }
 
 func boundedAgentCallLogJSON(value string) string {
+	return boundedAgentCallLogCode(sanitizeAgentCallLogText(value), agentCallLogMaxJSONRunes)
+}
+
+func boundedAgentCallLogText(value string) string {
 	return boundedAgentCallLogCode(sanitizeAgentCallLogText(value), agentCallLogMaxJSONRunes)
 }
 

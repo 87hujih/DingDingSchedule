@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -407,6 +408,73 @@ func TestProtocolLiveChatUsesWorkflowStoreLock(t *testing.T) {
 	}
 }
 
+func TestProtocolLiveWorkflowStoreFailureRecordsV2Fields(t *testing.T) {
+	t.Parallel()
+
+	callLog := newTestCallLogPort()
+	a := NewAgent(Deps{
+		LLMBaseURL:   "http://127.0.0.1:0",
+		LLMAPIKey:    "test-key",
+		LLMModel:     "test-model",
+		ProtocolMode: string(ProtocolModeLive),
+		IntentCompiler: fixedIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.96,
+		}},
+		WorkflowStore: failingWorkflowStore{},
+		CallLog:       callLog,
+		User:          testUserPort{},
+		Tenant:        testTenantPort{},
+		Logger:        zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:           "corp-1",
+		SenderID:         "ding-user",
+		SenderNick:       "Alice",
+		Content:          "开启本群考勤订阅",
+		ConversationID:   "conv-lock-failure",
+		ConversationType: "2",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	log, ok := callLog.Wait(time.Second)
+	if !ok {
+		t.Fatalf("expected call log")
+	}
+
+	required := map[string]string{
+		"RequestID":              log.RequestID,
+		"CompilerStatus":         log.CompilerStatus,
+		"CatalogValidationCode":  log.CatalogValidationCode,
+		"WorkflowDecision":       log.WorkflowDecision,
+		"EntityResolutionStatus": log.EntityResolutionStatus,
+		"PrePolicyResult":        log.PrePolicyResult,
+		"ResourcePolicyResult":   log.ResourcePolicyResult,
+		"WriteGuardResult":       log.WriteGuardResult,
+		"ExecutorStatus":         log.ExecutorStatus,
+		"RendererName":           log.RendererName,
+		"ResponseKind":           log.ResponseKind,
+		"FailureLayer":           log.FailureLayer,
+		"ReplayCaseID":           log.ReplayCaseID,
+	}
+	for name, value := range required {
+		if value == "" {
+			t.Fatalf("%s is empty in workflow-store failure call log: %+v", name, log)
+		}
+	}
+	if log.FailureLayer != string(FailurePersistence) {
+		t.Fatalf("FailureLayer = %q, want %q", log.FailureLayer, FailurePersistence)
+	}
+	if log.LegacyCalled {
+		t.Fatalf("LegacyCalled = true, want false for protocol_live workflow-store failure")
+	}
+}
+
 type fixedIntentCompiler struct {
 	draft ProtocolDraft
 }
@@ -448,6 +516,24 @@ func (s *recordingWorkflowStore) withLockCalls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.locks
+}
+
+type failingWorkflowStore struct{}
+
+func (failingWorkflowStore) Load(context.Context, WorkflowKey) (*WorkflowSnapshot, error) {
+	return nil, nil
+}
+
+func (failingWorkflowStore) Save(context.Context, *WorkflowSnapshot) error {
+	return nil
+}
+
+func (failingWorkflowStore) Clear(context.Context, WorkflowKey, string) error {
+	return nil
+}
+
+func (failingWorkflowStore) WithLock(context.Context, WorkflowKey, func(*WorkflowSnapshot) (*WorkflowSnapshot, error)) error {
+	return errors.New("workflow store unavailable")
 }
 
 func TestChatUsesRouteAsSinglePrimaryChainWhenProtocolIsShadow(t *testing.T) {

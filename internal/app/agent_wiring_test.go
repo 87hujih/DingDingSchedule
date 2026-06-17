@@ -647,6 +647,42 @@ func TestCallLogAdapterBoundsAndSanitizesV2JSONFields(t *testing.T) {
 	}
 }
 
+func TestCallLogAdapterBoundsAndSanitizesNamedLongTextFields(t *testing.T) {
+	db := newCallLogTestDB(t)
+	adapter := &callLogAdapter{db: db}
+
+	rawText := `token=secret-token 手机 13812345678 邮箱 alice@example.com 身份证 11010519491231002X ` + strings.Repeat("x", 5000)
+	adapter.Write(context.Background(), agenttool.CallLog{
+		TenantID:              1,
+		UserID:                7,
+		ProtocolMode:          "protocol_live",
+		ProtocolResolvedSlots: `{"raw":"` + rawText + `"}`,
+		Question:              rawText,
+		Reply:                 rawText,
+		Status:                "success",
+	})
+
+	var row model.AgentCallLog
+	if err := db.First(&row).Error; err != nil {
+		t.Fatalf("query call log: %v", err)
+	}
+	for name, value := range map[string]string{
+		"ProtocolResolvedSlots": row.ProtocolResolvedSlots,
+		"Question":              row.Question,
+		"Reply":                 row.Reply,
+	} {
+		if len([]rune(value)) > agentCallLogMaxJSONRunes {
+			t.Fatalf("%s length = %d, want <= %d", name, len([]rune(value)), agentCallLogMaxJSONRunes)
+		}
+		if strings.Contains(value, "13812345678") ||
+			strings.Contains(value, "alice@example.com") ||
+			strings.Contains(value, "11010519491231002X") ||
+			strings.Contains(value, "secret-token") {
+			t.Fatalf("%s was not sanitized: %q", name, value)
+		}
+	}
+}
+
 func TestCallLogAdapterBoundsProtocolBlockedReason(t *testing.T) {
 	db := newCallLogTestDB(t)
 	adapter := &callLogAdapter{db: db}

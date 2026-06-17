@@ -172,11 +172,93 @@ func TestProtocolLiveGoldenMyScheduleUsesOperationExecutor(t *testing.T) {
 	assertProtocolLiveGoldenCallLog(t, log)
 }
 
+func TestProtocolLiveGoldenUnknownIntentRecordsV2FailureFields(t *testing.T) {
+	t.Parallel()
+
+	callLog := newTestCallLogPort()
+	a := NewAgent(Deps{
+		LLMBaseURL:   "http://127.0.0.1:0",
+		LLMAPIKey:    "test-key",
+		LLMModel:     "test-model",
+		ProtocolMode: string(ProtocolModeLive),
+		IntentCompiler: &protocolLiveGoldenCompiler{drafts: []ProtocolDraft{{
+			Act:        ActUnknown,
+			Domain:     DomainUnknown,
+			Operation:  "",
+			Confidence: 0.2,
+			Reason:     "unknown_intent",
+		}}},
+		CallLog:        callLog,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	if _, err := a.Chat(context.Background(), protocolLiveGoldenMessage("火星天气怎么样", "conv-protocol-golden-unknown", "1")); err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	log, ok := callLog.Wait(time.Second)
+	if !ok {
+		t.Fatalf("expected call log")
+	}
+
+	required := map[string]string{
+		"RequestID":              log.RequestID,
+		"CompilerStatus":         log.CompilerStatus,
+		"CatalogValidationCode":  log.CatalogValidationCode,
+		"WorkflowDecision":       log.WorkflowDecision,
+		"EntityResolutionStatus": log.EntityResolutionStatus,
+		"PrePolicyResult":        log.PrePolicyResult,
+		"ResourcePolicyResult":   log.ResourcePolicyResult,
+		"WriteGuardResult":       log.WriteGuardResult,
+		"ExecutorStatus":         log.ExecutorStatus,
+		"RendererName":           log.RendererName,
+		"ResponseKind":           log.ResponseKind,
+		"FailureLayer":           log.FailureLayer,
+		"ReplayCaseID":           log.ReplayCaseID,
+	}
+	for name, value := range required {
+		if strings.TrimSpace(value) == "" {
+			t.Fatalf("%s is empty in protocol_live failure call log: %+v", name, log)
+		}
+	}
+	if log.FailureLayer != string(FailureIntent) {
+		t.Fatalf("FailureLayer = %q, want %q", log.FailureLayer, FailureIntent)
+	}
+	if log.LegacyCalled {
+		t.Fatalf("LegacyCalled = true, want false for protocol_live failure")
+	}
+	if log.ReplayCaseID != log.RequestID {
+		t.Fatalf("ReplayCaseID = %q, want request id %q", log.ReplayCaseID, log.RequestID)
+	}
+}
+
 func assertProtocolLiveGoldenCallLog(t *testing.T, log agenttools.CallLog) {
 	t.Helper()
 
 	if log.RequestID == "" {
 		t.Fatalf("RequestID is empty in protocol_live call log: %+v", log)
+	}
+	required := map[string]string{
+		"CompilerStatus":         log.CompilerStatus,
+		"CatalogValidationCode":  log.CatalogValidationCode,
+		"WorkflowDecision":       log.WorkflowDecision,
+		"EntityResolutionStatus": log.EntityResolutionStatus,
+		"PrePolicyResult":        log.PrePolicyResult,
+		"ResourcePolicyResult":   log.ResourcePolicyResult,
+		"WriteGuardResult":       log.WriteGuardResult,
+		"ExecutorStatus":         log.ExecutorStatus,
+		"RendererName":           log.RendererName,
+		"ResponseKind":           log.ResponseKind,
+		"ReplayCaseID":           log.ReplayCaseID,
+	}
+	for name, value := range required {
+		if strings.TrimSpace(value) == "" {
+			t.Fatalf("%s is empty in protocol_live call log: %+v", name, log)
+		}
 	}
 	if log.LegacyCalled {
 		t.Fatalf("LegacyCalled = true, want false for protocol_live golden case: %+v", log)

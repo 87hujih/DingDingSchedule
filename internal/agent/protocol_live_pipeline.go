@@ -96,6 +96,12 @@ func finalizeProtocolLiveOutcome(outcome *protocolLiveOutcome) {
 	if outcome.PrePolicyResult == "" {
 		outcome.PrePolicyResult = protocolPrePolicyResult(outcome.Validation)
 	}
+	if outcome.ResourcePolicyResult == "" {
+		outcome.ResourcePolicyResult = "not_evaluated"
+	}
+	if outcome.WorkflowDecision == "" {
+		outcome.WorkflowDecision = WorkflowSingleTurn
+	}
 	if outcome.BlockedReason == "" {
 		outcome.BlockedReason = protocolResponseBlockedReason(outcome.Response, outcome.Validation)
 	}
@@ -141,13 +147,13 @@ func protocolEntityResolutionStatus(outcome protocolLiveOutcome) string {
 	if strings.HasPrefix(outcome.BlockedReason, "missing_") {
 		return string(ResolveNotFound)
 	}
-	return ""
+	return "not_required"
 }
 
 func protocolWriteGuardResult(outcome protocolLiveOutcome) string {
 	manifest, ok := lookupOperation(outcome.Draft.Operation)
 	if !ok {
-		return ""
+		return "not_evaluated"
 	}
 	if !manifest.IsWrite {
 		return "not_required"
@@ -158,7 +164,7 @@ func protocolWriteGuardResult(outcome protocolLiveOutcome) string {
 	if outcome.FailureLayer == FailureWriteGuardBlocked {
 		return "block:" + outcome.BlockedReason
 	}
-	return ""
+	return "not_evaluated"
 }
 
 func protocolExecutorStatus(response ResponseModel) string {
