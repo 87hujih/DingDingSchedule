@@ -157,6 +157,58 @@ func TestLoadReplayCasesFromDBFiltersProtocolLogs(t *testing.T) {
 	}
 }
 
+func TestLoadReplayCasesFromDBThenRunCaseReplaysProtocolLivePipeline(t *testing.T) {
+	db := newReplayTestDB(t)
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
+	row := model.AgentCallLog{
+		TenantID:          42,
+		UserID:            7,
+		UserRole:          1,
+		ConvType:          "2",
+		ConversationID:    "conv-replay",
+		Question:          "查这个群有没有开启考勤订阅",
+		ProtocolMode:      string(ProtocolModeLive),
+		ProtocolAct:       string(ActReadQuery),
+		ProtocolDomain:    string(DomainSubscription),
+		ProtocolOperation: "subscription.query_status",
+		ResponseKind:      string(ResponseResult),
+		FailureLayer:      "",
+		LegacyCalled:      false,
+		ReplayCaseID:      "replay-loaded-query",
+		IntentDraftJSON:   `{"Act":"read_query","Domain":"subscription","Operation":"subscription.query_status","Confidence":0.97}`,
+		CreatedAt:         now,
+	}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatalf("seed replay log: %v", err)
+	}
+
+	cases, err := LoadReplayCasesFromDB(context.Background(), db, ReplayFilter{
+		TenantID:  42,
+		Operation: "subscription.query_status",
+		Since:     now.Add(-time.Hour),
+		Until:     now.Add(time.Hour),
+	}, 5)
+	if err != nil {
+		t.Fatalf("LoadReplayCasesFromDB() error = %v", err)
+	}
+	if len(cases) != 1 {
+		t.Fatalf("case count = %d, want 1: %+v", len(cases), cases)
+	}
+
+	groupSub := &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true}}
+	result := NewReplayRunner(ReplayRunnerOptions{GroupSub: groupSub}).RunCase(context.Background(), cases[0])
+
+	if result.Status != ReplayMatched {
+		t.Fatalf("Status = %q mismatches=%+v actual=%+v, want %q", result.Status, result.Mismatches, result.Actual, ReplayMatched)
+	}
+	if groupSub.getCalls != 1 {
+		t.Fatalf("GetSubscription calls = %d, want replay to execute protocol_live pipeline", groupSub.getCalls)
+	}
+	if result.DryRun != true || result.RealWriteAttempted {
+		t.Fatalf("dry-run state = dry_run:%t real_write:%t, want dry-run with no real write", result.DryRun, result.RealWriteAttempted)
+	}
+}
+
 func TestFailureLayerReportSummarizesWhereFailuresCluster(t *testing.T) {
 	t.Parallel()
 
