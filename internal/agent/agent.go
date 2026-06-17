@@ -216,13 +216,14 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	// 2. protocol_live 作为独占主链。shadow 模式只记录协议草稿，不抢占 route / legacy 主流程。
 	if primaryChain == decisionChainProtocol {
 		workflowKey := workflowKeyFromUserContext(uctx)
-		_, legacyWorkflow := a.sessions.getWorkflowState(sessionKey)
 		var workflowBefore *WorkflowSnapshot
 		var outcome protocolLiveOutcome
-		lockErr := a.workflowStore.WithLock(ctx, workflowKey, func(activeWorkflow *WorkflowSnapshot) (*WorkflowSnapshot, error) {
-			if activeWorkflow == nil {
-				activeWorkflow = legacyWorkflow
-			}
+
+		activeWorkflow, workflowErr := a.workflowStore.Load(ctx, workflowKey)
+		if workflowErr != nil {
+			a.deps.Logger.Warnw("读取 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", workflowErr)
+			outcome = workflowStoreFailureOutcome()
+		} else {
 			workflowBefore = cloneWorkflowSnapshot(activeWorkflow)
 			if activeWorkflow != nil {
 				metrics.Wf.IDBefore = activeWorkflow.ID
@@ -232,23 +233,15 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 				User:           uctx,
 				ActiveWorkflow: activeWorkflow,
 			})
-			if outcome.ClearWorkflow {
-				return nil, nil
+			if persistErr := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, outcome); persistErr != nil {
+				a.deps.Logger.Warnw("更新 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", persistErr)
+				outcome = workflowStoreFailureOutcome()
 			}
-			if outcome.WorkflowAfter != nil {
-				next := cloneWorkflowSnapshot(outcome.WorkflowAfter)
-				next.TenantID = workflowKey.TenantID
-				next.ConversationID = workflowKey.ConversationID
-				next.ActorUserID = workflowKey.ActorUserID
-				return next, nil
-			}
-			return activeWorkflow, nil
-		})
-		if lockErr != nil {
-			a.deps.Logger.Warnw("更新 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", lockErr)
-			outcome = workflowStoreFailureOutcome()
 		}
-		a.applyProtocolLiveOutcomeAfterStore(sessionKey, &metrics, outcome, workflowBefore)
+		if a.sessions != nil {
+			a.sessions.bindWorkflowKey(sessionKey, workflowKey)
+		}
+		a.applyProtocolLiveOutcomeMetrics(&metrics, outcome, workflowBefore)
 		reply := renderProtocolResponse(outcome.Response)
 		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
@@ -258,10 +251,6 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	if a.protocolMode == ProtocolModeShadow {
 		_, activeWorkflow := a.sessions.getWorkflowState(sessionKey)
 		protocolWorkflow := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
-		if protocolWorkflow == nil {
-			_, activeTask := a.sessions.getSessionState(sessionKey)
-			protocolWorkflow = protocolWorkflowContextFromActiveTask(activeTask)
-		}
 		protocolDraft := compileProtocol(protocolInput{
 			Message:        msg.Content,
 			ActiveWorkflow: protocolWorkflow,
@@ -1557,6 +1546,23 @@ func (a *Agent) applyProtocolLiveOutcomeForKey(ctx context.Context, workflowKey 
 	a.applyProtocolLiveOutcomeAfterStore(sessionKey, metrics, outcome, workflowBefore)
 }
 
+func (a *Agent) persistProtocolLiveWorkflowOutcome(ctx context.Context, workflowKey WorkflowKey, outcome protocolLiveOutcome) error {
+	if a == nil || a.workflowStore == nil {
+		return nil
+	}
+	if outcome.ClearWorkflow {
+		return a.workflowStore.Clear(ctx, workflowKey, string(outcome.WorkflowDecision))
+	}
+	if outcome.WorkflowAfter == nil {
+		return nil
+	}
+	next := cloneWorkflowSnapshot(outcome.WorkflowAfter)
+	next.TenantID = workflowKey.TenantID
+	next.ConversationID = workflowKey.ConversationID
+	next.ActorUserID = workflowKey.ActorUserID
+	return a.workflowStore.Save(ctx, next)
+}
+
 func (a *Agent) applyProtocolLiveOutcomeAfterStore(sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome, workflowBefore *WorkflowSnapshot) {
 	if a != nil && a.sessions != nil {
 		if outcome.ClearWorkflow {
@@ -1567,6 +1573,10 @@ func (a *Agent) applyProtocolLiveOutcomeAfterStore(sessionKey string, metrics *c
 		}
 	}
 
+	a.applyProtocolLiveOutcomeMetrics(metrics, outcome, workflowBefore)
+}
+
+func (a *Agent) applyProtocolLiveOutcomeMetrics(metrics *callMetrics, outcome protocolLiveOutcome, workflowBefore *WorkflowSnapshot) {
 	applyProtocolMetrics(metrics, outcome.Draft, outcome.Validation)
 	if metrics == nil {
 		return

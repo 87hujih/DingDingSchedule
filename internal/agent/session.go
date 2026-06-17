@@ -14,10 +14,11 @@ const (
 )
 
 type session struct {
-	messages   []tools.Message
-	activeTask *ActiveTask
-	taskMemory *TaskInstance
-	updatedAt  time.Time
+	messages    []tools.Message
+	activeTask  *ActiveTask
+	taskMemory  *TaskInstance
+	workflowKey WorkflowKey
+	updatedAt   time.Time
 }
 
 type sessionManager struct {
@@ -103,9 +104,13 @@ func (sm *sessionManager) getWorkflowState(key string) ([]tools.Message, *Workfl
 
 	msgs := make([]tools.Message, len(s.messages))
 	copy(msgs, s.messages)
+	workflowKey := workflowKeyFromSessionKey(key, nil)
+	if validateWorkflowKey(s.workflowKey) == nil {
+		workflowKey = s.workflowKey
+	}
 	sm.mu.RUnlock()
 
-	workflow, _ := sm.workflowStore.Load(context.Background(), workflowKeyFromSessionKey(key, nil))
+	workflow, _ := sm.workflowStore.Load(context.Background(), workflowKey)
 	return msgs, workflow
 }
 
@@ -173,7 +178,7 @@ func (sm *sessionManager) setWorkflowState(key string, workflow *WorkflowSnapsho
 		sm.clearWorkflowState(key)
 		return
 	}
-	keyParts := workflowKeyFromSessionKey(key, nil)
+	keyParts := workflowKeyFromSessionKey(key, workflow)
 	next := cloneWorkflowSnapshot(workflow)
 	next.TenantID = keyParts.TenantID
 	next.ConversationID = keyParts.ConversationID
@@ -181,10 +186,35 @@ func (sm *sessionManager) setWorkflowState(key string, workflow *WorkflowSnapsho
 	_ = sm.workflowStore.Save(context.Background(), next)
 
 	sm.mu.Lock()
-	if s, ok := sm.sessions[key]; ok {
-		s.updatedAt = time.Now()
+	s, ok := sm.sessions[key]
+	if !ok {
+		s = &session{
+			messages: make([]tools.Message, 0, maxHistory),
+		}
+		sm.sessions[key] = s
 	}
+	s.workflowKey = keyParts
+	s.updatedAt = time.Now()
 	sm.mu.Unlock()
+}
+
+func (sm *sessionManager) bindWorkflowKey(key string, workflowKey WorkflowKey) {
+	if err := validateWorkflowKey(workflowKey); err != nil {
+		return
+	}
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	s, ok := sm.sessions[key]
+	if !ok {
+		s = &session{
+			messages: make([]tools.Message, 0, maxHistory),
+		}
+		sm.sessions[key] = s
+	}
+	s.workflowKey = workflowKey
+	s.updatedAt = time.Now()
 }
 
 // clearActiveTask handles clear active task.
@@ -217,10 +247,18 @@ func (sm *sessionManager) clearTaskInstance(key string) {
 
 // clearWorkflowState handles clear workflow state.
 func (sm *sessionManager) clearWorkflowState(key string) {
-	_ = sm.workflowStore.Clear(context.Background(), workflowKeyFromSessionKey(key, nil), "session_clear")
+	workflowKey := workflowKeyFromSessionKey(key, nil)
+	sm.mu.RLock()
+	if s, ok := sm.sessions[key]; ok && validateWorkflowKey(s.workflowKey) == nil {
+		workflowKey = s.workflowKey
+	}
+	sm.mu.RUnlock()
+
+	_ = sm.workflowStore.Clear(context.Background(), workflowKey, "session_clear")
 
 	sm.mu.Lock()
 	if s, ok := sm.sessions[key]; ok {
+		s.workflowKey = WorkflowKey{}
 		s.updatedAt = time.Now()
 	}
 	sm.mu.Unlock()

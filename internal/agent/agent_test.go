@@ -361,7 +361,7 @@ func TestApplyProtocolLiveOutcomeRecordsTerminalWorkflowState(t *testing.T) {
 	}
 }
 
-func TestProtocolLiveChatUsesWorkflowStoreLock(t *testing.T) {
+func TestProtocolLiveChatDoesNotUseWorkflowStoreLockAroundPipeline(t *testing.T) {
 	t.Parallel()
 
 	store := newRecordingWorkflowStore()
@@ -396,8 +396,8 @@ func TestProtocolLiveChatUsesWorkflowStoreLock(t *testing.T) {
 		t.Fatalf("Chat() error = %v", err)
 	}
 
-	if store.withLockCalls() != 1 {
-		t.Fatalf("WithLock calls = %d, want 1", store.withLockCalls())
+	if store.withLockCalls() != 0 {
+		t.Fatalf("WithLock calls = %d, want 0; protocol_live must not run pipeline under store lock", store.withLockCalls())
 	}
 	workflow, err := store.Load(context.Background(), WorkflowKey{TenantID: 42, ConversationID: "conv-lock", ActorUserID: 7})
 	if err != nil {
@@ -405,6 +405,63 @@ func TestProtocolLiveChatUsesWorkflowStoreLock(t *testing.T) {
 	}
 	if workflow == nil || workflow.State != WorkflowCollectScope {
 		t.Fatalf("workflow = %+v, want collect_scope saved under structured key", workflow)
+	}
+}
+
+func TestProtocolLiveChatIgnoresSessionDerivedWorkflowState(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	store := newRecordingWorkflowStore()
+	a := NewAgent(Deps{
+		LLMBaseURL:   "http://127.0.0.1:0",
+		LLMAPIKey:    "test-key",
+		LLMModel:     "test-model",
+		ProtocolMode: string(ProtocolModeLive),
+		IntentCompiler: fixedIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.95,
+		}},
+		WorkflowStore: store,
+		GroupSub:      groupSub,
+		User:          testUserPort{},
+		Tenant:        testTenantPort{},
+		Logger:        zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	sessionKey := "42:conv-session-fallback:ding-user"
+	a.sessions.setWorkflowState(sessionKey, &WorkflowSnapshot{
+		ID:           "wf-session-derived",
+		Type:         WorkflowSubscriptionStart,
+		State:        WorkflowCollectScope,
+		MissingSlots: []string{"scope"},
+	})
+
+	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "全部人员",
+		ConversationID:    "conv-session-fallback",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 when structured workflow store has no current workflow", groupSub.subscribeCalls)
+	}
+	workflow, err := store.Load(context.Background(), WorkflowKey{TenantID: 42, ConversationID: "conv-session-fallback", ActorUserID: 7})
+	if err != nil {
+		t.Fatalf("Load(structured key) error = %v", err)
+	}
+	if workflow != nil {
+		t.Fatalf("structured workflow = %+v, want nil; session-derived workflow must not be promoted", workflow)
 	}
 }
 
@@ -525,11 +582,11 @@ func (failingWorkflowStore) Load(context.Context, WorkflowKey) (*WorkflowSnapsho
 }
 
 func (failingWorkflowStore) Save(context.Context, *WorkflowSnapshot) error {
-	return nil
+	return errors.New("workflow store unavailable")
 }
 
 func (failingWorkflowStore) Clear(context.Context, WorkflowKey, string) error {
-	return nil
+	return errors.New("workflow store unavailable")
 }
 
 func (failingWorkflowStore) WithLock(context.Context, WorkflowKey, func(*WorkflowSnapshot) (*WorkflowSnapshot, error)) error {

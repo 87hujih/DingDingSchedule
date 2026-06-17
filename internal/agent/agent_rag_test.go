@@ -2418,10 +2418,13 @@ func TestProtocolLiveWorkflowCancelClearsActiveWorkflowWithoutUnsubscribe(t *tes
 	defer a.Stop()
 
 	a.sessions.setWorkflowState("42:conv-protocol-workflow-cancel:ding-user", &WorkflowSnapshot{
-		ID:           "wf-subscription",
-		Type:         WorkflowSubscriptionStart,
-		State:        WorkflowCollectScope,
-		MissingSlots: []string{"scope"},
+		ID:             "wf-subscription",
+		TenantID:       42,
+		ConversationID: "conv-protocol-workflow-cancel",
+		ActorUserID:    7,
+		Type:           WorkflowSubscriptionStart,
+		State:          WorkflowCollectScope,
+		MissingSlots:   []string{"scope"},
 	})
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2481,10 +2484,13 @@ func TestProtocolLiveWorkflowCancelAllowsOrdinaryUserToClearOwnWorkflow(t *testi
 	defer a.Stop()
 
 	a.sessions.setWorkflowState("42:conv-protocol-workflow-cancel-ordinary:ding-user", &WorkflowSnapshot{
-		ID:           "wf-subscription",
-		Type:         WorkflowSubscriptionStart,
-		State:        WorkflowCollectScope,
-		MissingSlots: []string{"scope"},
+		ID:             "wf-subscription",
+		TenantID:       42,
+		ConversationID: "conv-protocol-workflow-cancel-ordinary",
+		ActorUserID:    8,
+		Type:           WorkflowSubscriptionStart,
+		State:          WorkflowCollectScope,
+		MissingSlots:   []string{"scope"},
 	})
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
