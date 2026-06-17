@@ -1,5 +1,7 @@
 package agent
 
+// OperationCatalog-derived capability view; this is not an independent capability source.
+
 type capabilityContext struct {
 	UserRole         int
 	ConversationType string

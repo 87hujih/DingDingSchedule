@@ -6,6 +6,8 @@ import (
 	"schedule_server/internal/agent/tools"
 )
 
+// legacy-only: query router helpers support route/semantic legacy chains outside protocol_live.
+
 type queryKind string
 
 const (

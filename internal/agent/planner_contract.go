@@ -1,5 +1,7 @@
 package agent
 
+// legacy-only: planner contract belongs to the old planner path outside protocol_live.
+
 type PlannerAction string
 
 const (

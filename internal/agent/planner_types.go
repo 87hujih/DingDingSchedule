@@ -2,6 +2,8 @@ package agent
 
 import "schedule_server/internal/agent/tools"
 
+// legacy-only: planner types belong to the old planner path outside protocol_live.
+
 type DomainHint string
 
 const (

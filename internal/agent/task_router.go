@@ -6,6 +6,8 @@ import (
 	"schedule_server/internal/agent/tools"
 )
 
+// legacy-only: task router builds old ActiveTask flows outside protocol_live.
+
 // buildTaskFromRequest 根据新请求构建任务候选，不直接拥有主流程裁决权。
 func buildTaskFromRequest(question string, uctx *tools.UserContext) *ActiveTask {
 	normalized := normalizeQuery(question)
