@@ -29,13 +29,18 @@ type EvalCase struct {
 	ExpectedBlockedReason     string   `json:"expected_blocked_reason,omitempty"`
 	ExpectedFailureLayer      string   `json:"expected_failure_layer,omitempty"`
 	ExpectedLegacyCalled      *bool    `json:"expected_legacy_called,omitempty"`
+	ExpectedWorkflowDecision  string   `json:"expected_workflow_decision,omitempty"`
+	ExpectedWorkflowReason    string   `json:"expected_workflow_interrupt_reason,omitempty"`
 	ConversationType          string   `json:"conversation_type,omitempty"`
 	ActiveWorkflowType        string   `json:"active_workflow_type,omitempty"`
 	ActiveWorkflowState       string   `json:"active_workflow_state,omitempty"`
 	ActiveWorkflowMissing     []string `json:"active_workflow_missing,omitempty"`
+	ActiveWorkflowExpired     bool     `json:"active_workflow_expired,omitempty"`
 	ExpectedTools             []string `json:"expected_tools,omitempty"`
 	ExpectedSources           []string `json:"expected_sources,omitempty"`
 	ExpectedKeywords          []string `json:"expected_keywords,omitempty"`
+
+	ExpectedFailureLayerSet bool `json:"-"`
 }
 
 // EvalObservation 表示一次端到端问答观测结果。
@@ -49,6 +54,8 @@ type EvalObservation struct {
 	ProtocolBlockedReason string
 	FailureLayer          string
 	LegacyCalled          bool
+	WorkflowDecision      string
+	WorkflowReason        string
 }
 
 // EvalObserver 执行真实问答并返回回复与工具调用信息。
@@ -80,6 +87,8 @@ type EvalCaseResult struct {
 	ProtocolBlockedReason string
 	FailureLayer          string
 	LegacyCalled          bool
+	WorkflowDecision      string
+	WorkflowReason        string
 	ProtocolChecked       bool
 	ProtocolMatched       bool
 	AnswerMode            string
@@ -99,6 +108,21 @@ type EvalCaseResult struct {
 	Reply                 string
 	DurationMs            int64
 	Error                 string
+}
+
+func (tc *EvalCase) UnmarshalJSON(data []byte) error {
+	type evalCaseNoMethods EvalCase
+	var decoded evalCaseNoMethods
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*tc = EvalCase(decoded)
+	_, tc.ExpectedFailureLayerSet = raw["expected_failure_layer"]
+	return nil
 }
 
 // EvalSummary 表示整批样本的评测摘要。
@@ -235,6 +259,8 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 			result.ProtocolBlockedReason = protocolEval.BlockedReason
 			result.FailureLayer = protocolEval.FailureLayer
 			result.LegacyCalled = protocolEval.LegacyCalled
+			result.WorkflowDecision = protocolEval.WorkflowDecision
+			result.WorkflowReason = protocolEval.WorkflowReason
 		}
 
 		result.AnswerMode = string(compat.AnswerMode)
@@ -302,6 +328,12 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 					result.FailureLayer = observation.FailureLayer
 				}
 				result.LegacyCalled = observation.LegacyCalled
+				if observation.WorkflowDecision != "" {
+					result.WorkflowDecision = observation.WorkflowDecision
+				}
+				if observation.WorkflowReason != "" {
+					result.WorkflowReason = observation.WorkflowReason
+				}
 			}
 		}
 
@@ -382,13 +414,15 @@ func evalUserContext(tenantID uint) *tools.UserContext {
 }
 
 type evalProtocolResult struct {
-	Act           string
-	Domain        string
-	Operation     string
-	ResponseKind  string
-	BlockedReason string
-	FailureLayer  string
-	LegacyCalled  bool
+	Act              string
+	Domain           string
+	Operation        string
+	ResponseKind     string
+	BlockedReason    string
+	FailureLayer     string
+	LegacyCalled     bool
+	WorkflowDecision string
+	WorkflowReason   string
 }
 
 type evalProtocolCompiler struct{}
@@ -431,15 +465,26 @@ func evaluateProtocolCase(ctx context.Context, tc EvalCase, knowledge KnowledgeP
 	var activeWorkflow *WorkflowSnapshot
 	if strings.TrimSpace(tc.ActiveWorkflowType) != "" {
 		activeWorkflow = &WorkflowSnapshot{
-			ID:           "eval-workflow",
-			Type:         WorkflowType(strings.TrimSpace(tc.ActiveWorkflowType)),
-			State:        WorkflowState(strings.TrimSpace(tc.ActiveWorkflowState)),
-			MissingSlots: append([]string(nil), tc.ActiveWorkflowMissing...),
+			ID:             "eval-workflow",
+			TenantID:       uctx.TenantID,
+			ActorUserID:    uctx.UserID,
+			ConversationID: uctx.ConversationID,
+			Type:           WorkflowType(strings.TrimSpace(tc.ActiveWorkflowType)),
+			State:          WorkflowState(strings.TrimSpace(tc.ActiveWorkflowState)),
+			MissingFields:  append([]string(nil), tc.ActiveWorkflowMissing...),
+			MissingSlots:   append([]string(nil), tc.ActiveWorkflowMissing...),
+		}
+		if tc.ActiveWorkflowExpired {
+			activeWorkflow.ExpiresAt = time.Now().Add(-time.Minute)
 		}
 	}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
 		Compiler: evalProtocolCompiler{},
-		Executor: newOperationExecutor(operationExecutorDeps{Knowledge: knowledge}),
+		Executor: newOperationExecutor(operationExecutorDeps{
+			Dept:      evalDeptPort{tenantID: tenantID},
+			GroupSub:  evalGroupSubPort{},
+			Knowledge: knowledge,
+		}),
 	})
 	outcome := pipeline.Handle(ctx, protocolLiveInput{
 		Message:        tc.Question,
@@ -447,14 +492,45 @@ func evaluateProtocolCase(ctx context.Context, tc EvalCase, knowledge KnowledgeP
 		ActiveWorkflow: activeWorkflow,
 	})
 	return evalProtocolResult{
-		Act:           string(outcome.Draft.Act),
-		Domain:        string(outcome.Draft.Domain),
-		Operation:     outcome.Draft.Operation,
-		ResponseKind:  string(outcome.Response.Kind),
-		BlockedReason: outcome.BlockedReason,
-		FailureLayer:  string(outcome.FailureLayer),
-		LegacyCalled:  outcome.LegacyCalled,
+		Act:              string(outcome.Draft.Act),
+		Domain:           string(outcome.Draft.Domain),
+		Operation:        outcome.Draft.Operation,
+		ResponseKind:     string(outcome.Response.Kind),
+		BlockedReason:    outcome.BlockedReason,
+		FailureLayer:     string(outcome.FailureLayer),
+		LegacyCalled:     outcome.LegacyCalled,
+		WorkflowDecision: string(outcome.WorkflowDecision),
+		WorkflowReason:   outcome.WorkflowInterruptReason,
 	}
+}
+
+type evalDeptPort struct {
+	tenantID uint
+}
+
+func (p evalDeptPort) ListDepts(context.Context) ([]tools.DeptItem, error) {
+	tenantID := p.tenantID
+	if tenantID == 0 {
+		tenantID = 1
+	}
+	return []tools.DeptItem{
+		{TenantID: tenantID, DeptID: 101, Name: "信工24级"},
+		{TenantID: tenantID, DeptID: 102, Name: "信工25级"},
+	}, nil
+}
+
+type evalGroupSubPort struct{}
+
+func (evalGroupSubPort) Subscribe(context.Context, uint, string, string, uint, []int64) error {
+	return nil
+}
+
+func (evalGroupSubPort) Unsubscribe(context.Context, uint, string) error {
+	return nil
+}
+
+func (evalGroupSubPort) GetSubscription(context.Context, uint, string) (*tools.GroupSubInfo, error) {
+	return &tools.GroupSubInfo{Subscribed: false}, nil
 }
 
 func protocolExpectationPresent(tc EvalCase) bool {
@@ -463,8 +539,10 @@ func protocolExpectationPresent(tc EvalCase) bool {
 		strings.TrimSpace(tc.ExpectedProtocolOperation) != "" ||
 		strings.TrimSpace(tc.ExpectedResponseKind) != "" ||
 		strings.TrimSpace(tc.ExpectedBlockedReason) != "" ||
-		strings.TrimSpace(tc.ExpectedFailureLayer) != "" ||
-		tc.ExpectedLegacyCalled != nil
+		expectedFailureLayerPresent(tc) ||
+		tc.ExpectedLegacyCalled != nil ||
+		strings.TrimSpace(tc.ExpectedWorkflowDecision) != "" ||
+		strings.TrimSpace(tc.ExpectedWorkflowReason) != ""
 }
 
 func protocolExpectationMatched(tc EvalCase, result EvalCaseResult) bool {
@@ -477,7 +555,8 @@ func protocolExpectationMatched(tc EvalCase, result EvalCaseResult) bool {
 		{tc.ExpectedProtocolOperation, result.ProtocolOperation},
 		{tc.ExpectedResponseKind, result.ResponseKind},
 		{tc.ExpectedBlockedReason, result.ProtocolBlockedReason},
-		{tc.ExpectedFailureLayer, result.FailureLayer},
+		{tc.ExpectedWorkflowDecision, result.WorkflowDecision},
+		{tc.ExpectedWorkflowReason, result.WorkflowReason},
 	}
 	for _, check := range checks {
 		if strings.TrimSpace(check.expected) == "" {
@@ -487,10 +566,20 @@ func protocolExpectationMatched(tc EvalCase, result EvalCaseResult) bool {
 			return false
 		}
 	}
+	if expectedFailureLayerPresent(tc) && !strings.EqualFold(strings.TrimSpace(result.FailureLayer), strings.TrimSpace(tc.ExpectedFailureLayer)) {
+		return false
+	}
+	if result.LegacyCalled {
+		return false
+	}
 	if tc.ExpectedLegacyCalled != nil && result.LegacyCalled != *tc.ExpectedLegacyCalled {
 		return false
 	}
 	return true
+}
+
+func expectedFailureLayerPresent(tc EvalCase) bool {
+	return tc.ExpectedFailureLayerSet || strings.TrimSpace(tc.ExpectedFailureLayer) != ""
 }
 
 func noWriteToolCalls(toolsCalled []string) bool {

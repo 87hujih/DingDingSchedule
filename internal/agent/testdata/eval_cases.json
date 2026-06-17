@@ -216,6 +216,7 @@
     "expected_protocol_domain": "system",
     "expected_protocol_operation": "system.describe_capability",
     "expected_response_kind": "answer",
+    "expected_failure_layer": "",
     "expected_tools": []
   },
   {
@@ -265,6 +266,8 @@
     "expected_protocol_operation": "subscription.start",
     "expected_response_kind": "clarify",
     "expected_blocked_reason": "missing_scope",
+    "expected_failure_layer": "",
+    "expected_workflow_decision": "start_new",
     "expected_tools": []
   },
   {
@@ -274,6 +277,7 @@
     "expected_protocol_act": "write_request",
     "expected_protocol_domain": "subscription",
     "expected_protocol_operation": "subscription.start",
+    "expected_workflow_decision": "completed",
     "expected_tools": []
   },
   {
@@ -286,6 +290,9 @@
     "expected_protocol_act": "workflow_continue",
     "expected_protocol_domain": "subscription",
     "expected_protocol_operation": "subscription.list_departments",
+    "expected_response_kind": "select_options",
+    "expected_failure_layer": "",
+    "expected_workflow_decision": "continue",
     "expected_tools": []
   },
   {
@@ -299,6 +306,40 @@
     "expected_protocol_domain": "manual_sign",
     "expected_protocol_operation": "manual_sign.describe_capability",
     "expected_response_kind": "answer",
+    "expected_failure_layer": "",
+    "expected_workflow_decision": "interrupt",
+    "expected_workflow_interrupt_reason": "capability_question",
+    "expected_tools": []
+  },
+  {
+    "name": "protocol-workflow-cancel-active-subscription",
+    "category": "protocol",
+    "question": "取消",
+    "active_workflow_type": "subscription.start",
+    "active_workflow_state": "collect_departments",
+    "active_workflow_missing": ["dept_names"],
+    "expected_protocol_act": "workflow_cancel",
+    "expected_protocol_domain": "subscription",
+    "expected_protocol_operation": "subscription.start",
+    "expected_response_kind": "result",
+    "expected_failure_layer": "",
+    "expected_workflow_decision": "cancel",
+    "expected_tools": []
+  },
+  {
+    "name": "protocol-workflow-expired-does-not-continue",
+    "category": "protocol",
+    "question": "信工25级",
+    "active_workflow_type": "subscription.start",
+    "active_workflow_state": "collect_departments",
+    "active_workflow_missing": ["dept_names"],
+    "active_workflow_expired": true,
+    "expected_protocol_act": "unknown",
+    "expected_protocol_domain": "unknown",
+    "expected_response_kind": "clarify",
+    "expected_failure_layer": "intent_failed",
+    "expected_workflow_decision": "single_turn",
+    "expected_workflow_interrupt_reason": "expired",
     "expected_tools": []
   },
   {

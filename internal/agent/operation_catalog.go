@@ -235,7 +235,7 @@ var operationCatalogEntries = []OperationManifest{
 		Executor:   ExecutorBinding{Name: "operation_executor"},
 		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseResult},
 		Eval: EvalBinding{
-			CaseIDs:    []string{"protocol-subscription-missing-scope", "protocol-subscription-first-turn-all"},
+			CaseIDs:    []string{"protocol-subscription-missing-scope", "protocol-subscription-first-turn-all", "protocol-workflow-cancel-active-subscription"},
 			ReplayTags: []string{"subscription", "write_low"},
 		},
 	},
