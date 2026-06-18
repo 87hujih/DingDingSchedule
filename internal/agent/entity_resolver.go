@@ -209,11 +209,10 @@ func resolveUser(ctx entityContext) entityResolution {
 		return userResolution(exactMatches)
 	}
 
-	normalized := normalizeEntityName(raw)
 	matches := make([]agenttools.UserInfo, 0)
 	for _, candidate := range users {
 		name := normalizeEntityName(candidate.Name)
-		if strings.Contains(name, normalized) {
+		if containsEntityVariant(name, raw) {
 			matches = append(matches, candidate)
 		}
 	}
@@ -622,22 +621,59 @@ func exactDepartmentMatches(raw string, departments []agenttools.DeptItem) []age
 }
 
 func normalizedDepartmentMatches(raw string, departments []agenttools.DeptItem) []agenttools.DeptItem {
-	normalized := normalizeEntityName(raw)
 	matches := make([]agenttools.DeptItem, 0)
 	for _, department := range departments {
-		if normalizeEntityName(department.Name) == normalized {
-			matches = append(matches, department)
+		name := normalizeEntityName(department.Name)
+		for _, variant := range entityNameVariants(raw) {
+			if name == variant {
+				matches = append(matches, department)
+				break
+			}
 		}
 	}
 	return matches
 }
 
+func containsEntityVariant(normalizedName, raw string) bool {
+	for _, variant := range entityNameVariants(raw) {
+		if variant != "" && strings.Contains(normalizedName, variant) {
+			return true
+		}
+	}
+	return false
+}
+
+func entityNameVariants(value string) []string {
+	base := normalizeEntityName(value)
+	if base == "" {
+		return nil
+	}
+	variants := []string{base}
+	for _, prefix := range []string{"就选", "选择", "选", "就", "要"} {
+		if strings.HasPrefix(base, prefix) && len(base) > len(prefix) {
+			variant := strings.TrimPrefix(base, prefix)
+			if variant != "" && !stringSliceContains(variants, variant) {
+				variants = append(variants, variant)
+			}
+		}
+	}
+	return variants
+}
+
+func stringSliceContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 // departmentCandidates handles department candidates.
 func departmentCandidates(raw string, departments []agenttools.DeptItem) []agenttools.DeptItem {
-	normalized := normalizeEntityName(raw)
 	matches := make([]agenttools.DeptItem, 0)
 	for _, candidate := range departments {
-		if strings.Contains(normalizeEntityName(candidate.Name), normalized) {
+		if containsEntityVariant(normalizeEntityName(candidate.Name), raw) {
 			matches = append(matches, candidate)
 		}
 	}

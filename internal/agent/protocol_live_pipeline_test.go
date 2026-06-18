@@ -125,6 +125,14 @@ func TestOperationRequiresTrustedParamIgnoresOptionalParams(t *testing.T) {
 	}
 }
 
+func TestExtractScheduleUserNamePrefersLongQueryPrefix(t *testing.T) {
+	t.Parallel()
+
+	if got := extractScheduleUserName("查询张三的课表"); got != "张三" {
+		t.Fatalf("extractScheduleUserName() = %q, want 张三", got)
+	}
+}
+
 func TestWorkflowCodeUsesCatalogOperationNames(t *testing.T) {
 	t.Parallel()
 

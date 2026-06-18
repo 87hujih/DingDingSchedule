@@ -42,6 +42,23 @@ func TestResolveDepartmentNormalizedUniqueMatch(t *testing.T) {
 	}
 }
 
+func TestResolveDepartmentIgnoresSelectionPrefix(t *testing.T) {
+	t.Parallel()
+
+	result := resolveDepartment(entityContext{
+		Raw: "就信工25级",
+		Departments: []agenttools.DeptItem{
+			{DeptID: 102, Name: "信工25级"},
+		},
+	})
+	if result.Status != ResolveResolved {
+		t.Fatalf("Status = %q, want %q", result.Status, ResolveResolved)
+	}
+	if result.Department == nil || result.Department.DeptID != 102 {
+		t.Fatalf("Department = %+v, want dept 102", result.Department)
+	}
+}
+
 func TestResolveDepartmentReturnsAmbiguousCandidates(t *testing.T) {
 	t.Parallel()
 

@@ -34,6 +34,7 @@ type EvalCase struct {
 	ConversationType          string   `json:"conversation_type,omitempty"`
 	ActiveWorkflowType        string   `json:"active_workflow_type,omitempty"`
 	ActiveWorkflowState       string   `json:"active_workflow_state,omitempty"`
+	ActiveWorkflowScope       string   `json:"active_workflow_scope,omitempty"`
 	ActiveWorkflowMissing     []string `json:"active_workflow_missing,omitempty"`
 	ActiveWorkflowExpired     bool     `json:"active_workflow_expired,omitempty"`
 	ExpectedTools             []string `json:"expected_tools,omitempty"`
@@ -474,16 +475,33 @@ func evaluateProtocolCase(ctx context.Context, tc EvalCase, knowledge KnowledgeP
 			MissingFields:  append([]string(nil), tc.ActiveWorkflowMissing...),
 			MissingSlots:   append([]string(nil), tc.ActiveWorkflowMissing...),
 		}
+		if scope := strings.TrimSpace(tc.ActiveWorkflowScope); scope != "" {
+			activeWorkflow.Trusted.TenantID = uctx.TenantID
+			activeWorkflow.Trusted.Scope = scope
+			activeWorkflow.Trusted.TrustedParams = map[string]TrustedParam{
+				"scope": trustedParam("scope", scope, uctx.TenantID, TrustedParamSource{
+					Kind:     TrustedParamSourceWorkflow,
+					Resolver: "eval_fixture",
+				}),
+			}
+		}
 		if tc.ActiveWorkflowExpired {
 			activeWorkflow.ExpiresAt = time.Now().Add(-time.Minute)
 		}
 	}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
-		Compiler: evalProtocolCompiler{},
+		Compiler:       evalProtocolCompiler{},
+		User:           evalUserPort{tenantID: tenantID},
+		Dept:           evalDeptPort{tenantID: tenantID},
+		Semester:       evalSemesterPort{},
+		SchedulePeriod: evalSchedulePeriodPort{},
 		Executor: newOperationExecutor(operationExecutorDeps{
-			Dept:      evalDeptPort{tenantID: tenantID},
-			GroupSub:  evalGroupSubPort{},
-			Knowledge: knowledge,
+			Schedule:   evalSchedulePort{},
+			Attendance: evalAttendancePort{},
+			Semester:   evalSemesterPort{},
+			Dept:       evalDeptPort{tenantID: tenantID},
+			GroupSub:   evalGroupSubPort{},
+			Knowledge:  knowledge,
 		}),
 	})
 	outcome := pipeline.Handle(ctx, protocolLiveInput{
@@ -519,6 +537,29 @@ func (p evalDeptPort) ListDepts(context.Context) ([]tools.DeptItem, error) {
 	}, nil
 }
 
+type evalUserPort struct {
+	tenantID uint
+}
+
+func (p evalUserPort) FindByDingUserID(context.Context, string) (*tools.UserInfo, error) {
+	tenantID := p.tenantID
+	if tenantID == 0 {
+		tenantID = 1
+	}
+	return &tools.UserInfo{ID: 1, Name: "EvalUser", DingUserID: "eval-user", Role: 1, TenantID: tenantID}, nil
+}
+
+func (p evalUserPort) SearchByName(_ context.Context, name string) ([]tools.UserInfo, error) {
+	tenantID := p.tenantID
+	if tenantID == 0 {
+		tenantID = 1
+	}
+	if strings.TrimSpace(name) == "张三" {
+		return []tools.UserInfo{{ID: 7, Name: "张三", DingUserID: "ding-zhangsan", Role: 0, TenantID: tenantID}}, nil
+	}
+	return nil, nil
+}
+
 type evalGroupSubPort struct{}
 
 func (evalGroupSubPort) Subscribe(context.Context, uint, string, string, uint, []int64) error {
@@ -531,6 +572,75 @@ func (evalGroupSubPort) Unsubscribe(context.Context, uint, string) error {
 
 func (evalGroupSubPort) GetSubscription(context.Context, uint, string) (*tools.GroupSubInfo, error) {
 	return &tools.GroupSubInfo{Subscribed: false}, nil
+}
+
+type evalSemesterPort struct{}
+
+func (evalSemesterPort) GetCurrentWeek(context.Context) (int, int, error) {
+	return 3, 20, nil
+}
+
+type evalSchedulePeriodPort struct{}
+
+func (evalSchedulePeriodPort) GetScheduleInfo(context.Context) ([]tools.PeriodInfo, string, error) {
+	return []tools.PeriodInfo{
+		{Name: "第一节", Start: "08:00", End: "08:45"},
+		{Name: "第二节", Start: "08:55", End: "09:40"},
+	}, "standard", nil
+}
+
+type evalSchedulePort struct{}
+
+func (evalSchedulePort) ListMyScheduleByWeek(context.Context, uint, int) ([]tools.CourseItem, error) {
+	return []tools.CourseItem{{CourseName: "高等数学", DayOfWeek: 1, Section: 1, Location: "A101", Teacher: "王老师", WeekList: "1-16"}}, nil
+}
+
+func (evalSchedulePort) ListUserScheduleByWeek(context.Context, uint, int, uint, int) ([]tools.CourseItem, error) {
+	return []tools.CourseItem{{CourseName: "数据结构", DayOfWeek: 2, Section: 2, Location: "B202", Teacher: "李老师", WeekList: "1-16"}}, nil
+}
+
+func (evalSchedulePort) GetFreeUsersBySlot(context.Context, int, int, int, int64) ([]tools.FreeSlotResult, error) {
+	return nil, nil
+}
+
+type evalAttendancePort struct{}
+
+func (evalAttendancePort) GetAttendanceDetail(_ context.Context, req tools.AttendanceQuery) (*tools.AttendanceResult, error) {
+	return &tools.AttendanceResult{
+		Date:         req.Date,
+		Week:         req.Week,
+		Section:      req.Section,
+		ViewMode:     "realtime",
+		ShouldAttend: 2,
+		OnTimeCount:  1,
+		AbsentCount:  1,
+		OnTimeUsers:  []string{"张三"},
+		AbsentUsers:  []string{"李四"},
+	}, nil
+}
+
+func (evalAttendancePort) GetAttendanceText(context.Context, tools.AttendanceQuery) (string, error) {
+	return "考勤通报：应到2人，未到1人。", nil
+}
+
+func (evalAttendancePort) GetWeeklyAbsenceRanking(context.Context) ([]tools.RankItem, error) {
+	return nil, nil
+}
+
+func (evalAttendancePort) GetWeeklyAttendanceRateRanking(context.Context) ([]tools.RankItem, error) {
+	return nil, nil
+}
+
+func (evalAttendancePort) FindRecordByDateSection(context.Context, string, int) (uint, error) {
+	return 1, nil
+}
+
+func (evalAttendancePort) SignForUsers(context.Context, uint, []uint) error {
+	return nil
+}
+
+func (evalAttendancePort) SignForUsersBySlot(context.Context, string, int, []uint) error {
+	return nil
 }
 
 func protocolExpectationPresent(tc EvalCase) bool {

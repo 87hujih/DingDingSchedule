@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -635,6 +636,70 @@ func TestEvalFixtureCoversProtocolWorkflowGoldenScenarios(t *testing.T) {
 	for scenario, ok := range covered {
 		if !ok {
 			t.Fatalf("eval_cases.json missing protocol workflow golden coverage for %s", scenario)
+		}
+	}
+}
+
+func TestEvalFixtureCoversIntelligenceVariationScenarios(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join("testdata", "eval_cases.json")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	var rawCases []map[string]any
+	if err := json.Unmarshal(content, &rawCases); err != nil {
+		t.Fatalf("decode raw eval cases: %v", err)
+	}
+
+	requiredTags := map[string]bool{
+		"ambiguity_safe":       false,
+		"capability_vs_action": false,
+		"context_boundary":     false,
+		"noise_tolerance":      false,
+		"off_domain_reject":    false,
+		"paraphrase":           false,
+		"permission_gate":      false,
+		"read_write_boundary":  false,
+		"rule_vs_live":         false,
+		"workflow_cancel":      false,
+		"workflow_continue":    false,
+	}
+	intelligenceCases := 0
+	for _, tc := range rawCases {
+		if category, _ := tc["category"].(string); category != "intelligence" {
+			continue
+		}
+		intelligenceCases++
+		name, _ := tc["name"].(string)
+		if strings.TrimSpace(name) == "" {
+			t.Fatalf("intelligence eval case missing name: %+v", tc)
+		}
+		if question, _ := tc["question"].(string); strings.TrimSpace(question) == "" {
+			t.Fatalf("intelligence eval case %q missing question", name)
+		}
+		if act, _ := tc["expected_protocol_act"].(string); strings.TrimSpace(act) == "" {
+			t.Fatalf("intelligence eval case %q missing expected_protocol_act", name)
+		}
+		tags, _ := tc["coverage_tags"].([]any)
+		if len(tags) == 0 {
+			t.Fatalf("intelligence eval case %q missing coverage_tags", name)
+		}
+		for _, rawTag := range tags {
+			tag, _ := rawTag.(string)
+			if _, ok := requiredTags[tag]; ok {
+				requiredTags[tag] = true
+			}
+		}
+	}
+	if intelligenceCases < 16 {
+		t.Fatalf("intelligence eval cases = %d, want at least 16", intelligenceCases)
+	}
+	for tag, covered := range requiredTags {
+		if !covered {
+			t.Fatalf("eval_cases.json missing intelligence coverage tag %q", tag)
 		}
 	}
 }

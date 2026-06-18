@@ -240,8 +240,8 @@ func extractWeekToken(message string) string {
 
 func extractScheduleUserName(message string) string {
 	value := strings.TrimSpace(message)
-	value = strings.TrimPrefix(value, "查")
 	value = strings.TrimPrefix(value, "查询")
+	value = strings.TrimPrefix(value, "查")
 	if idx := strings.Index(value, "第"); idx > 0 {
 		value = value[:idx]
 	}
