@@ -683,5 +683,37 @@ func departmentCandidates(raw string, departments []agenttools.DeptItem) []agent
 // normalizeEntityName normalizes entity name.
 func normalizeEntityName(value string) string {
 	replacer := strings.NewReplacer(" ", "", "\t", "", "\n", "", "-", "", "_", "")
-	return replacer.Replace(strings.TrimSpace(value))
+	return normalizeChineseNumberRuns(replacer.Replace(strings.TrimSpace(value)))
+}
+
+func normalizeChineseNumberRuns(value string) string {
+	runes := []rune(value)
+	var builder strings.Builder
+	for i := 0; i < len(runes); {
+		if !isChineseNumberRune(runes[i]) {
+			builder.WriteRune(runes[i])
+			i++
+			continue
+		}
+		start := i
+		for i < len(runes) && isChineseNumberRune(runes[i]) {
+			i++
+		}
+		token := string(runes[start:i])
+		if number, ok := parseChinesePositiveInt(token); ok {
+			builder.WriteString(strconv.Itoa(number))
+			continue
+		}
+		builder.WriteString(token)
+	}
+	return builder.String()
+}
+
+func isChineseNumberRune(value rune) bool {
+	switch value {
+	case '一', '二', '三', '四', '五', '六', '七', '八', '九', '十':
+		return true
+	default:
+		return false
+	}
 }

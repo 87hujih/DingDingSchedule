@@ -28,10 +28,20 @@ func compileProtocolWithCompiler(ctx context.Context, input protocolInput, compi
 	if compiler == nil {
 		return unknownIntentDraft("intent_compiler_unavailable"), nil
 	}
-	return compiler.Compile(ctx, IntentCompileRequest{
+	draft, err := compiler.Compile(ctx, IntentCompileRequest{
 		Message:        message,
 		ActiveWorkflow: intentCompileWorkflowContext(input.ActiveWorkflow),
 	})
+	if err != nil {
+		return ProtocolDraft{}, err
+	}
+	if draft.Act == ActUnknown && input.ActiveWorkflow != nil {
+		fallback := compileProtocol(input)
+		if fallback.Act != ActUnknown {
+			return fallback, nil
+		}
+	}
+	return draft, nil
 }
 
 func intentCompileWorkflowContext(workflow *protocolWorkflowContext) *IntentCompileWorkflowContext {

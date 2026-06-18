@@ -181,6 +181,43 @@ func TestProtocolCompilerPassesWorkflowContextToInjectedCompiler(t *testing.T) {
 	}
 }
 
+func TestProtocolCompilerFallsBackToDeterministicWorkflowContinueWhenInjectedCompilerReturnsUnknown(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeProtocolIntentCompiler{
+		draftsByMessage: map[string]IntentDraft{
+			"1": {
+				Act:           ActUnknown,
+				Domain:        DomainUnknown,
+				ClarifyReason: "intent_parse_failed",
+			},
+		},
+	}
+
+	draft, err := compileProtocolWithCompiler(context.Background(), protocolInput{
+		Message: "1",
+		ActiveWorkflow: &protocolWorkflowContext{
+			Type:          "subscription.start",
+			MissingFields: []string{"dept_names"},
+		},
+	}, fake)
+	if err != nil {
+		t.Fatalf("compileProtocolWithCompiler() error = %v", err)
+	}
+	if draft.Act != ActWorkflowContinue {
+		t.Fatalf("Act = %q, want %q", draft.Act, ActWorkflowContinue)
+	}
+	if draft.Domain != DomainSubscription {
+		t.Fatalf("Domain = %q, want %q", draft.Domain, DomainSubscription)
+	}
+	if draft.Operation != "subscription.start" {
+		t.Fatalf("Operation = %q, want subscription.start", draft.Operation)
+	}
+	if len(fake.requests) != 1 {
+		t.Fatalf("compiler requests = %d, want 1", len(fake.requests))
+	}
+}
+
 func TestProtocolCompilerClassifiesHelpMeCancelSubscriptionAsCancel(t *testing.T) {
 	t.Parallel()
 
