@@ -864,6 +864,99 @@ func TestProtocolLivePipelineDepartmentOrdinalUsesCurrentWorkflowCandidates(t *t
 	}
 }
 
+func TestProtocolLivePipelineDepartmentOrdinalContinuesWhenCompilerReturnsUnknown(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:           ActUnknown,
+			Domain:        DomainUnknown,
+			ClarifyReason: "intent_parse_failed",
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+	})
+	workflow := &WorkflowSnapshot{
+		ID:           "wf-sub",
+		Type:         WorkflowSubscriptionStart,
+		State:        WorkflowCollectDepartments,
+		MissingSlots: []string{"dept_names"},
+		Trusted: trustedEntities{
+			Scope: "department",
+		},
+		Candidates: map[string][]Candidate{
+			"dept_ids": {
+				{ID: "101", Label: "家族7期", Value: int64(101), TenantID: 42},
+				{ID: "125", Label: "乐知全栈一期", Value: int64(125), TenantID: 42},
+			},
+		},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "1",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if outcome.Response.Kind != ResponseResult {
+		t.Fatalf("Response = %+v, want result", outcome.Response)
+	}
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 101 {
+		t.Fatalf("lastDeptIDs = %v, want [101] from workflow candidates", groupSub.lastDeptIDs)
+	}
+}
+
+func TestProtocolLivePipelineDepartmentCandidateLabelAcceptsChineseNumeralAlias(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.9,
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+		Dept: executorFakeDeptPort{depts: []tools.DeptItem{
+			{TenantID: 42, DeptID: 999, Name: "乐知全栈一期"},
+		}},
+	})
+	workflow := &WorkflowSnapshot{
+		ID:           "wf-sub",
+		Type:         WorkflowSubscriptionStart,
+		State:        WorkflowCollectDepartments,
+		MissingSlots: []string{"dept_names"},
+		Trusted: trustedEntities{
+			Scope: "department",
+		},
+		Candidates: map[string][]Candidate{
+			"dept_ids": {
+				{ID: "201", Label: "家族7期", Value: int64(201), TenantID: 42},
+			},
+		},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "家族七期",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if outcome.Response.Kind != ResponseResult {
+		t.Fatalf("Response = %+v, want result", outcome.Response)
+	}
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 201 {
+		t.Fatalf("lastDeptIDs = %v, want [201] from workflow candidate label", groupSub.lastDeptIDs)
+	}
+}
+
 func TestProtocolLivePipelineDepartmentOrdinalRejectsCrossTenantWorkflowCandidate(t *testing.T) {
 	t.Parallel()
 
