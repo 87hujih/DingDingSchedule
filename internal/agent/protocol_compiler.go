@@ -202,6 +202,13 @@ func compileWorkflowContinue(message string, workflow *protocolWorkflowContext) 
 					Operation: "subscription.start",
 				}, true
 			}
+			if looksLikeEntityInput(message) {
+				return ProtocolDraft{
+					Act:       ActWorkflowContinue,
+					Domain:    DomainSubscription,
+					Operation: "subscription.start",
+				}, true
+			}
 		}
 		if hasMissingField(workflow.MissingFields, "dept_names") {
 			if strings.Contains(message, "有哪些部门") || strings.Contains(message, "都有哪些部门") {

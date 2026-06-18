@@ -755,6 +755,50 @@ func TestProtocolLivePipelineDepartmentNameChoosesDepartmentScopeDuringScopeColl
 	}
 }
 
+func TestProtocolLivePipelineDepartmentNameContinuesDuringScopeCollectionWhenCompilerReturnsUnknown(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{{TenantID: 42, DeptID: 201, Name: "家族7期"}}}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:           ActUnknown,
+			Domain:        DomainUnknown,
+			ClarifyReason: "intent_parse_failed",
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+		Dept:     dept,
+	})
+	workflow := &WorkflowSnapshot{
+		ID:           "wf-sub",
+		Type:         WorkflowSubscriptionStart,
+		State:        WorkflowCollectScope,
+		MissingSlots: []string{"scope"},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "家族七期",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if outcome.Response.Kind != ResponseResult {
+		t.Fatalf("Response = %+v, want result", outcome.Response)
+	}
+	if outcome.WorkflowDecision != WorkflowCompletedDecision || !outcome.ClearWorkflow {
+		t.Fatalf("WorkflowDecision=%q ClearWorkflow=%v, want completed and clear", outcome.WorkflowDecision, outcome.ClearWorkflow)
+	}
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 201 {
+		t.Fatalf("lastDeptIDs = %v, want [201]", groupSub.lastDeptIDs)
+	}
+	if outcome.ResolvedSlots["scope"] != "department" {
+		t.Fatalf("ResolvedSlots = %#v, want department scope", outcome.ResolvedSlots)
+	}
+}
+
 func TestProtocolLivePipelineDepartmentAmbiguitySelectsCandidatesForWrite(t *testing.T) {
 	t.Parallel()
 
