@@ -2,7 +2,11 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -77,13 +81,40 @@ func TestOperationExecutorExecuteSignatureConsumesOnlyRequest(t *testing.T) {
 	}
 }
 
-func TestOperationExecutorHasDomainBindingsForActiveOperations(t *testing.T) {
+func TestOperationExecutorHasCatalogBindingsForActiveOperations(t *testing.T) {
 	t.Parallel()
 
-	bindings := operationDomainBindings()
-	for _, domain := range []BusinessDomain{DomainSystem, DomainAttendance, DomainSchedule, DomainSubscription, DomainManualSign} {
-		if _, ok := bindings[domain]; !ok {
-			t.Fatalf("operationDomainBindings missing %s binding", domain)
+	for _, manifest := range operationManifests() {
+		if _, ok := lookupOperationExecutorBinding(manifest.Executor.Name); !ok {
+			t.Fatalf("%s executor binding %q is not registered", manifest.Name, manifest.Executor.Name)
+		}
+	}
+}
+
+func TestOperationExecutorBindingsDoNotDispatchByOperationSwitch(t *testing.T) {
+	t.Parallel()
+
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	sourcePath := filepath.Join(filepath.Dir(testFile), "operation_executor_bindings.go")
+	source, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", sourcePath, err)
+	}
+
+	forbidden := []struct {
+		name    string
+		pattern string
+	}{
+		{name: "operation switch", pattern: `switch\s+req\.Operation`},
+		{name: "operation string case", pattern: `case\s+"[a-z_]+\.[a-z_]+`},
+		{name: "operation comparison", pattern: `req\.Operation\s*(!=|==)\s+"[a-z_]+\.[a-z_]+`},
+	}
+	for _, item := range forbidden {
+		if regexp.MustCompile(item.pattern).Match(source) {
+			t.Fatalf("operation_executor_bindings.go still uses %s; executor dispatch must come from OperationCatalog executor binding", item.name)
 		}
 	}
 }

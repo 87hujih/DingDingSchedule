@@ -95,6 +95,57 @@ func TestProtocolLivePipelineDoesNotOwnBusinessLayerHelpers(t *testing.T) {
 	}
 }
 
+func TestProtocolLiveRequestBuilderDoesNotSpecialCaseScheduleOperationNames(t *testing.T) {
+	t.Parallel()
+
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	sourcePath := filepath.Join(filepath.Dir(testFile), "protocol_live_request_builder.go")
+	source, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", sourcePath, err)
+	}
+
+	if strings.Contains(string(source), `"schedule.query_user_schedule"`) {
+		t.Fatalf("protocol_live_request_builder.go still special-cases schedule.query_user_schedule; schedule request shape must come from OperationCatalog")
+	}
+}
+
+func TestOperationRequiresTrustedParamIgnoresOptionalParams(t *testing.T) {
+	t.Parallel()
+
+	manifest := OperationManifest{
+		RequiredTrustedParams: params("week"),
+		OptionalTrustedParams: params("user_id"),
+	}
+	if operationRequiresTrustedParam(manifest, "user_id") {
+		t.Fatalf("operationRequiresTrustedParam returned true for optional param; optional params must not force entity resolution")
+	}
+}
+
+func TestWorkflowCodeUsesCatalogOperationNames(t *testing.T) {
+	t.Parallel()
+
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	for _, filename := range []string{"protocol_live_subscription_workflow.go", "workflow_engine.go"} {
+		sourcePath := filepath.Join(filepath.Dir(testFile), filename)
+		source, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", sourcePath, err)
+		}
+		for _, operation := range []string{`"subscription.start"`, `"subscription.list_departments"`} {
+			if strings.Contains(string(source), operation) {
+				t.Fatalf("%s still hard-codes %s; workflow operation names must be resolved from OperationCatalog", filename, operation)
+			}
+		}
+	}
+}
+
 func TestProtocolLivePipelineExplicitNewRequestInterruptsWorkflow(t *testing.T) {
 	t.Parallel()
 

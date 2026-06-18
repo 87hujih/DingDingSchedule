@@ -33,7 +33,13 @@ type WorkflowStore interface {
 type memoryWorkflowStore struct {
 	mu        sync.Mutex
 	workflows map[WorkflowKey]*WorkflowSnapshot
+	locks     map[WorkflowKey]*workflowKeyLock
 	clock     func() time.Time
+}
+
+type workflowKeyLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func newMemoryWorkflowStore(clock func() time.Time) *memoryWorkflowStore {
@@ -42,6 +48,7 @@ func newMemoryWorkflowStore(clock func() time.Time) *memoryWorkflowStore {
 	}
 	return &memoryWorkflowStore{
 		workflows: make(map[WorkflowKey]*WorkflowSnapshot),
+		locks:     make(map[WorkflowKey]*workflowKeyLock),
 		clock:     clock,
 	}
 }
@@ -80,6 +87,9 @@ func (s *memoryWorkflowStore) Save(ctx context.Context, workflow *WorkflowSnapsh
 		return err
 	}
 
+	unlock := s.lockWorkflowKey(key)
+	defer unlock()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.saveLocked(key, workflow)
@@ -93,6 +103,9 @@ func (s *memoryWorkflowStore) Clear(ctx context.Context, key WorkflowKey, _ stri
 	if err := validateWorkflowKey(key); err != nil {
 		return err
 	}
+
+	unlock := s.lockWorkflowKey(key)
+	defer unlock()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -111,19 +124,24 @@ func (s *memoryWorkflowStore) WithLock(ctx context.Context, key WorkflowKey, fn 
 		return nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock := s.lockWorkflowKey(key)
+	defer unlock()
 
+	s.mu.Lock()
 	current := s.workflows[key]
 	if current != nil && workflowExpired(current, s.now()) {
 		delete(s.workflows, key)
 		current = nil
 	}
+	current = cloneWorkflowSnapshot(current)
+	s.mu.Unlock()
 
-	next, err := fn(cloneWorkflowSnapshot(current))
+	next, err := fn(current)
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if next == nil {
 		delete(s.workflows, key)
 		return nil
@@ -133,6 +151,31 @@ func (s *memoryWorkflowStore) WithLock(ctx context.Context, key WorkflowKey, fn 
 	next.ActorUserID = key.ActorUserID
 	s.saveLocked(key, next)
 	return nil
+}
+
+func (s *memoryWorkflowStore) lockWorkflowKey(key WorkflowKey) func() {
+	s.mu.Lock()
+	if s.locks == nil {
+		s.locks = make(map[WorkflowKey]*workflowKeyLock)
+	}
+	lock := s.locks[key]
+	if lock == nil {
+		lock = &workflowKeyLock{}
+		s.locks[key] = lock
+	}
+	lock.refs++
+	s.mu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		s.mu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(s.locks, key)
+		}
+		s.mu.Unlock()
+	}
 }
 
 func (s *memoryWorkflowStore) saveLocked(key WorkflowKey, workflow *WorkflowSnapshot) {

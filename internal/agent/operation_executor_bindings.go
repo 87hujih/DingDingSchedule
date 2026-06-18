@@ -2,121 +2,102 @@ package agent
 
 import "context"
 
-type operationDomainBinding interface {
-	Execute(ctx context.Context, deps operationExecutorDeps, req OperationRequest) (OperationExecutionResult, bool)
+const (
+	ExecutorBindingSystemDescribeCapability       = "executor.system.describe_capability"
+	ExecutorBindingAttendanceQueryStatus          = "executor.attendance.query_status"
+	ExecutorBindingAttendanceDescribeCapability   = "executor.attendance.describe_capability"
+	ExecutorBindingAttendanceRuleExplain          = "executor.attendance.rule_explain"
+	ExecutorBindingScheduleQueryMySchedule        = "executor.schedule.query_my_schedule"
+	ExecutorBindingScheduleQueryUserSchedule      = "executor.schedule.query_user_schedule"
+	ExecutorBindingScheduleDescribeCapability     = "executor.schedule.describe_capability"
+	ExecutorBindingScheduleRuleExplain            = "executor.schedule.rule_explain"
+	ExecutorBindingSubscriptionStart              = "executor.subscription.start"
+	ExecutorBindingSubscriptionCancel             = "executor.subscription.cancel"
+	ExecutorBindingSubscriptionQueryStatus        = "executor.subscription.query_status"
+	ExecutorBindingSubscriptionListDepartments    = "executor.subscription.list_departments"
+	ExecutorBindingSubscriptionDescribeCapability = "executor.subscription.describe_capability"
+	ExecutorBindingSubscriptionRuleExplain        = "executor.subscription.rule_explain"
+	ExecutorBindingManualSignDescribeCapability   = "executor.manual_sign.describe_capability"
+)
+
+type operationExecutorBinding interface {
+	Execute(ctx context.Context, deps operationExecutorDeps, manifest OperationManifest, req OperationRequest) OperationExecutionResult
 }
 
-type operationDomainBindingFunc func(context.Context, operationExecutorDeps, OperationRequest) (OperationExecutionResult, bool)
+type operationExecutorBindingFunc func(context.Context, operationExecutorDeps, OperationManifest, OperationRequest) OperationExecutionResult
 
-func (fn operationDomainBindingFunc) Execute(ctx context.Context, deps operationExecutorDeps, req OperationRequest) (OperationExecutionResult, bool) {
-	return fn(ctx, deps, req)
+func (fn operationExecutorBindingFunc) Execute(ctx context.Context, deps operationExecutorDeps, manifest OperationManifest, req OperationRequest) OperationExecutionResult {
+	return fn(ctx, deps, manifest, req)
 }
 
-func operationDomainBindings() map[BusinessDomain]operationDomainBinding {
-	return map[BusinessDomain]operationDomainBinding{
-		DomainSystem:       operationDomainBindingFunc(executeSystemOperation),
-		DomainAttendance:   operationDomainBindingFunc(executeAttendanceOperation),
-		DomainSchedule:     operationDomainBindingFunc(executeScheduleOperation),
-		DomainSubscription: operationDomainBindingFunc(executeSubscriptionOperation),
-		DomainManualSign:   operationDomainBindingFunc(executeManualSignOperation),
+func lookupOperationExecutorBinding(name string) (operationExecutorBinding, bool) {
+	binding, ok := operationExecutorBindings()[name]
+	return binding, ok
+}
+
+func operationExecutorBindings() map[string]operationExecutorBinding {
+	return map[string]operationExecutorBinding{
+		ExecutorBindingSystemDescribeCapability: operationExecutorBindingFunc(executeCapabilityOperation),
+
+		ExecutorBindingAttendanceQueryStatus:        operationExecutorBindingFunc(executeAttendanceQueryOperation),
+		ExecutorBindingAttendanceDescribeCapability: operationExecutorBindingFunc(executeCapabilityOperation),
+		ExecutorBindingAttendanceRuleExplain:        operationExecutorBindingFunc(executeRuleExplainOperation),
+
+		ExecutorBindingScheduleQueryMySchedule:    operationExecutorBindingFunc(executeMyScheduleOperation),
+		ExecutorBindingScheduleQueryUserSchedule:  operationExecutorBindingFunc(executeUserScheduleOperation),
+		ExecutorBindingScheduleDescribeCapability: operationExecutorBindingFunc(executeCapabilityOperation),
+		ExecutorBindingScheduleRuleExplain:        operationExecutorBindingFunc(executeRuleExplainOperation),
+
+		ExecutorBindingSubscriptionStart:              operationExecutorBindingFunc(executeSubscriptionStartOperation),
+		ExecutorBindingSubscriptionCancel:             operationExecutorBindingFunc(executeSubscriptionCancelOperation),
+		ExecutorBindingSubscriptionQueryStatus:        operationExecutorBindingFunc(executeSubscriptionStatusOperation),
+		ExecutorBindingSubscriptionListDepartments:    operationExecutorBindingFunc(executeListDepartmentsOperation),
+		ExecutorBindingSubscriptionDescribeCapability: operationExecutorBindingFunc(executeCapabilityOperation),
+		ExecutorBindingSubscriptionRuleExplain:        operationExecutorBindingFunc(executeRuleExplainOperation),
+
+		ExecutorBindingManualSignDescribeCapability: operationExecutorBindingFunc(executeCapabilityOperation),
 	}
 }
 
-func executeSystemOperation(_ context.Context, _ operationExecutorDeps, req OperationRequest) (OperationExecutionResult, bool) {
-	if req.Operation != "system.describe_capability" {
-		return OperationExecutionResult{}, false
-	}
+func executeCapabilityOperation(_ context.Context, _ operationExecutorDeps, manifest OperationManifest, req OperationRequest) OperationExecutionResult {
 	return operationExecutionResult(ResponseModel{
 		Kind: ResponseAnswer,
 		Payload: CapabilityAnswerPayload{
-			Domain:           DomainSystem,
+			Domain:           manifest.Domain,
 			UserRole:         operationRequestActorRole(req),
 			ConversationType: operationRequestConversationType(req),
 		},
-	}, answerModeToolFirst), true
+	}, answerModeToolFirst)
 }
 
-func executeManualSignOperation(_ context.Context, _ operationExecutorDeps, req OperationRequest) (OperationExecutionResult, bool) {
-	if req.Operation != "manual_sign.describe_capability" {
-		return OperationExecutionResult{}, false
-	}
-	return operationExecutionResult(ResponseModel{
-		Kind: ResponseAnswer,
-		Payload: CapabilityAnswerPayload{
-			Domain:           DomainManualSign,
-			UserRole:         operationRequestActorRole(req),
-			ConversationType: operationRequestConversationType(req),
-		},
-	}, answerModeToolFirst), true
+func executeAttendanceQueryOperation(ctx context.Context, deps operationExecutorDeps, _ OperationManifest, req OperationRequest) OperationExecutionResult {
+	return operationExecutor{deps: deps}.executeAttendanceQuery(ctx, req)
 }
 
-func executeAttendanceOperation(ctx context.Context, deps operationExecutorDeps, req OperationRequest) (OperationExecutionResult, bool) {
-	executor := operationExecutor{deps: deps}
-	switch req.Operation {
-	case "attendance.query_status":
-		return executor.executeAttendanceQuery(ctx, req), true
-	case "attendance.describe_capability":
-		return operationExecutionResult(ResponseModel{
-			Kind: ResponseAnswer,
-			Payload: CapabilityAnswerPayload{
-				Domain:           DomainAttendance,
-				UserRole:         operationRequestActorRole(req),
-				ConversationType: operationRequestConversationType(req),
-			},
-		}, answerModeToolFirst), true
-	case "attendance.rule_explain":
-		return executor.executeRuleExplain(ctx, req), true
-	default:
-		return OperationExecutionResult{}, false
-	}
+func executeRuleExplainOperation(ctx context.Context, deps operationExecutorDeps, _ OperationManifest, req OperationRequest) OperationExecutionResult {
+	return operationExecutor{deps: deps}.executeRuleExplain(ctx, req)
 }
 
-func executeScheduleOperation(ctx context.Context, deps operationExecutorDeps, req OperationRequest) (OperationExecutionResult, bool) {
-	executor := operationExecutor{deps: deps}
-	switch req.Operation {
-	case "schedule.query_my_schedule":
-		return executor.executeMyScheduleQuery(ctx, req), true
-	case "schedule.query_user_schedule":
-		return executor.executeUserScheduleQuery(ctx, req), true
-	case "schedule.describe_capability":
-		return operationExecutionResult(ResponseModel{
-			Kind: ResponseAnswer,
-			Payload: CapabilityAnswerPayload{
-				Domain:           DomainSchedule,
-				UserRole:         operationRequestActorRole(req),
-				ConversationType: operationRequestConversationType(req),
-			},
-		}, answerModeToolFirst), true
-	case "schedule.rule_explain":
-		return executor.executeRuleExplain(ctx, req), true
-	default:
-		return OperationExecutionResult{}, false
-	}
+func executeMyScheduleOperation(ctx context.Context, deps operationExecutorDeps, _ OperationManifest, req OperationRequest) OperationExecutionResult {
+	return operationExecutor{deps: deps}.executeMyScheduleQuery(ctx, req)
 }
 
-func executeSubscriptionOperation(ctx context.Context, deps operationExecutorDeps, req OperationRequest) (OperationExecutionResult, bool) {
-	executor := operationExecutor{deps: deps}
-	switch req.Operation {
-	case "subscription.start":
-		return executor.executeSubscriptionStart(ctx, req), true
-	case "subscription.cancel":
-		return executor.executeSubscriptionCancel(ctx, req), true
-	case "subscription.query_status":
-		return executor.executeSubscriptionStatus(ctx, req), true
-	case "subscription.list_departments":
-		return executor.executeListDepartments(ctx), true
-	case "subscription.describe_capability":
-		return operationExecutionResult(ResponseModel{
-			Kind: ResponseAnswer,
-			Payload: CapabilityAnswerPayload{
-				Domain:           DomainSubscription,
-				UserRole:         operationRequestActorRole(req),
-				ConversationType: operationRequestConversationType(req),
-			},
-		}, answerModeToolFirst), true
-	case "subscription.rule_explain":
-		return executor.executeRuleExplain(ctx, req), true
-	default:
-		return OperationExecutionResult{}, false
-	}
+func executeUserScheduleOperation(ctx context.Context, deps operationExecutorDeps, _ OperationManifest, req OperationRequest) OperationExecutionResult {
+	return operationExecutor{deps: deps}.executeUserScheduleQuery(ctx, req)
+}
+
+func executeSubscriptionStartOperation(ctx context.Context, deps operationExecutorDeps, _ OperationManifest, req OperationRequest) OperationExecutionResult {
+	return operationExecutor{deps: deps}.executeSubscriptionStart(ctx, req)
+}
+
+func executeSubscriptionCancelOperation(ctx context.Context, deps operationExecutorDeps, _ OperationManifest, req OperationRequest) OperationExecutionResult {
+	return operationExecutor{deps: deps}.executeSubscriptionCancel(ctx, req)
+}
+
+func executeSubscriptionStatusOperation(ctx context.Context, deps operationExecutorDeps, _ OperationManifest, req OperationRequest) OperationExecutionResult {
+	return operationExecutor{deps: deps}.executeSubscriptionStatus(ctx, req)
+}
+
+func executeListDepartmentsOperation(ctx context.Context, deps operationExecutorDeps, _ OperationManifest, _ OperationRequest) OperationExecutionResult {
+	return operationExecutor{deps: deps}.executeListDepartments(ctx)
 }

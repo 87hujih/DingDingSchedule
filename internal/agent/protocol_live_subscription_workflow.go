@@ -9,17 +9,19 @@ import (
 )
 
 func (p protocolLivePipeline) handleSubscription(ctx context.Context, input protocolLiveInput, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot, outcome protocolLiveOutcome) protocolLiveOutcome {
-	if draft.Operation == "subscription.list_departments" {
+	startOperation := workflowPrimaryOperationName(WorkflowSubscriptionStart)
+	listDepartmentsOperation := workflowAuxiliaryOperationName(WorkflowSubscriptionStart, ExecutorBindingSubscriptionListDepartments)
+	if draft.Operation == listDepartmentsOperation {
 		if activeWorkflow != nil {
 			if activeWorkflow.Type == WorkflowSubscriptionStart && activeWorkflow.State == WorkflowCollectScope {
 				continueDraft := draft
-				continueDraft.Operation = "subscription.start"
+				continueDraft.Operation = startOperation
 				return p.continueSubscription(ctx, input, continueDraft, activeWorkflow, trustedEntities{Scope: "department"}, outcome)
 			}
 			outcome.WorkflowAfter = cloneWorkflowSnapshot(activeWorkflow)
 			outcome.WorkflowDecision = WorkflowMetaResult
 		}
-		executed := p.execute(ctx, input.User, OperationRequest{Operation: "subscription.list_departments"}, outcome)
+		executed := p.execute(ctx, input.User, OperationRequest{Operation: listDepartmentsOperation}, outcome)
 		persistWorkflowCandidatesFromResponse(executed.WorkflowAfter, "dept_ids", executed.Response.Options, userTenantID(input.User))
 		return executed
 	}
@@ -31,7 +33,7 @@ func (p protocolLivePipeline) handleSubscription(ctx context.Context, input prot
 	}
 
 	if activeWorkflow == nil {
-		if draft.Act != ActWriteRequest || draft.Operation != "subscription.start" {
+		if draft.Act != ActWriteRequest || draft.Operation != startOperation {
 			response, mode := protocolLiveGuardrailResponse(draft, outcome.Validation, input.User)
 			setProtocolOutcomeResponse(&outcome, response, mode)
 			return outcome
@@ -96,7 +98,9 @@ func (p protocolLivePipeline) continueSubscription(ctx context.Context, input pr
 		}
 		outcome.WorkflowAfter = result.Workflow
 		outcome.ResolvedSlots = protocolResolvedSlotsFromTrusted(result.Workflow.Trusted)
-		executed := p.execute(ctx, input.User, OperationRequest{Operation: "subscription.list_departments"}, outcome)
+		executed := p.execute(ctx, input.User, OperationRequest{
+			Operation: workflowAuxiliaryOperationName(WorkflowSubscriptionStart, ExecutorBindingSubscriptionListDepartments),
+		}, outcome)
 		persistWorkflowCandidatesFromResponse(executed.WorkflowAfter, "dept_ids", executed.Response.Options, userTenantID(input.User))
 		return executed
 	case WorkflowReadyToExecute:
@@ -108,7 +112,7 @@ func (p protocolLivePipeline) continueSubscription(ctx context.Context, input pr
 		deptIDs := subscriptionDeptIDsFromTrusted(result.Workflow.Trusted)
 		outcome.WorkflowAfter = result.Workflow
 		executed := p.execute(ctx, input.User, OperationRequest{
-			Operation:      "subscription.start",
+			Operation:      workflowPrimaryOperationName(WorkflowSubscriptionStart),
 			TenantID:       userTenantID(input.User),
 			ActorUserID:    userActorUserID(input.User),
 			ConversationID: userConversationID(input.User),

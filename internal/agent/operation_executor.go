@@ -48,15 +48,11 @@ func (e operationExecutor) Execute(ctx context.Context, req OperationRequest) Op
 	if !ok {
 		return operationExecutionResult(unsupportedOperationResponse(), answerModeReject)
 	}
-	binding, ok := operationDomainBindings()[manifest.Domain]
+	binding, ok := lookupOperationExecutorBinding(manifest.Executor.Name)
 	if !ok {
 		return operationExecutionResult(unsupportedOperationResponse(), answerModeReject)
 	}
-	result, handled := binding.Execute(ctx, e.deps, req)
-	if !handled {
-		return operationExecutionResult(unsupportedOperationResponse(), answerModeReject)
-	}
-	return result
+	return binding.Execute(ctx, e.deps, manifest, req)
 }
 
 func (e operationExecutor) executeAttendanceQuery(ctx context.Context, req OperationRequest) OperationExecutionResult {

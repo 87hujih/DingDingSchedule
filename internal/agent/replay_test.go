@@ -174,6 +174,7 @@ func TestLoadReplayCasesFromDBThenRunCaseReplaysProtocolLivePipeline(t *testing.
 		ResponseKind:      string(ResponseResult),
 		FailureLayer:      "",
 		LegacyCalled:      false,
+		WorkflowDecision:  string(WorkflowSingleTurn),
 		ReplayCaseID:      "replay-loaded-query",
 		IntentDraftJSON:   `{"Act":"read_query","Domain":"subscription","Operation":"subscription.query_status","Confidence":0.97}`,
 		CreatedAt:         now,
@@ -257,12 +258,13 @@ func TestReplayRunnerReplaysProtocolLiveCaseAndComparesStableFields(t *testing.T
 			Confidence: 0.97,
 		},
 		Expected: ReplayExpected{
-			Act:          string(ActReadQuery),
-			Domain:       string(DomainSubscription),
-			Operation:    "subscription.query_status",
-			ResponseKind: string(ResponseResult),
-			FailureLayer: "",
-			LegacyCalled: false,
+			Act:              string(ActReadQuery),
+			Domain:           string(DomainSubscription),
+			Operation:        "subscription.query_status",
+			ResponseKind:     string(ResponseResult),
+			FailureLayer:     "",
+			LegacyCalled:     false,
+			WorkflowDecision: string(WorkflowSingleTurn),
 		},
 	})
 
@@ -318,6 +320,45 @@ func TestReplayRunnerReportsStableProtocolFieldMismatches(t *testing.T) {
 	}
 }
 
+func TestReplayRunnerComparesWorkflowDecisionEvenWhenExpectedEmpty(t *testing.T) {
+	t.Parallel()
+
+	runner := NewReplayRunner(ReplayRunnerOptions{
+		GroupSub: &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true}},
+	})
+	result := runner.RunCase(context.Background(), ReplayCase{
+		Question:         "查这个群有没有开启考勤订阅",
+		TenantID:         42,
+		UserID:           7,
+		UserRole:         1,
+		ConversationID:   "conv-replay",
+		ConversationType: "2",
+		ProtocolMode:     string(ProtocolModeLive),
+		IntentDraft: ProtocolDraft{
+			Act:        ActReadQuery,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.query_status",
+			Confidence: 0.97,
+		},
+		Expected: ReplayExpected{
+			Act:              string(ActReadQuery),
+			Domain:           string(DomainSubscription),
+			Operation:        "subscription.query_status",
+			ResponseKind:     string(ResponseResult),
+			FailureLayer:     "",
+			LegacyCalled:     false,
+			WorkflowDecision: "",
+		},
+	})
+
+	if result.Status != ReplayMismatched {
+		t.Fatalf("Status = %q mismatches=%+v actual=%+v, want %q when workflow_decision expectation is missing", result.Status, result.Mismatches, result.Actual, ReplayMismatched)
+	}
+	if !replayMismatchContains(result.Mismatches, "workflow_decision") {
+		t.Fatalf("mismatches = %+v, want workflow_decision mismatch", result.Mismatches)
+	}
+}
+
 func TestReplayRunnerFailsWhenLegacyCalledTrue(t *testing.T) {
 	t.Parallel()
 
@@ -361,12 +402,13 @@ func TestReplayRunnerDryRunWriteRerunsPipelineWithoutCallingWritePort(t *testing
 			},
 		},
 		Expected: ReplayExpected{
-			Act:          string(ActWriteRequest),
-			Domain:       string(DomainSubscription),
-			Operation:    "subscription.start",
-			ResponseKind: string(ResponseResult),
-			FailureLayer: "",
-			LegacyCalled: false,
+			Act:              string(ActWriteRequest),
+			Domain:           string(DomainSubscription),
+			Operation:        "subscription.start",
+			ResponseKind:     string(ResponseResult),
+			FailureLayer:     "",
+			LegacyCalled:     false,
+			WorkflowDecision: string(WorkflowCompletedDecision),
 		},
 	})
 
@@ -381,6 +423,50 @@ func TestReplayRunnerDryRunWriteRerunsPipelineWithoutCallingWritePort(t *testing
 	}
 	if result.Status != ReplayMatched {
 		t.Fatalf("Status = %q mismatches=%+v, want %q", result.Status, result.Mismatches, ReplayMatched)
+	}
+}
+
+func TestReplayRunnerDryRunSubscriptionCancelDoesNotCallWritePort(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true}}
+	runner := NewReplayRunner(ReplayRunnerOptions{GroupSub: groupSub})
+	result := runner.RunCase(context.Background(), ReplayCase{
+		Question:         "关闭本群考勤订阅",
+		TenantID:         42,
+		UserID:           7,
+		UserRole:         1,
+		ConversationID:   "conv-replay",
+		ConversationType: "2",
+		ProtocolMode:     string(ProtocolModeLive),
+		IntentDraft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.cancel",
+			Confidence: 0.97,
+		},
+		Expected: ReplayExpected{
+			Act:              string(ActWriteRequest),
+			Domain:           string(DomainSubscription),
+			Operation:        "subscription.cancel",
+			ResponseKind:     string(ResponseResult),
+			FailureLayer:     "",
+			LegacyCalled:     false,
+			WorkflowDecision: string(WorkflowSingleTurn),
+		},
+	})
+
+	if !result.DryRun {
+		t.Fatalf("DryRun = false, want true by default")
+	}
+	if result.RealWriteAttempted {
+		t.Fatalf("RealWriteAttempted = true, replay must not execute real writes by default")
+	}
+	if groupSub.unsubscribeCalls != 0 {
+		t.Fatalf("Unsubscribe calls = %d, want dry-run replay to avoid real write port", groupSub.unsubscribeCalls)
+	}
+	if result.Status != ReplayMatched {
+		t.Fatalf("Status = %q mismatches=%+v actual=%+v, want %q", result.Status, result.Mismatches, result.Actual, ReplayMatched)
 	}
 }
 
@@ -424,6 +510,115 @@ func TestReplayRunnerReplaysWorkflowContinueFromCallLog(t *testing.T) {
 	}
 }
 
+func TestReplayRunnerReplaysWorkflowCancelFromCase(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
+	runner := NewReplayRunner(ReplayRunnerOptions{Clock: func() time.Time { return now }})
+	result := runner.RunCase(context.Background(), ReplayCase{
+		Question:             "取消",
+		TenantID:             42,
+		UserID:               7,
+		UserRole:             0,
+		ConversationID:       "conv-replay",
+		ConversationType:     "2",
+		ProtocolMode:         string(ProtocolModeLive),
+		ActiveWorkflowBefore: replayTestSubscriptionWorkflow(now.Add(time.Minute)),
+		IntentDraft: ProtocolDraft{
+			Act:        ActWorkflowCancel,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.97,
+		},
+		Expected: ReplayExpected{
+			Act:              string(ActWorkflowCancel),
+			Domain:           string(DomainSubscription),
+			Operation:        "subscription.start",
+			ResponseKind:     string(ResponseResult),
+			FailureLayer:     "",
+			LegacyCalled:     false,
+			WorkflowDecision: string(WorkflowCanceled),
+		},
+	})
+
+	if result.Status != ReplayMatched {
+		t.Fatalf("Status = %q mismatches=%+v actual=%+v, want %q", result.Status, result.Mismatches, result.Actual, ReplayMatched)
+	}
+}
+
+func TestReplayRunnerReplaysWorkflowInterruptFromCase(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
+	runner := NewReplayRunner(ReplayRunnerOptions{Clock: func() time.Time { return now }})
+	result := runner.RunCase(context.Background(), ReplayCase{
+		Question:             "手工签到能做什么",
+		TenantID:             42,
+		UserID:               7,
+		UserRole:             0,
+		ConversationID:       "conv-replay",
+		ConversationType:     "2",
+		ProtocolMode:         string(ProtocolModeLive),
+		ActiveWorkflowBefore: replayTestSubscriptionWorkflow(now.Add(time.Minute)),
+		IntentDraft: ProtocolDraft{
+			Act:        ActCapabilityQuestion,
+			Domain:     DomainManualSign,
+			Operation:  "manual_sign.describe_capability",
+			Confidence: 0.97,
+		},
+		Expected: ReplayExpected{
+			Act:              string(ActCapabilityQuestion),
+			Domain:           string(DomainManualSign),
+			Operation:        "manual_sign.describe_capability",
+			ResponseKind:     string(ResponseAnswer),
+			FailureLayer:     "",
+			LegacyCalled:     false,
+			WorkflowDecision: string(WorkflowInterrupted),
+		},
+	})
+
+	if result.Status != ReplayMatched {
+		t.Fatalf("Status = %q mismatches=%+v actual=%+v, want %q", result.Status, result.Mismatches, result.Actual, ReplayMatched)
+	}
+}
+
+func TestReplayRunnerReplaysWorkflowExpireFromCase(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
+	runner := NewReplayRunner(ReplayRunnerOptions{Clock: func() time.Time { return now }})
+	result := runner.RunCase(context.Background(), ReplayCase{
+		Question:             "全部人员",
+		TenantID:             42,
+		UserID:               7,
+		UserRole:             1,
+		ConversationID:       "conv-replay",
+		ConversationType:     "2",
+		ProtocolMode:         string(ProtocolModeLive),
+		ActiveWorkflowBefore: replayTestSubscriptionWorkflow(now.Add(-time.Second)),
+		IntentDraft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.97,
+		},
+		Expected: ReplayExpected{
+			Act:              string(ActWorkflowContinue),
+			Domain:           string(DomainSubscription),
+			Operation:        "subscription.start",
+			ResponseKind:     string(ResponseClarify),
+			BlockedReason:    "unknown_intent",
+			FailureLayer:     string(FailureIntent),
+			LegacyCalled:     false,
+			WorkflowDecision: string(WorkflowSingleTurn),
+		},
+	})
+
+	if result.Status != ReplayMatched {
+		t.Fatalf("Status = %q mismatches=%+v actual=%+v, want %q", result.Status, result.Mismatches, result.Actual, ReplayMatched)
+	}
+}
+
 func replayMismatchContains(mismatches []ReplayFieldMismatch, field string) bool {
 	for _, mismatch := range mismatches {
 		if mismatch.Field == field {
@@ -431,6 +626,20 @@ func replayMismatchContains(mismatches []ReplayFieldMismatch, field string) bool
 		}
 	}
 	return false
+}
+
+func replayTestSubscriptionWorkflow(expiresAt time.Time) *WorkflowSnapshot {
+	return &WorkflowSnapshot{
+		ID:             "wf-before",
+		Type:           WorkflowSubscriptionStart,
+		State:          WorkflowCollectScope,
+		TenantID:       42,
+		ActorUserID:    7,
+		ConversationID: "conv-replay",
+		MissingFields:  []string{"scope"},
+		MissingSlots:   []string{"scope"},
+		ExpiresAt:      expiresAt,
+	}
 }
 
 func newReplayTestDB(t *testing.T) *gorm.DB {

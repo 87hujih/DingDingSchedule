@@ -609,9 +609,7 @@ func compareReplayExpected(expected ReplayExpected, actual ReplayActual) []Repla
 	mismatches = appendReplayMismatch(mismatches, "blocked_reason", expected.BlockedReason, actual.BlockedReason)
 	mismatches = appendReplayMismatch(mismatches, "failure_layer", expected.FailureLayer, actual.FailureLayer)
 	mismatches = appendReplayMismatch(mismatches, "legacy_called", replayBoolString(expected.LegacyCalled), replayBoolString(actual.LegacyCalled))
-	if strings.TrimSpace(expected.WorkflowDecision) != "" {
-		mismatches = appendReplayMismatch(mismatches, "workflow_decision", expected.WorkflowDecision, actual.WorkflowDecision)
-	}
+	mismatches = appendReplayMismatch(mismatches, "workflow_decision", expected.WorkflowDecision, actual.WorkflowDecision)
 	return mismatches
 }
 

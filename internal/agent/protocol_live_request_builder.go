@@ -89,6 +89,10 @@ func (p protocolLivePipeline) schedulePeriods(ctx context.Context) []tools.Perio
 }
 
 func (p protocolLivePipeline) scheduleRequest(ctx context.Context, message string, draft ProtocolDraft, tenantID uint) (OperationRequest, ResponseModel, bool) {
+	manifest, ok := lookupOperation(draft.Operation)
+	if !ok {
+		return OperationRequest{}, unsupportedOperationResponse(), false
+	}
 	resolveCtx := EntityResolveContext{TenantID: tenantID}
 	trusted := trustedEntities{UserRole: 0, TenantID: tenantID, TrustedParams: map[string]TrustedParam{}}
 	weekRaw := firstNonEmpty(draftSlotRaw(draft, "week"), extractWeekToken(message))
@@ -104,7 +108,7 @@ func (p protocolLivePipeline) scheduleRequest(ctx context.Context, message strin
 		}
 	}
 
-	if draft.Operation == "schedule.query_user_schedule" {
+	if operationRequiresTrustedParam(manifest, "user_id") {
 		userRaw := firstNonEmpty(draftSlotRaw(draft, "user"), draftSlotRaw(draft, "user_name"), extractScheduleUserName(message))
 		if userRaw == "" || p.deps.User == nil {
 			return OperationRequest{}, missingOperationParamsResponse(draft.Operation, []string{"user_id"}), false
@@ -129,9 +133,53 @@ func (p protocolLivePipeline) scheduleRequest(ctx context.Context, message strin
 
 	req, blocked := buildOperationRequest(draft, trusted)
 	if blocked {
-		return OperationRequest{}, missingOperationParamsResponse(draft.Operation, []string{"week"}), false
+		missing := missingRequiredTrustedParams(manifest, trusted)
+		if len(missing) == 0 {
+			missing = paramNames(manifest.RequiredTrustedParams)
+		}
+		return OperationRequest{}, missingOperationParamsResponse(draft.Operation, missing), false
 	}
 	return req, ResponseModel{}, true
+}
+
+func operationRequiresTrustedParam(manifest OperationManifest, field string) bool {
+	return paramSpecListContains(manifest.RequiredTrustedParams, field) ||
+		queryShapesRequireTrustedParam(manifest.QueryShapes, field)
+}
+
+func queryShapesRequireTrustedParam(shapes []QueryShapeMetadata, field string) bool {
+	for _, shape := range shapes {
+		if paramSpecListContains(shape.RequiredTrustedParams, field) {
+			return true
+		}
+	}
+	return false
+}
+
+func paramSpecListContains(params []ParamSpec, field string) bool {
+	for _, param := range params {
+		if param.Name == field {
+			return true
+		}
+	}
+	return false
+}
+
+func missingRequiredTrustedParams(manifest OperationManifest, trusted trustedEntities) []string {
+	required := manifest.RequiredTrustedParams
+	if len(manifest.QueryShapes) > 0 {
+		if shape, ok := selectQueryShape(manifest, trusted); ok {
+			required = shape.RequiredTrustedParams
+		}
+	}
+
+	missing := make([]string, 0, len(required))
+	for _, param := range required {
+		if _, ok := trustedParamValue(trusted, param.Name); !ok {
+			missing = append(missing, param.Name)
+		}
+	}
+	return missing
 }
 
 func protocolRuleTopic(message string, draft ProtocolDraft) string {

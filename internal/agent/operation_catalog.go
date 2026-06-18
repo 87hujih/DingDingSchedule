@@ -208,7 +208,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:   ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchAttendance},
 		Policies:   []PolicySpec{{Name: "conversation_scope"}},
 		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:   ExecutorBinding{Name: "operation_executor"},
+		Executor:   ExecutorBinding{Name: ExecutorBindingAttendanceQueryStatus},
 		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseResult},
 		Eval:       EvalBinding{CaseIDs: []string{"protocol-attendance-slot-status"}, ReplayTags: []string{"attendance"}},
 	},
@@ -241,7 +241,7 @@ var operationCatalogEntries = []OperationManifest{
 			Guarantee: IdempotencyGuaranteeRepositoryUniqueUpsert,
 		},
 		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingDefault},
-		Executor:   ExecutorBinding{Name: "operation_executor"},
+		Executor:   ExecutorBinding{Name: ExecutorBindingSubscriptionStart},
 		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseResult},
 		Eval: EvalBinding{
 			CaseIDs:    []string{"protocol-subscription-missing-scope", "protocol-subscription-first-turn-all", "protocol-workflow-cancel-active-subscription"},
@@ -270,7 +270,7 @@ var operationCatalogEntries = []OperationManifest{
 			Guarantee: IdempotencyGuaranteeRepositorySoftDelete,
 		},
 		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingDefault},
-		Executor:   ExecutorBinding{Name: "operation_executor"},
+		Executor:   ExecutorBinding{Name: ExecutorBindingSubscriptionCancel},
 		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseResult},
 		Eval:       EvalBinding{CaseIDs: []string{"catalog-subscription-cancel"}, ReplayTags: []string{"subscription", "write_low"}},
 	},
@@ -287,7 +287,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:              ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchRuntimeConversation},
 		Policies:              []PolicySpec{{Name: "group_conversation"}},
 		WriteGuard:            WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:              ExecutorBinding{Name: "operation_executor"},
+		Executor:              ExecutorBinding{Name: ExecutorBindingSubscriptionQueryStatus},
 		Renderer:              RendererBinding{Name: "response_renderer", Kind: ResponseResult},
 		Eval:                  EvalBinding{CaseIDs: []string{"catalog-subscription-query-status"}, ReplayTags: []string{"subscription"}},
 	},
@@ -306,7 +306,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:   ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchSubscriptionWorkflow},
 		Policies:   []PolicySpec{{Name: "conversation_scope"}},
 		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:   ExecutorBinding{Name: "operation_executor"},
+		Executor:   ExecutorBinding{Name: ExecutorBindingSubscriptionListDepartments},
 		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseSelectOptions},
 		Eval:       EvalBinding{CaseIDs: []string{"protocol-subscription-list-departments-workflow-meta"}, ReplayTags: []string{"subscription", "workflow"}},
 	},
@@ -321,7 +321,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
 		Policies:    []PolicySpec{{Name: "conversation_scope"}},
 		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:    ExecutorBinding{Name: "operation_executor"},
+		Executor:    ExecutorBinding{Name: ExecutorBindingSystemDescribeCapability},
 		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:        EvalBinding{CaseIDs: []string{"protocol-help-overview"}, ReplayTags: []string{"capability"}},
 		Capability: &CapabilityBinding{
@@ -342,7 +342,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
 		Policies:    []PolicySpec{{Name: "conversation_scope"}},
 		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:    ExecutorBinding{Name: "operation_executor"},
+		Executor:    ExecutorBinding{Name: ExecutorBindingAttendanceDescribeCapability},
 		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:        EvalBinding{CaseIDs: []string{"catalog-attendance-describe-capability"}, ReplayTags: []string{"capability", "attendance"}},
 		Capability: &CapabilityBinding{
@@ -363,7 +363,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
 		Policies:    []PolicySpec{{Name: "conversation_scope"}},
 		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:    ExecutorBinding{Name: "operation_executor"},
+		Executor:    ExecutorBinding{Name: ExecutorBindingScheduleDescribeCapability},
 		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:        EvalBinding{CaseIDs: []string{"catalog-schedule-describe-capability"}, ReplayTags: []string{"capability", "schedule"}},
 		Capability: &CapabilityBinding{
@@ -384,7 +384,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
 		Policies:    []PolicySpec{{Name: "group_conversation"}},
 		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:    ExecutorBinding{Name: "operation_executor"},
+		Executor:    ExecutorBinding{Name: ExecutorBindingSubscriptionDescribeCapability},
 		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:        EvalBinding{CaseIDs: []string{"catalog-subscription-describe-capability"}, ReplayTags: []string{"capability", "subscription"}},
 		Capability: &CapabilityBinding{
@@ -405,7 +405,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
 		Policies:    []PolicySpec{{Name: "conversation_scope"}},
 		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:    ExecutorBinding{Name: "operation_executor"},
+		Executor:    ExecutorBinding{Name: ExecutorBindingManualSignDescribeCapability},
 		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval: EvalBinding{
 			CaseIDs:    []string{"protocol-manual-sign-capability", "protocol-workflow-interrupted-by-capability"},
@@ -431,7 +431,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:              ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchRuleExplain},
 		Policies:              []PolicySpec{{Name: "conversation_scope"}},
 		WriteGuard:            WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:              ExecutorBinding{Name: "operation_executor"},
+		Executor:              ExecutorBinding{Name: ExecutorBindingAttendanceRuleExplain},
 		Renderer:              RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:                  EvalBinding{CaseIDs: []string{"protocol-rule-no-hit"}, ReplayTags: []string{"rule", "attendance"}},
 	},
@@ -448,7 +448,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:              ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchRuleExplain},
 		Policies:              []PolicySpec{{Name: "conversation_scope"}},
 		WriteGuard:            WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:              ExecutorBinding{Name: "operation_executor"},
+		Executor:              ExecutorBinding{Name: ExecutorBindingScheduleRuleExplain},
 		Renderer:              RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:                  EvalBinding{CaseIDs: []string{"catalog-schedule-rule-explain"}, ReplayTags: []string{"rule", "schedule"}},
 	},
@@ -465,7 +465,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:              ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchRuleExplain},
 		Policies:              []PolicySpec{{Name: "conversation_scope"}},
 		WriteGuard:            WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:              ExecutorBinding{Name: "operation_executor"},
+		Executor:              ExecutorBinding{Name: ExecutorBindingSubscriptionRuleExplain},
 		Renderer:              RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval:                  EvalBinding{CaseIDs: []string{"catalog-subscription-rule-explain"}, ReplayTags: []string{"rule", "subscription"}},
 	},
@@ -485,7 +485,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:   ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchSchedule},
 		Policies:   []PolicySpec{{Name: "conversation_scope"}},
 		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:   ExecutorBinding{Name: "operation_executor"},
+		Executor:   ExecutorBinding{Name: ExecutorBindingScheduleQueryMySchedule},
 		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseResult},
 		Eval:       EvalBinding{CaseIDs: []string{"protocol-my-schedule"}, ReplayTags: []string{"schedule"}},
 	},
@@ -505,7 +505,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:   ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchSchedule},
 		Policies:   []PolicySpec{{Name: "conversation_scope"}, {Name: "schedule_user_visibility"}},
 		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:   ExecutorBinding{Name: "operation_executor"},
+		Executor:   ExecutorBinding{Name: ExecutorBindingScheduleQueryUserSchedule},
 		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseResult},
 		Eval:       EvalBinding{CaseIDs: []string{"catalog-schedule-query-user-schedule"}, ReplayTags: []string{"schedule"}},
 	},
@@ -658,6 +658,8 @@ func lintOperationCatalog(entries []OperationManifest) []string {
 		}
 		if manifest.Executor.Name == "" {
 			errs = append(errs, prefix+": executor binding is required")
+		} else if _, ok := lookupOperationExecutorBinding(manifest.Executor.Name); !ok {
+			errs = append(errs, prefix+": executor binding is unknown")
 		}
 		if manifest.Renderer.Name == "" {
 			errs = append(errs, prefix+": renderer binding is required")

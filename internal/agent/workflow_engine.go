@@ -8,7 +8,7 @@ import (
 // startWorkflow starts a workflow snapshot from a protocol draft.
 func startWorkflow(draft ProtocolDraft) (WorkflowSnapshot, bool) {
 	switch draft.Operation {
-	case "subscription.start":
+	case workflowPrimaryOperationName(WorkflowSubscriptionStart):
 		return WorkflowSnapshot{
 			ID:            fmt.Sprintf("wf-%d", time.Now().UnixNano()),
 			Type:          WorkflowSubscriptionStart,
@@ -73,10 +73,10 @@ func interruptActiveWorkflow(sessions *sessionManager, sessionKey string, workfl
 
 // continueSubscriptionWorkflow continues subscription workflow.
 func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft, trusted trustedEntities) WorkflowResult {
-	if draft.Operation == "subscription.list_departments" && workflow.State == WorkflowCollectDepartments {
+	if draft.Operation == workflowAuxiliaryOperationName(WorkflowSubscriptionStart, ExecutorBindingSubscriptionListDepartments) && workflow.State == WorkflowCollectDepartments {
 		return WorkflowResult{Decision: WorkflowMetaResult, Workflow: &workflow}
 	}
-	if draft.Operation != "subscription.start" {
+	if draft.Operation != workflowPrimaryOperationName(WorkflowSubscriptionStart) {
 		return WorkflowResult{Decision: WorkflowRejectInvalidShape, Workflow: &workflow}
 	}
 

@@ -160,6 +160,71 @@ func TestMemoryWorkflowStoreWithLockSerializesConcurrentUpdates(t *testing.T) {
 	}
 }
 
+func TestMemoryWorkflowStoreWithLockDoesNotBlockDifferentKeys(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
+	store := newMemoryWorkflowStore(func() time.Time { return now })
+	keyA := WorkflowKey{TenantID: 42, ConversationID: "conv-a", ActorUserID: 7}
+	keyB := WorkflowKey{TenantID: 42, ConversationID: "conv-b", ActorUserID: 7}
+
+	enteredA := make(chan struct{})
+	releaseA := make(chan struct{})
+	doneA := make(chan error, 1)
+	go func() {
+		doneA <- store.WithLock(context.Background(), keyA, func(current *WorkflowSnapshot) (*WorkflowSnapshot, error) {
+			close(enteredA)
+			<-releaseA
+			if current == nil {
+				current = &WorkflowSnapshot{ID: "wf-a", Type: WorkflowSubscriptionStart, State: WorkflowCollectScope, ExpiresAt: now.Add(time.Minute)}
+			}
+			current.LastUserMessage = "a"
+			return current, nil
+		})
+	}()
+
+	select {
+	case <-enteredA:
+	case <-time.After(time.Second):
+		t.Fatal("first WithLock callback did not start")
+	}
+
+	enteredB := make(chan struct{})
+	doneB := make(chan error, 1)
+	go func() {
+		doneB <- store.WithLock(context.Background(), keyB, func(current *WorkflowSnapshot) (*WorkflowSnapshot, error) {
+			close(enteredB)
+			if current == nil {
+				current = &WorkflowSnapshot{ID: "wf-b", Type: WorkflowSubscriptionStart, State: WorkflowCollectScope, ExpiresAt: now.Add(time.Minute)}
+			}
+			current.LastUserMessage = "b"
+			return current, nil
+		})
+	}()
+
+	blockedDifferentKey := false
+	select {
+	case <-enteredB:
+	case <-time.After(200 * time.Millisecond):
+		blockedDifferentKey = true
+	}
+
+	close(releaseA)
+	for name, done := range map[string]<-chan error{"keyA": doneA, "keyB": doneB} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s WithLock() error = %v", name, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s WithLock() did not finish", name)
+		}
+	}
+	if blockedDifferentKey {
+		t.Fatalf("WithLock for %v was blocked by an active lock for %v; locks must be isolated by workflow key", keyB, keyA)
+	}
+}
+
 func TestWorkflowArbiterDecisions(t *testing.T) {
 	t.Parallel()
 
