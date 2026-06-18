@@ -31,6 +31,70 @@ func TestProtocolLivePipelineDoesNotSwitchOnOperation(t *testing.T) {
 	}
 }
 
+func TestProtocolLivePipelineDoesNotOwnBusinessLayerHelpers(t *testing.T) {
+	t.Parallel()
+
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	pipelinePath := filepath.Join(filepath.Dir(testFile), "protocol_live_pipeline.go")
+	sourceBytes, err := os.ReadFile(pipelinePath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", pipelinePath, err)
+	}
+	source := string(sourceBytes)
+
+	forbiddenSymbols := []string{
+		"handleSubscription",
+		"continueSubscription",
+		"attendanceRequest",
+		"scheduleRequest",
+		"resolveSubscriptionTrustedEntities",
+		"resolveSubscriptionDepartmentSelection",
+		"resolveInitialSubscriptionTrustedEntities",
+		"subscriptionStartTrustedParams",
+		"persistWorkflowCandidatesFromResponse",
+		"persistWorkflowCandidatesFromEntityCandidates",
+		"workflowDepartmentCandidateSelection",
+		"parseCandidateOrdinal",
+		"normalizeSubscriptionScope",
+		"protocolLiveRoleRefusal",
+		"protocolLiveGuardrailResponse",
+		"resourceRefusalText",
+		"writeGuardResponseText",
+		"protocolRuleTopic",
+		"messageDateSignal",
+		"extractSectionToken",
+		"extractWeekToken",
+		"extractScheduleUserName",
+		"responseOptionsFromEntityCandidates",
+	}
+	for _, symbol := range forbiddenSymbols {
+		if regexp.MustCompile(`\bfunc\s+(\([^)]*\)\s+)?` + regexp.QuoteMeta(symbol) + `\b`).MatchString(source) {
+			t.Fatalf("protocol_live_pipeline.go still defines %s; pipeline must only orchestrate protocol layers", symbol)
+		}
+	}
+
+	forbiddenBusinessTokens := []string{
+		`"subscription.start"`,
+		`"subscription.list_departments"`,
+		`"schedule.query_user_schedule"`,
+		`"missing_attendance_fields"`,
+		`"subscription_missing_fields"`,
+		`"subscription_invalid_shape"`,
+		`"group_chat_required"`,
+		`"write_confirmation_required"`,
+		`"schedule_user_visibility_denied"`,
+		`"department_scope_denied"`,
+	}
+	for _, token := range forbiddenBusinessTokens {
+		if strings.Contains(source, token) {
+			t.Fatalf("protocol_live_pipeline.go still contains business token %s; move business rules to the owning layer", token)
+		}
+	}
+}
+
 func TestProtocolLivePipelineExplicitNewRequestInterruptsWorkflow(t *testing.T) {
 	t.Parallel()
 
