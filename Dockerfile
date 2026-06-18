@@ -5,15 +5,21 @@ FROM golang:1.24-alpine AS builder
 # 设置工作目录
 WORKDIR /build
 
-# 换用国内 Alpine 镜像源
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+# 可选切换 Alpine 镜像源；CI 默认使用官方源，国内构建可传
+# --build-arg ALPINE_MIRROR=https://mirrors.aliyun.com 加速。
+ARG ALPINE_MIRROR=
+RUN if [ -n "$ALPINE_MIRROR" ]; then \
+      sed -i "s#https://dl-cdn.alpinelinux.org#${ALPINE_MIRROR%/}#g" /etc/apk/repositories; \
+    fi
 
 # 安装必要的构建工具
 RUN apk add --no-cache git gcc musl-dev
 
-# 配置 Go 代理（使用国内镜像加速）
-ENV GOPROXY=https://goproxy.cn,direct
-ENV GOSUMDB=sum.golang.google.cn
+# Go 代理同样允许按构建环境覆盖；GitHub Actions 默认使用官方代理。
+ARG GOPROXY=https://proxy.golang.org,direct
+ARG GOSUMDB=sum.golang.org
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=${GOSUMDB}
 
 # 复制 go.mod 和 go.sum 就并下载依赖（利用 Docker 缓存）
 COPY go.mod go.sum ./
@@ -28,8 +34,11 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o schedule_
 # 阶段2: 运行阶段
 FROM alpine:latest
 
-# 换用国内 Alpine 镜像源
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+# 可选切换 Alpine 镜像源。
+ARG ALPINE_MIRROR=
+RUN if [ -n "$ALPINE_MIRROR" ]; then \
+      sed -i "s#https://dl-cdn.alpinelinux.org#${ALPINE_MIRROR%/}#g" /etc/apk/repositories; \
+    fi
 
 # 安装必要的运行时依赖
 RUN apk add --no-cache ca-certificates tzdata
