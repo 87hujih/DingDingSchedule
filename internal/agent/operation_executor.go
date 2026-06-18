@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"schedule_server/internal/agent/tools"
@@ -42,35 +43,16 @@ func newOperationExecutor(deps operationExecutorDeps) operationExecutor {
 	return operationExecutor{deps: deps}
 }
 
-func (e operationExecutor) Execute(ctx context.Context, uctx *tools.UserContext, req OperationRequest) OperationExecutionResult {
-	switch req.Operation {
-	case "attendance.query_status":
-		return e.executeAttendanceQuery(ctx, req)
-	case "schedule.query_my_schedule":
-		return e.executeMyScheduleQuery(ctx, uctx, req)
-	case "schedule.query_user_schedule":
-		return e.executeUserScheduleQuery(ctx, uctx, req)
-	case "subscription.start":
-		return e.executeSubscriptionStart(ctx, uctx, req)
-	case "subscription.cancel":
-		return e.executeSubscriptionCancel(ctx, uctx, req)
-	case "subscription.query_status":
-		return e.executeSubscriptionStatus(ctx, uctx, req)
-	case "subscription.list_departments":
-		return e.executeListDepartments(ctx)
-	case "system.describe_capability":
-		return operationExecutionResult(ResponseModel{Kind: ResponseAnswer, Answer: buildHelpReply(uctx)}, answerModeToolFirst)
-	case "attendance.describe_capability", "schedule.describe_capability", "subscription.describe_capability", "manual_sign.describe_capability":
-		metadata, ok := lookupOperation(req.Operation)
-		if !ok {
-			return operationExecutionResult(unsupportedOperationResponse(), answerModeReject)
-		}
-		return operationExecutionResult(ResponseModel{Kind: ResponseAnswer, Answer: buildProtocolCapabilityReply(metadata.Domain, uctx)}, answerModeToolFirst)
-	case "attendance.rule_explain", "schedule.rule_explain", "subscription.rule_explain":
-		return e.executeRuleExplain(ctx, uctx, req)
-	default:
+func (e operationExecutor) Execute(ctx context.Context, req OperationRequest) OperationExecutionResult {
+	manifest, ok := lookupOperation(req.Operation)
+	if !ok {
 		return operationExecutionResult(unsupportedOperationResponse(), answerModeReject)
 	}
+	binding, ok := lookupOperationExecutorBinding(manifest.Executor.Name)
+	if !ok {
+		return operationExecutionResult(unsupportedOperationResponse(), answerModeReject)
+	}
+	return binding.Execute(ctx, e.deps, manifest, req)
 }
 
 func (e operationExecutor) executeAttendanceQuery(ctx context.Context, req OperationRequest) OperationExecutionResult {
@@ -88,10 +70,7 @@ func (e operationExecutor) executeAttendanceQuery(ctx context.Context, req Opera
 	if !ok {
 		return operationExecutionResult(missingOperationParamsResponse(req.Operation, []string{"date"}), answerModeToolFirst)
 	}
-	week, ok, err := e.resolveOperationWeek(ctx, req.TrustedParams)
-	if err != nil {
-		return operationExecutionResult(operationErrorResponse(), answerModeReject)
-	}
+	week, ok := extractParamInt(req.TrustedParams, "week")
 	if !ok {
 		return operationExecutionResult(missingOperationParamsResponse(req.Operation, []string{"week"}), answerModeToolFirst)
 	}
@@ -107,22 +86,7 @@ func (e operationExecutor) executeAttendanceQuery(ctx context.Context, req Opera
 	if err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
-	return operationExecutionResult(ResponseModel{Kind: ResponseResult, ResultText: buildAttendanceStatusReply(result)}, answerModeToolFirst)
-}
-
-func (e operationExecutor) resolveOperationWeek(ctx context.Context, params map[string]any) (int, bool, error) {
-	week, ok := extractParamInt(params, "week")
-	if ok {
-		return week, true, nil
-	}
-	if e.deps.Semester == nil {
-		return 0, false, nil
-	}
-	week, _, err := e.deps.Semester.GetCurrentWeek(ctx)
-	if err != nil || week <= 0 {
-		return 0, false, err
-	}
-	return week, true, nil
+	return operationExecutionResult(ResponseModel{Kind: ResponseResult, Payload: AttendanceStatusPayload{Result: result}}, answerModeToolFirst)
 }
 
 func (e operationExecutor) executeAttendanceUserDayQuery(ctx context.Context, req OperationRequest) OperationExecutionResult {
@@ -141,26 +105,26 @@ func (e operationExecutor) executeAttendanceUserDayQuery(ctx context.Context, re
 	if err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
-	return operationExecutionResult(ResponseModel{Kind: ResponseResult, ResultText: buildUserDayAttendanceStatusReply(status)}, answerModeToolFirst)
+	return operationExecutionResult(ResponseModel{Kind: ResponseResult, Payload: UserDayAttendanceStatusPayload{Status: status}}, answerModeToolFirst)
 }
 
-func (e operationExecutor) executeMyScheduleQuery(ctx context.Context, uctx *tools.UserContext, req OperationRequest) OperationExecutionResult {
-	if e.deps.Schedule == nil || uctx == nil {
+func (e operationExecutor) executeMyScheduleQuery(ctx context.Context, req OperationRequest) OperationExecutionResult {
+	if e.deps.Schedule == nil || req.ActorUserID == 0 {
 		return operationExecutionResult(unavailableOperationResponse(), answerModeReject)
 	}
 	week, ok := extractParamInt(req.TrustedParams, "week")
 	if !ok {
 		return operationExecutionResult(missingOperationParamsResponse(req.Operation, []string{"week"}), answerModeToolFirst)
 	}
-	courses, err := e.deps.Schedule.ListMyScheduleByWeek(ctx, uctx.UserID, week)
+	courses, err := e.deps.Schedule.ListMyScheduleByWeek(ctx, req.ActorUserID, week)
 	if err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
-	return operationExecutionResult(ResponseModel{Kind: ResponseResult, ResultText: buildScheduleResultReply(week, "", courses)}, answerModeToolFirst)
+	return operationExecutionResult(ResponseModel{Kind: ResponseResult, Payload: ScheduleResultPayload{Week: week, Courses: courses}}, answerModeToolFirst)
 }
 
-func (e operationExecutor) executeUserScheduleQuery(ctx context.Context, uctx *tools.UserContext, req OperationRequest) OperationExecutionResult {
-	if e.deps.Schedule == nil || uctx == nil {
+func (e operationExecutor) executeUserScheduleQuery(ctx context.Context, req OperationRequest) OperationExecutionResult {
+	if e.deps.Schedule == nil || req.ActorUserID == 0 {
 		return operationExecutionResult(unavailableOperationResponse(), answerModeReject)
 	}
 	week, ok := extractParamInt(req.TrustedParams, "week")
@@ -171,25 +135,25 @@ func (e operationExecutor) executeUserScheduleQuery(ctx context.Context, uctx *t
 	if !ok {
 		return operationExecutionResult(missingOperationParamsResponse(req.Operation, []string{"user_id"}), answerModeToolFirst)
 	}
-	courses, err := e.deps.Schedule.ListUserScheduleByWeek(ctx, uctx.UserID, uctx.UserRole, userID, week)
+	courses, err := e.deps.Schedule.ListUserScheduleByWeek(ctx, req.ActorUserID, operationRequestActorRole(req), userID, week)
 	if err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
-	return operationExecutionResult(ResponseModel{Kind: ResponseResult, ResultText: buildScheduleResultReply(week, "", courses)}, answerModeToolFirst)
+	return operationExecutionResult(ResponseModel{Kind: ResponseResult, Payload: ScheduleResultPayload{Week: week, Courses: courses}}, answerModeToolFirst)
 }
 
-func (e operationExecutor) executeSubscriptionStart(ctx context.Context, uctx *tools.UserContext, req OperationRequest) OperationExecutionResult {
-	if e.deps.GroupSub == nil || uctx == nil {
+func (e operationExecutor) executeSubscriptionStart(ctx context.Context, req OperationRequest) OperationExecutionResult { //nolint:gocyclo // Subscription writes keep validation and idempotent execution together.
+	if e.deps.GroupSub == nil {
 		return operationExecutionResult(unavailableOperationResponse(), answerModeReject)
 	}
-	if uctx.ConversationType != "2" {
+	if conversationType := operationRequestConversationType(req); conversationType != "" && conversationType != "2" {
 		return operationExecutionResult(ResponseModel{Kind: ResponseRefuse, RefusalReason: "群考勤订阅只能在群聊中开启。请在对应群聊里再告诉我。"}, answerModeReject)
 	}
 	conversationID, ok := extractParamString(req.TrustedParams, "conversation_id")
 	if !ok {
 		return operationExecutionResult(missingOperationParamsResponse(req.Operation, []string{"conversation_id"}), answerModeToolFirst)
 	}
-	if conversationID != strings.TrimSpace(uctx.ConversationID) {
+	if req.ConversationID != "" && conversationID != strings.TrimSpace(req.ConversationID) {
 		return operationExecutionResult(subscriptionConversationMismatchResponse(), answerModeReject)
 	}
 	scope, ok := extractParamString(req.TrustedParams, "scope")
@@ -207,34 +171,64 @@ func (e operationExecutor) executeSubscriptionStart(ctx context.Context, uctx *t
 	default:
 		return operationExecutionResult(ResponseModel{Kind: ResponseRefuse, RefusalReason: "订阅范围只能是全部人员或指定部门。请重新说明要订阅的范围。"}, answerModeReject)
 	}
-	if err := e.deps.GroupSub.Subscribe(ctx, uctx.TenantID, conversationID, uctx.ConversationTitle, uctx.UserID, deptIDs); err != nil {
+	current, err := e.deps.GroupSub.GetSubscription(ctx, req.TenantID, conversationID)
+	if err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
-	return operationExecutionResult(ResponseModel{Kind: ResponseResult, ResultText: "已为此群开启考勤推送"}, answerModeToolFirst)
+	status := WriteStatusCreated
+	if current != nil && current.Subscribed {
+		if sameSubscriptionDeptScope(current.DeptIDs, deptIDs) {
+			return operationExecutionResult(ResponseModel{
+				Kind:    ResponseResult,
+				Payload: OperationStatusPayload{Code: "subscription_started", Status: WriteStatusAlreadyExists},
+			}, answerModeToolFirst)
+		}
+		status = WriteStatusUpdated
+	}
+	if err := e.deps.GroupSub.Subscribe(ctx, req.TenantID, conversationID, operationRequestConversationTitle(req), req.ActorUserID, deptIDs); err != nil {
+		return operationExecutionResult(operationErrorResponse(), answerModeReject)
+	}
+	return operationExecutionResult(ResponseModel{
+		Kind:    ResponseResult,
+		Payload: OperationStatusPayload{Code: "subscription_started", Status: status},
+	}, answerModeToolFirst)
 }
 
-func (e operationExecutor) executeSubscriptionCancel(ctx context.Context, uctx *tools.UserContext, req OperationRequest) OperationExecutionResult {
-	if e.deps.GroupSub == nil || uctx == nil {
+func (e operationExecutor) executeSubscriptionCancel(ctx context.Context, req OperationRequest) OperationExecutionResult {
+	if e.deps.GroupSub == nil {
 		return operationExecutionResult(unavailableOperationResponse(), answerModeReject)
 	}
-	if uctx.ConversationType != "2" {
+	if conversationType := operationRequestConversationType(req); conversationType != "" && conversationType != "2" {
 		return operationExecutionResult(ResponseModel{Kind: ResponseRefuse, RefusalReason: "群考勤订阅只能在群聊中取消。请在对应群聊里再告诉我。"}, answerModeReject)
 	}
 	conversationID, ok := extractParamString(req.TrustedParams, "conversation_id")
 	if !ok {
 		return operationExecutionResult(missingOperationParamsResponse(req.Operation, []string{"conversation_id"}), answerModeToolFirst)
 	}
-	if conversationID != strings.TrimSpace(uctx.ConversationID) {
+	if req.ConversationID != "" && conversationID != strings.TrimSpace(req.ConversationID) {
 		return operationExecutionResult(subscriptionConversationMismatchResponse(), answerModeReject)
 	}
-	if err := e.deps.GroupSub.Unsubscribe(ctx, uctx.TenantID, conversationID); err != nil {
+	current, err := e.deps.GroupSub.GetSubscription(ctx, req.TenantID, conversationID)
+	if err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
-	return operationExecutionResult(ResponseModel{Kind: ResponseResult, ResultText: "已取消此群的考勤自动推送"}, answerModeToolFirst)
+	if current == nil || !current.Subscribed {
+		return operationExecutionResult(ResponseModel{
+			Kind:    ResponseResult,
+			Payload: OperationStatusPayload{Code: "subscription_cancelled", Status: WriteStatusNoOp},
+		}, answerModeToolFirst)
+	}
+	if err := e.deps.GroupSub.Unsubscribe(ctx, req.TenantID, conversationID); err != nil {
+		return operationExecutionResult(operationErrorResponse(), answerModeReject)
+	}
+	return operationExecutionResult(ResponseModel{
+		Kind:    ResponseResult,
+		Payload: OperationStatusPayload{Code: "subscription_cancelled", Status: WriteStatusUpdated},
+	}, answerModeToolFirst)
 }
 
-func (e operationExecutor) executeSubscriptionStatus(ctx context.Context, uctx *tools.UserContext, req OperationRequest) OperationExecutionResult {
-	if uctx == nil || uctx.ConversationType != "2" {
+func (e operationExecutor) executeSubscriptionStatus(ctx context.Context, req OperationRequest) OperationExecutionResult {
+	if conversationType := operationRequestConversationType(req); conversationType != "" && conversationType != "2" {
 		return operationExecutionResult(ResponseModel{Kind: ResponseRefuse, RefusalReason: "群考勤订阅状态只能在群聊中查询。请在对应群聊里再问我。"}, answerModeReject)
 	}
 	if e.deps.GroupSub == nil {
@@ -244,18 +238,43 @@ func (e operationExecutor) executeSubscriptionStatus(ctx context.Context, uctx *
 	if !ok {
 		return operationExecutionResult(missingOperationParamsResponse(req.Operation, []string{"conversation_id"}), answerModeToolFirst)
 	}
-	if conversationID != strings.TrimSpace(uctx.ConversationID) {
+	if req.ConversationID != "" && conversationID != strings.TrimSpace(req.ConversationID) {
 		return operationExecutionResult(subscriptionConversationMismatchResponse(), answerModeReject)
 	}
-	info, err := e.deps.GroupSub.GetSubscription(ctx, uctx.TenantID, conversationID)
+	info, err := e.deps.GroupSub.GetSubscription(ctx, req.TenantID, conversationID)
 	if err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
-	return operationExecutionResult(ResponseModel{Kind: ResponseResult, ResultText: buildSubscriptionStatusReply(info)}, answerModeToolFirst)
+	return operationExecutionResult(ResponseModel{Kind: ResponseResult, Payload: SubscriptionStatusPayload{Info: info}}, answerModeToolFirst)
 }
 
 func subscriptionConversationMismatchResponse() ResponseModel {
 	return ResponseModel{Kind: ResponseRefuse, RefusalReason: "只能操作当前群聊的考勤订阅。请在对应群聊里再告诉我。"}
+}
+
+func sameSubscriptionDeptScope(left, right []int64) bool {
+	left = normalizedSubscriptionDeptIDs(left)
+	right = normalizedSubscriptionDeptIDs(right)
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizedSubscriptionDeptIDs(ids []int64) []int64 {
+	if len(ids) == 0 {
+		return nil
+	}
+	cloned := append([]int64(nil), ids...)
+	sort.Slice(cloned, func(i, j int) bool {
+		return cloned[i] < cloned[j]
+	})
+	return cloned
 }
 
 func (e operationExecutor) executeListDepartments(ctx context.Context) OperationExecutionResult {
@@ -280,15 +299,15 @@ func (e operationExecutor) executeListDepartments(ctx context.Context) Operation
 	return operationExecutionResult(ResponseModel{Kind: ResponseSelectOptions, Options: options}, answerModeToolFirst)
 }
 
-func (e operationExecutor) executeRuleExplain(ctx context.Context, uctx *tools.UserContext, req OperationRequest) OperationExecutionResult {
-	if e.deps.Knowledge == nil || uctx == nil {
+func (e operationExecutor) executeRuleExplain(ctx context.Context, req OperationRequest) OperationExecutionResult {
+	if e.deps.Knowledge == nil || req.TenantID == 0 {
 		return operationExecutionResult(unavailableOperationResponse(), answerModeReject)
 	}
 	topic, ok := extractParamString(req.TrustedParams, "rule_topic")
 	if !ok {
 		return operationExecutionResult(missingOperationParamsResponse(req.Operation, []string{"rule_topic"}), answerModeToolFirst)
 	}
-	hits, err := e.deps.Knowledge.Search(ctx, uctx.TenantID, topic, operationExecutorKnowledgeTopK)
+	hits, err := e.deps.Knowledge.Search(ctx, req.TenantID, topic, operationExecutorKnowledgeTopK)
 	if err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
@@ -297,7 +316,7 @@ func (e operationExecutor) executeRuleExplain(ctx context.Context, uctx *tools.U
 		result.Metrics.RetrievalCandidateCount = 0
 		return result
 	}
-	result := operationExecutionResult(ResponseModel{Kind: ResponseAnswer, Answer: buildKnowledgeAnswer(hits)}, answerModeKnowledgeOnly)
+	result := operationExecutionResult(ResponseModel{Kind: ResponseAnswer, Payload: KnowledgeAnswerPayload{Hits: hits}}, answerModeKnowledgeOnly)
 	result.Metrics.RetrievalHitCount = len(hits)
 	result.Metrics.RetrievalCandidateCount = len(hits)
 	result.Metrics.SourceRefs = collectSourceRefs(hits)
@@ -315,134 +334,8 @@ func operationExecutionResult(response ResponseModel, mode answerMode) Operation
 	}
 }
 
-func buildScheduleResultReply(week int, userName string, courses []tools.CourseItem) string {
-	prefix := fmt.Sprintf("第%d周课表", week)
-	if strings.TrimSpace(userName) != "" {
-		prefix = fmt.Sprintf("%s第%d周课表", strings.TrimSpace(userName), week)
-	}
-	if len(courses) == 0 {
-		return prefix + "没有查询到课程。"
-	}
-	parts := make([]string, 0, len(courses))
-	for _, course := range courses {
-		name := strings.TrimSpace(course.CourseName)
-		if name == "" {
-			name = "未命名课程"
-		}
-		detail := name
-		if course.DayOfWeek > 0 || course.Section > 0 || strings.TrimSpace(course.Location) != "" {
-			detail += "（"
-			segments := make([]string, 0, 3)
-			if course.DayOfWeek > 0 {
-				segments = append(segments, weekdayName(course.DayOfWeek))
-			}
-			if course.Section > 0 {
-				segments = append(segments, fmt.Sprintf("第%d节", course.Section))
-			}
-			if strings.TrimSpace(course.Location) != "" {
-				segments = append(segments, strings.TrimSpace(course.Location))
-			}
-			detail += strings.Join(segments, " ")
-			detail += "）"
-		}
-		parts = append(parts, detail)
-	}
-	return prefix + "：" + strings.Join(parts, "；")
-}
-
-func buildKnowledgeAnswer(hits []tools.KnowledgeHit) string {
-	parts := make([]string, 0, len(hits))
-	for _, hit := range hits {
-		body := strings.TrimSpace(hit.Body)
-		if body == "" {
-			continue
-		}
-		if ref := strings.TrimSpace(hit.SourceRef); ref != "" {
-			body += "（来源：" + ref + "）"
-		}
-		parts = append(parts, body)
-	}
-	if len(parts) == 0 {
-		return "当前租户还没有配置可用于回答这个问题的规则说明。"
-	}
-	return strings.Join(parts, "\n")
-}
-
-func buildUserDayAttendanceStatusReply(status *tools.UserDayAttendanceStatus) string {
-	if status == nil {
-		return "未查询到该用户当天考勤状态。"
-	}
-	name := strings.TrimSpace(status.UserName)
-	if name == "" {
-		name = fmt.Sprintf("用户%d", status.UserID)
-	}
-	if len(status.Slots) == 0 {
-		return fmt.Sprintf("%s %s 未查询到考勤状态。", name, status.Date)
-	}
-	parts := make([]string, 0, len(status.Slots))
-	for _, slot := range status.Slots {
-		label := userDayAttendanceStatusLabel(slot)
-		if label == "" {
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("第%d节%s", slot.Section, label))
-	}
-	if len(parts) == 0 {
-		return fmt.Sprintf("%s %s 未查询到考勤状态。", name, status.Date)
-	}
-	return fmt.Sprintf("%s %s 考勤状态：%s。", name, status.Date, strings.Join(parts, "，"))
-}
-
-func userDayAttendanceStatusLabel(slot tools.UserDayAttendanceSlot) string {
-	switch slot.Status {
-	case "on_time":
-		return "正常"
-	case "late":
-		return "迟到"
-	case "leave":
-		if strings.TrimSpace(slot.LeaveType) != "" {
-			return "请假（" + strings.TrimSpace(slot.LeaveType) + "）"
-		}
-		return "请假"
-	case "not_arrived":
-		return "未到"
-	case "rest_day":
-		return "休息日"
-	case "has_course":
-		return "有课"
-	case "should_attend":
-		return "应到"
-	default:
-		return ""
-	}
-}
-
-func weekdayName(day int) string {
-	switch day {
-	case 1:
-		return "周一"
-	case 2:
-		return "周二"
-	case 3:
-		return "周三"
-	case 4:
-		return "周四"
-	case 5:
-		return "周五"
-	case 6:
-		return "周六"
-	case 7:
-		return "周日"
-	default:
-		return fmt.Sprintf("周%d", day)
-	}
-}
-
-func extractParamInt64Slice(params map[string]any, key string) ([]int64, bool) {
-	if params == nil {
-		return nil, false
-	}
-	value, ok := params[key]
+func extractParamInt64Slice(params map[string]TrustedParam, key string) ([]int64, bool) {
+	value, ok := trustedParamConcreteValue(params, key)
 	if !ok {
 		return nil, false
 	}

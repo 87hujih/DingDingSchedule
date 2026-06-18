@@ -8,6 +8,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"schedule_server/internal/agent/tools"
 )
@@ -33,11 +34,13 @@ type chatClient interface {
 
 type intentCompilerOptions struct {
 	SystemPrompt string
+	Timeout      time.Duration
 }
 
 type llmIntentCompiler struct {
 	client       chatClient
 	systemPrompt string
+	timeout      time.Duration
 }
 
 type intentCompilerResponse struct {
@@ -62,6 +65,7 @@ func newLLMIntentCompiler(client chatClient, opts intentCompilerOptions) IntentC
 	return &llmIntentCompiler{
 		client:       client,
 		systemPrompt: systemPrompt,
+		timeout:      opts.Timeout,
 	}
 }
 
@@ -86,7 +90,14 @@ func (c *llmIntentCompiler) Compile(ctx context.Context, req IntentCompileReques
 	}
 	messages = append(messages, tools.Message{Role: "user", Content: message})
 
-	reply, err := c.client.Chat(ctx, messages, nil)
+	callCtx := ctx
+	var cancel context.CancelFunc
+	if c.timeout > 0 {
+		callCtx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
+
+	reply, err := c.client.Chat(callCtx, messages, nil)
 	if err != nil {
 		return IntentDraft{}, err
 	}
@@ -94,11 +105,6 @@ func (c *llmIntentCompiler) Compile(ctx context.Context, req IntentCompileReques
 	draft, err := parseIntentCompilerResponse(reply.Content)
 	if err != nil {
 		return unknownIntentDraft("intent_parse_failed"), nil
-	}
-	if draft.Operation != "" {
-		if _, ok := lookupOperation(draft.Operation); !ok {
-			return unknownIntentDraft("operation_not_allowed"), nil
-		}
 	}
 	if draft.Act == ActUnknown {
 		draft.Domain = DomainUnknown
@@ -163,6 +169,9 @@ func parseIntentCompilerResponse(content string) (IntentDraft, error) {
 		field := strings.TrimSpace(slot.Field)
 		if field == "" {
 			return IntentDraft{}, errors.New("slot field is empty")
+		}
+		if trustedIDSlotField(field) {
+			return IntentDraft{}, fmt.Errorf("slot field %q must be raw, not a trusted id", field)
 		}
 		if _, exists := slots[field]; exists {
 			return IntentDraft{}, fmt.Errorf("duplicate slot field %q", field)
@@ -283,9 +292,10 @@ func buildIntentCompilerSystemPrompt() string {
 	b.WriteString("你是协议意图编译器。只输出一个 JSON 对象，不要输出 Markdown 或解释。\n")
 	b.WriteString("输出字段只能是 act, domain, operation, confidence, slots, reason。\n")
 	b.WriteString("slots 必须是数组，每项只能包含 field 和 raw；raw 只是用户原文片段，不是可信实体值。\n")
+	b.WriteString("slots 禁止直接输出 user_id、dept_id、dept_ids 等可信 ID 字段；只能输出 user_name、department、date、section 等原始用户片段。\n")
 	b.WriteString("只允许使用下面 operation catalog 中的 operation；不确定时输出 act=unknown、domain=unknown、operation 为空字符串。\n")
 	b.WriteString("operation catalog:\n")
-	for _, metadata := range operationCatalogEntries {
+	for _, metadata := range promptOperationEntries() {
 		b.WriteString("- operation=")
 		b.WriteString(metadata.Name)
 		b.WriteString("; domain=")
@@ -335,6 +345,16 @@ func buildIntentCompilerSystemPrompt() string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+func trustedIDSlotField(field string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(field))
+	switch normalized {
+	case "id", "user_id", "userid", "dept_id", "department_id", "dept_ids", "department_ids":
+		return true
+	default:
+		return strings.HasSuffix(normalized, "_id") || strings.HasSuffix(normalized, "_ids")
+	}
 }
 
 func buildIntentCompilerWorkflowContext(workflow *IntentCompileWorkflowContext) string {

@@ -148,10 +148,10 @@ type testClarifyDeptPort struct{}
 
 func (testClarifyDeptPort) ListDepts(context.Context) ([]agenttools.DeptItem, error) {
 	return []agenttools.DeptItem{
-		{DeptID: 101, Name: "信工24级"},
-		{DeptID: 102, Name: "信工23级"},
-		{DeptID: 103, Name: "教务处"},
-		{DeptID: 104, Name: "学工处"},
+		{TenantID: 42, DeptID: 101, Name: "信工24级"},
+		{TenantID: 42, DeptID: 102, Name: "信工23级"},
+		{TenantID: 42, DeptID: 103, Name: "教务处"},
+		{TenantID: 42, DeptID: 104, Name: "学工处"},
 	}, nil
 }
 
@@ -159,8 +159,8 @@ type testFamilyDeptPort struct{}
 
 func (testFamilyDeptPort) ListDepts(context.Context) ([]agenttools.DeptItem, error) {
 	return []agenttools.DeptItem{
-		{DeptID: 201, Name: "家族7期"},
-		{DeptID: 202, Name: "乐知全栈一期"},
+		{TenantID: 42, DeptID: 201, Name: "家族7期"},
+		{TenantID: 42, DeptID: 202, Name: "乐知全栈一期"},
 	}, nil
 }
 
@@ -2004,6 +2004,18 @@ func TestSubscriptionWorkflowStartsAndExecutesAllScopeInProtocolLive(t *testing.
 	if log.ToolPool != "operation" {
 		t.Fatalf("ToolPool = %q, want operation", log.ToolPool)
 	}
+	if log.IdempotencyKey == "" {
+		t.Fatalf("IdempotencyKey is empty for subscription write")
+	}
+	if log.WriteGuardResult != "allow" {
+		t.Fatalf("WriteGuardResult = %q, want allow", log.WriteGuardResult)
+	}
+	if log.LegacyCalled {
+		t.Fatalf("LegacyCalled = true, want false for protocol_live write")
+	}
+	if log.FailureLayer != "" {
+		t.Fatalf("FailureLayer = %q, want empty successful write", log.FailureLayer)
+	}
 
 	groupSub.mu.Lock()
 	defer groupSub.mu.Unlock()
@@ -2082,6 +2094,12 @@ func TestSubscriptionWorkflowKeepsWorkflowWhenExecutorStartFails(t *testing.T) {
 	if log.ExecutorName != "operation_executor" || log.ResponseKind != string(ResponseRefuse) {
 		t.Fatalf("log executor=%q response=%q, want operation refuse", log.ExecutorName, log.ResponseKind)
 	}
+	if log.FailureLayer != string(FailureExecutor) {
+		t.Fatalf("FailureLayer = %q, want %q", log.FailureLayer, FailureExecutor)
+	}
+	if log.LegacyCalled {
+		t.Fatalf("LegacyCalled = true, want false for protocol_live executor failure")
+	}
 }
 
 func TestSubscriptionWorkflowRefusesOrdinaryUserStartInProtocolLive(t *testing.T) {
@@ -2131,8 +2149,8 @@ func TestSubscriptionWorkflowRefusesOrdinaryUserStartInProtocolLive(t *testing.T
 	if log.ExecutionAllowed {
 		t.Fatalf("ExecutionAllowed = true, want false")
 	}
-	if log.ProtocolValidationCode != "allowed_write_request" {
-		t.Fatalf("ProtocolValidationCode = %q, want allowed_write_request", log.ProtocolValidationCode)
+	if log.ProtocolValidationCode != "role_denied" {
+		t.Fatalf("ProtocolValidationCode = %q, want role_denied", log.ProtocolValidationCode)
 	}
 	if log.ProtocolBlockedReason != "role_denied" {
 		t.Fatalf("ProtocolBlockedReason = %q, want role_denied", log.ProtocolBlockedReason)
@@ -2327,7 +2345,7 @@ func TestSubscriptionWorkflowCancelsOnExplicitWriteRequestInProtocolLive(t *test
 	t.Parallel()
 
 	callLog := newTestCallLogPort()
-	groupSub := &testGroupSubPort{}
+	groupSub := &testGroupSubPort{info: &agenttools.GroupSubInfo{Subscribed: true}}
 	a := NewAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
@@ -2400,10 +2418,13 @@ func TestProtocolLiveWorkflowCancelClearsActiveWorkflowWithoutUnsubscribe(t *tes
 	defer a.Stop()
 
 	a.sessions.setWorkflowState("42:conv-protocol-workflow-cancel:ding-user", &WorkflowSnapshot{
-		ID:           "wf-subscription",
-		Type:         WorkflowSubscriptionStart,
-		State:        WorkflowCollectScope,
-		MissingSlots: []string{"scope"},
+		ID:             "wf-subscription",
+		TenantID:       42,
+		ConversationID: "conv-protocol-workflow-cancel",
+		ActorUserID:    7,
+		Type:           WorkflowSubscriptionStart,
+		State:          WorkflowCollectScope,
+		MissingSlots:   []string{"scope"},
 	})
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2463,10 +2484,13 @@ func TestProtocolLiveWorkflowCancelAllowsOrdinaryUserToClearOwnWorkflow(t *testi
 	defer a.Stop()
 
 	a.sessions.setWorkflowState("42:conv-protocol-workflow-cancel-ordinary:ding-user", &WorkflowSnapshot{
-		ID:           "wf-subscription",
-		Type:         WorkflowSubscriptionStart,
-		State:        WorkflowCollectScope,
-		MissingSlots: []string{"scope"},
+		ID:             "wf-subscription",
+		TenantID:       42,
+		ConversationID: "conv-protocol-workflow-cancel-ordinary",
+		ActorUserID:    8,
+		Type:           WorkflowSubscriptionStart,
+		State:          WorkflowCollectScope,
+		MissingSlots:   []string{"scope"},
 	})
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2547,8 +2571,8 @@ func TestSubscriptionWorkflowRefusesOrdinaryUserCancelInProtocolLive(t *testing.
 	if log.ExecutionAllowed {
 		t.Fatalf("ExecutionAllowed = true, want false")
 	}
-	if log.ProtocolValidationCode != "allowed_write_request" {
-		t.Fatalf("ProtocolValidationCode = %q, want allowed_write_request", log.ProtocolValidationCode)
+	if log.ProtocolValidationCode != "role_denied" {
+		t.Fatalf("ProtocolValidationCode = %q, want role_denied", log.ProtocolValidationCode)
 	}
 	if log.ProtocolBlockedReason != "role_denied" {
 		t.Fatalf("ProtocolBlockedReason = %q, want role_denied", log.ProtocolBlockedReason)

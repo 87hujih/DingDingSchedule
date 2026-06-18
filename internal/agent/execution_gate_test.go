@@ -33,10 +33,10 @@ func TestExecutionGateBuildsAttendanceReadRequestFromTrustedValues(t *testing.T)
 	if req.Operation != "attendance.query_status" {
 		t.Fatalf("Operation = %q, want attendance.query_status", req.Operation)
 	}
-	if req.TrustedParams["date"] != "2026-04-07" {
+	if trustedValue(req.TrustedParams, "date") != "2026-04-07" {
 		t.Fatalf("date = %v, want 2026-04-07", req.TrustedParams["date"])
 	}
-	if req.TrustedParams["section"] != 2 {
+	if trustedValue(req.TrustedParams, "section") != 2 {
 		t.Fatalf("section = %v, want 2", req.TrustedParams["section"])
 	}
 }
@@ -54,10 +54,10 @@ func TestBuildOperationRequestSelectsUserDayAttendanceQueryShape(t *testing.T) {
 	if blocked {
 		t.Fatalf("blocked = true, want false")
 	}
-	if req.TrustedParams["query_shape"] != "user_day_status" {
+	if trustedValue(req.TrustedParams, "query_shape") != "user_day_status" {
 		t.Fatalf("query_shape = %v, want user_day_status", req.TrustedParams["query_shape"])
 	}
-	if req.TrustedParams["user_id"] != uint(99) {
+	if trustedValue(req.TrustedParams, "user_id") != uint(99) {
 		t.Fatalf("user_id = %v, want 99", req.TrustedParams["user_id"])
 	}
 }
@@ -96,7 +96,7 @@ func TestBuildOperationRequestRequiresScheduleWeek(t *testing.T) {
 	if blocked {
 		t.Fatalf("blocked = true, want false with trusted week")
 	}
-	if req.TrustedParams["week"] != 10 {
+	if trustedValue(req.TrustedParams, "week") != 10 {
 		t.Fatalf("week = %v, want 10", req.TrustedParams["week"])
 	}
 }
@@ -124,10 +124,10 @@ func TestBuildOperationRequestRequiresUserScheduleUserIDAndWeek(t *testing.T) {
 	if blocked {
 		t.Fatalf("blocked = true, want false with trusted user_id and week")
 	}
-	if req.TrustedParams["user_id"] != uint(99) {
+	if trustedValue(req.TrustedParams, "user_id") != uint(99) {
 		t.Fatalf("user_id = %v, want 99", req.TrustedParams["user_id"])
 	}
-	if req.TrustedParams["week"] != 10 {
+	if trustedValue(req.TrustedParams, "week") != 10 {
 		t.Fatalf("week = %v, want 10", req.TrustedParams["week"])
 	}
 }
@@ -144,14 +144,12 @@ func TestBuildOperationRequestAllowsTrustedRuleTopic(t *testing.T) {
 				Act:       ActRuleQuestion,
 				Operation: operation,
 			}, trustedEntities{
-				TrustedParams: map[string]any{
-					"rule_topic": "late_policy",
-				},
+				TrustedParams: trustedParamsForGateTest(map[string]any{"rule_topic": "late_policy"}),
 			})
 			if blocked {
 				t.Fatalf("blocked = true, want false for trusted rule_topic")
 			}
-			if req.TrustedParams["rule_topic"] != "late_policy" {
+			if trustedValue(req.TrustedParams, "rule_topic") != "late_policy" {
 				t.Fatalf("rule_topic = %v, want late_policy", req.TrustedParams["rule_topic"])
 			}
 		})
@@ -181,29 +179,29 @@ func TestBuildOperationRequestRejectsRawStringTrustedParamsForTypedFields(t *tes
 		{
 			name:  "section raw string",
 			draft: ProtocolDraft{Act: ActReadQuery, Operation: "attendance.query_status"},
-			trusted: trustedEntities{TrustedParams: map[string]any{
+			trusted: trustedEntities{TrustedParams: trustedParamsForGateTest(map[string]any{
 				"date":    "2026-04-07",
 				"section": "第二节",
-			}},
+			})},
 		},
 		{
 			name:  "user raw string",
 			draft: ProtocolDraft{Act: ActReadQuery, Operation: "schedule.query_user_schedule"},
-			trusted: trustedEntities{TrustedParams: map[string]any{
+			trusted: trustedEntities{TrustedParams: trustedParamsForGateTest(map[string]any{
 				"user_id": "张三",
 				"week":    10,
-			}},
+			})},
 		},
 		{
 			name:  "dept raw string for department scope subscription",
 			draft: ProtocolDraft{Act: ActWriteRequest, Operation: "subscription.start"},
 			trusted: trustedEntities{
 				UserRole: 1,
-				TrustedParams: map[string]any{
+				TrustedParams: trustedParamsForGateTest(map[string]any{
 					"conversation_id": "conv-1",
 					"scope":           "department",
 					"dept_ids":        "信工24级",
-				},
+				}),
 			},
 		},
 	}
@@ -252,18 +250,58 @@ func TestBuildOperationRequestAcceptsDepartmentResolverOutput(t *testing.T) {
 		Operation: "subscription.start",
 	}, trustedEntities{
 		UserRole: 1,
-		TrustedParams: map[string]any{
+		TrustedParams: trustedParamsForGateTest(map[string]any{
 			"conversation_id": "conv-1",
 			"scope":           "department",
 			"dept_ids":        resolved.Values["dept_ids"],
-		},
+		}),
 	})
 	if blocked {
 		t.Fatalf("blocked = true, want false")
 	}
-	deptIDs, ok := req.TrustedParams["dept_ids"].([]int64)
+	deptIDs, ok := trustedValue(req.TrustedParams, "dept_ids").([]int64)
 	if !ok || len(deptIDs) != 1 || deptIDs[0] != 101 {
 		t.Fatalf("dept_ids = %v, want [101]", req.TrustedParams["dept_ids"])
+	}
+}
+
+func TestBuildOperationRequestRejectsCrossTenantTrustedParam(t *testing.T) {
+	t.Parallel()
+
+	_, blocked := buildOperationRequest(ProtocolDraft{
+		Act:       ActWriteRequest,
+		Operation: "subscription.start",
+	}, trustedEntities{
+		TenantID: 42,
+		UserRole: 1,
+		TrustedParams: map[string]TrustedParam{
+			"conversation_id": trustedParam("conversation_id", "conv-1", 42, TrustedParamSource{Kind: TrustedParamSourceRuntime, Resolver: "conversation_runtime"}),
+			"scope":           trustedParam("scope", "department", 42, TrustedParamSource{Kind: TrustedParamSourceWorkflow, Resolver: "subscription_scope"}),
+			"dept_ids":        trustedParam("dept_ids", []int64{101}, 99, TrustedParamSource{Kind: TrustedParamSourceRawSlot, Raw: "信工", Resolver: "department_resolver"}),
+		},
+	})
+	if !blocked {
+		t.Fatalf("blocked = false, want true for cross-tenant trusted param")
+	}
+}
+
+func TestBuildOperationRequestRejectsTenantlessTrustedParamForTenantBoundRequest(t *testing.T) {
+	t.Parallel()
+
+	_, blocked := buildOperationRequest(ProtocolDraft{
+		Act:       ActWriteRequest,
+		Operation: "subscription.start",
+	}, trustedEntities{
+		TenantID: 42,
+		UserRole: 1,
+		TrustedParams: map[string]TrustedParam{
+			"conversation_id": trustedParam("conversation_id", "conv-1", 42, TrustedParamSource{Kind: TrustedParamSourceRuntime, Resolver: "conversation_runtime"}),
+			"scope":           trustedParam("scope", "department", 42, TrustedParamSource{Kind: TrustedParamSourceWorkflow, Resolver: "subscription_scope"}),
+			"dept_ids":        trustedParam("dept_ids", []int64{101}, 0, TrustedParamSource{Kind: TrustedParamSourceRawSlot, Raw: "信工", Resolver: "department_resolver"}),
+		},
+	})
+	if !blocked {
+		t.Fatalf("blocked = false, want true for tenantless trusted param in tenant-bound request")
 	}
 }
 
@@ -299,7 +337,7 @@ func TestExecutionGateEnforcesSubscriptionWritePermissions(t *testing.T) {
 			if blocked != tt.blocked {
 				t.Fatalf("blocked = %v, want %v", blocked, tt.blocked)
 			}
-			if tt.wantDepts && len(req.TrustedParams["dept_ids"].([]int64)) != 1 {
+			if tt.wantDepts && len(trustedValue(req.TrustedParams, "dept_ids").([]int64)) != 1 {
 				t.Fatalf("dept_ids = %v, want one trusted dept id", req.TrustedParams["dept_ids"])
 			}
 		})
@@ -325,4 +363,18 @@ func TestExecutionGateRequiresTrustedConversationForSubscriptionCancel(t *testin
 	if !blocked {
 		t.Fatalf("blocked = false, want true without trusted conversation_id")
 	}
+}
+
+func trustedParamsForGateTest(values map[string]any) map[string]TrustedParam {
+	return trustedParamsFromValues(42, TrustedParamSource{
+		Kind:     TrustedParamSourceWorkflow,
+		Resolver: "execution_gate_test",
+	}, values)
+}
+
+func trustedValue(params map[string]TrustedParam, field string) any {
+	if params == nil {
+		return nil
+	}
+	return params[field].Value
 }

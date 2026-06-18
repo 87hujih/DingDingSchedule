@@ -2,8 +2,7 @@ package agent
 
 import (
 	"context"
-	"fmt"
-	"strings"
+	"errors"
 	"time"
 
 	"schedule_server/internal/agent/tools"
@@ -11,12 +10,20 @@ import (
 
 type protocolLivePipelineDeps struct {
 	Compiler       IntentCompiler
-	Executor       operationExecutor
+	Validator      CatalogValidator
+	PrePolicy      PrePolicyGate
+	ResourcePolicy ResourcePolicyGate
+	WriteGuard     WriteGuard
+	Executor       protocolOperationExecutor
 	User           UserPort
 	Dept           DeptPort
 	Semester       SemesterPort
 	SchedulePeriod SchedulePeriodPort
 	Clock          func() time.Time
+}
+
+type protocolOperationExecutor interface {
+	Execute(context.Context, OperationRequest) OperationExecutionResult
 }
 
 type protocolLivePipeline struct {
@@ -30,44 +37,129 @@ type protocolLiveInput struct {
 }
 
 type protocolLiveOutcome struct {
-	Draft            ProtocolDraft
-	Validation       ProtocolValidationResult
-	Response         ResponseModel
-	ExecutionMetrics OperationExecutionMetrics
-	AnswerMode       answerMode
-	BlockedReason    string
-	ResolvedSlots    map[string]any
-	CandidateCount   int
-	WorkflowDecision WorkflowDecision
-	WorkflowAfter    *WorkflowSnapshot
-	ClearWorkflow    bool
+	RequestID               string
+	Draft                   ProtocolDraft
+	Validation              ProtocolValidationResult
+	Response                ResponseModel
+	ExecutionMetrics        OperationExecutionMetrics
+	AnswerMode              answerMode
+	BlockedReason           string
+	CompilerStatus          string
+	CompilerLatencyMs       int64
+	IntentDraftJSON         string
+	CatalogValidationCode   string
+	ResolvedSlots           map[string]any
+	CandidateCount          int
+	IdempotencyKey          string
+	EntityResolutionStatus  string
+	PrePolicyResult         string
+	ResourcePolicyResult    string
+	WriteGuardResult        string
+	ExecutorStatus          string
+	RendererName            string
+	FailureLayer            FailureLayer
+	LegacyCalled            bool
+	WorkflowDecision        WorkflowDecision
+	WorkflowInterruptReason string
+	WorkflowAfter           *WorkflowSnapshot
+	ClearWorkflow           bool
 }
 
 func newProtocolLivePipeline(deps protocolLivePipelineDeps) protocolLivePipeline {
 	return protocolLivePipeline{deps: deps}
 }
 
-func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInput) protocolLiveOutcome {
-	workflowCtx := protocolWorkflowContextFromWorkflowSnapshot(input.ActiveWorkflow)
+func (p protocolLivePipeline) catalogValidator() CatalogValidator {
+	if p.deps.Validator != nil {
+		return p.deps.Validator
+	}
+	return newCatalogValidator()
+}
+
+func (p protocolLivePipeline) prePolicyGate() PrePolicyGate {
+	if p.deps.PrePolicy != nil {
+		return p.deps.PrePolicy
+	}
+	return newPrePolicyGate()
+}
+
+func (p protocolLivePipeline) resourcePolicyGate() ResourcePolicyGate {
+	if p.deps.ResourcePolicy != nil {
+		return p.deps.ResourcePolicy
+	}
+	return newResourcePolicyGate()
+}
+
+func (p protocolLivePipeline) writeGuard() WriteGuard {
+	if p.deps.WriteGuard != nil {
+		return p.deps.WriteGuard
+	}
+	return newWriteGuard()
+}
+
+func (p protocolLivePipeline) executor() protocolOperationExecutor {
+	if p.deps.Executor != nil {
+		return p.deps.Executor
+	}
+	return newOperationExecutor(operationExecutorDeps{})
+}
+
+func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInput) (outcome protocolLiveOutcome) { //nolint:funlen // Pipeline Handle is the top-level protocol orchestration boundary.
+	outcome.RequestID = newProtocolLiveRequestID(time.Now())
+	outcome.RendererName = "response_renderer"
+	defer finalizeProtocolLiveOutcome(&outcome)
+
+	receivedWorkflow := input.ActiveWorkflow
+	activeWorkflow := receivedWorkflow
+	if workflowExpired(activeWorkflow, p.now()) {
+		activeWorkflow = nil
+	}
+	workflowCtx := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
+	compileStart := time.Now()
 	draft, err := compileProtocolWithCompiler(ctx, protocolInput{
 		Message:        input.Message,
 		ActiveWorkflow: workflowCtx,
 	}, p.deps.Compiler)
+	outcome.CompilerLatencyMs = elapsedMs(compileStart)
+	outcome.CompilerStatus = "ok"
 	if err != nil {
-		draft = unknownIntentDraft("intent_parse_failed")
+		reason := "intent_parse_failed"
+		if errors.Is(err, context.DeadlineExceeded) {
+			reason = "intent_timeout"
+			outcome.CompilerStatus = "timeout"
+		} else {
+			outcome.CompilerStatus = "error"
+		}
+		draft = unknownIntentDraft(reason)
+	}
+	outcome.IntentDraftJSON = compactIntentDraft(draft)
+
+	validation := p.prePolicyGate().Validate(PrePolicyGateInput{
+		Draft:            draft,
+		ActiveWorkflow:   workflowCtx,
+		ConversationType: userConversationType(input.User),
+		UserRole:         inputUserRole(input.User),
+		HasUserContext:   input.User != nil,
+	})
+	outcome.Draft = draft
+	outcome.Validation = validation
+	outcome.AnswerMode = answerModeReject
+	outcome.CatalogValidationCode = validation.ValidationCode
+	outcome.PrePolicyResult = protocolPrePolicyResult(validation)
+	arbiterDecision := newWorkflowArbiter(p.now).Decide(WorkflowArbiterInput{
+		Draft:          draft,
+		ActiveWorkflow: receivedWorkflow,
+	})
+	if arbiterDecision.Expired {
+		outcome.WorkflowDecision = arbiterDecision.Decision
+		outcome.WorkflowInterruptReason = "expired"
+		outcome.ClearWorkflow = true
 	}
 
-	validation := validateProtocol(draft, workflowCtx)
-	outcome := protocolLiveOutcome{
-		Draft:      draft,
-		Validation: validation,
-		AnswerMode: answerModeReject,
-	}
-
-	activeWorkflow := input.ActiveWorkflow
 	if validation.InterruptActiveWorkflow {
 		result := interruptActiveWorkflow(nil, "", activeWorkflow, draft)
 		outcome.WorkflowDecision = result.Decision
+		outcome.WorkflowInterruptReason = string(draft.Act)
 		outcome.ClearWorkflow = workflowResultTerminal(result)
 		activeWorkflow = nil
 	}
@@ -77,6 +169,8 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 		outcome.Validation.ResponseKind = ResponseRefuse
 		setProtocolOutcomeResponse(&outcome, response, answerModeReject)
 		outcome.BlockedReason = "role_denied"
+		outcome.PrePolicyResult = "deny:role_denied"
+		outcome.FailureLayer = FailurePrePolicyDenied
 		return outcome
 	}
 
@@ -87,343 +181,30 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 	}
 
 	if draft.Act == ActWorkflowCancel {
-		if input.ActiveWorkflow == nil {
+		if activeWorkflow == nil {
 			response, mode := protocolLiveGuardrailResponse(draft, validation, input.User)
 			setProtocolOutcomeResponse(&outcome, response, mode)
 			return outcome
 		}
-		result := continueWorkflow(*input.ActiveWorkflow, draft, trustedEntities{})
+		result := continueWorkflow(*activeWorkflow, draft, trustedEntities{})
 		outcome.WorkflowDecision = result.Decision
 		outcome.ClearWorkflow = workflowResultTerminal(result)
 		setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseResult, ResultText: "已取消当前任务。如需继续，请重新告诉我。"}, answerModeToolFirst)
 		return outcome
 	}
 
-	switch draft.Operation {
-	case "subscription.start", "subscription.list_departments":
-		return p.handleSubscription(ctx, input, draft, activeWorkflow, outcome)
-	case "subscription.query_status", "subscription.cancel":
-		req := OperationRequest{
-			Operation: draft.Operation,
-			TrustedParams: map[string]any{
-				"conversation_id": userConversationID(input.User),
-			},
+	if manifest, ok := lookupOperation(draft.Operation); ok {
+		if manifest.Renderer.Name != "" {
+			outcome.RendererName = manifest.Renderer.Name
 		}
-		return p.execute(ctx, input.User, req, outcome)
-	case "attendance.query_status":
-		req, response, ok := p.attendanceRequest(ctx, input.Message, draft)
-		if !ok {
-			setProtocolOutcomeResponse(&outcome, response, answerModeToolFirst)
-			return outcome
+		if dispatch, ok := lookupProtocolLiveDispatch(manifest.Dispatch.Name); ok {
+			return dispatch.Handle(ctx, p, input, draft, manifest, activeWorkflow, outcome)
 		}
-		return p.execute(ctx, input.User, req, outcome)
-	case "schedule.query_my_schedule", "schedule.query_user_schedule":
-		req, response, ok := p.scheduleRequest(ctx, input.Message, draft)
-		if !ok {
-			setProtocolOutcomeResponse(&outcome, response, answerModeToolFirst)
-			return outcome
-		}
-		return p.execute(ctx, input.User, req, outcome)
-	case "system.describe_capability", "attendance.describe_capability", "schedule.describe_capability", "subscription.describe_capability", "manual_sign.describe_capability":
-		return p.execute(ctx, input.User, OperationRequest{Operation: draft.Operation}, outcome)
-	case "attendance.rule_explain", "schedule.rule_explain", "subscription.rule_explain":
-		req, blocked := buildOperationRequest(draft, trustedEntities{
-			UserRole: inputUserRole(input.User),
-			TrustedParams: map[string]any{
-				"rule_topic": protocolRuleTopic(input.Message, draft),
-			},
-		})
-		if blocked {
-			setProtocolOutcomeResponse(&outcome, missingOperationParamsResponse(draft.Operation, []string{"rule_topic"}), answerModeToolFirst)
-			return outcome
-		}
-		return p.execute(ctx, input.User, req, outcome)
-	default:
-		response, mode := protocolLiveGuardrailResponse(draft, validation, input.User)
-		setProtocolOutcomeResponse(&outcome, response, mode)
-		return outcome
-	}
-}
-
-func (p protocolLivePipeline) handleSubscription(ctx context.Context, input protocolLiveInput, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot, outcome protocolLiveOutcome) protocolLiveOutcome {
-	if draft.Operation == "subscription.list_departments" {
-		if activeWorkflow != nil {
-			if activeWorkflow.Type == WorkflowSubscriptionStart && activeWorkflow.State == WorkflowCollectScope {
-				continueDraft := draft
-				continueDraft.Operation = "subscription.start"
-				return p.continueSubscription(ctx, input, continueDraft, activeWorkflow, trustedEntities{Scope: "department"}, outcome)
-			}
-			outcome.WorkflowAfter = cloneWorkflowSnapshot(activeWorkflow)
-			outcome.WorkflowDecision = WorkflowMetaResult
-		}
-		return p.execute(ctx, input.User, OperationRequest{Operation: "subscription.list_departments"}, outcome)
 	}
 
-	if input.User == nil || input.User.ConversationType != "2" {
-		setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseRefuse, RefusalReason: "群考勤订阅只能在群聊中使用。请在对应群聊里再告诉我。"}, answerModeReject)
-		outcome.BlockedReason = "group_chat_required"
-		return outcome
-	}
-
-	if activeWorkflow == nil {
-		if draft.Act != ActWriteRequest || draft.Operation != "subscription.start" {
-			response, mode := protocolLiveGuardrailResponse(draft, outcome.Validation, input.User)
-			setProtocolOutcomeResponse(&outcome, response, mode)
-			return outcome
-		}
-		workflow, ok := startWorkflow(draft)
-		if !ok {
-			response, mode := protocolLiveGuardrailResponse(draft, outcome.Validation, input.User)
-			setProtocolOutcomeResponse(&outcome, response, mode)
-			return outcome
-		}
-		if trusted, ok := p.resolveInitialSubscriptionTrustedEntities(ctx, input.Message, draft); ok {
-			continueDraft := draft
-			continueDraft.Act = ActWorkflowContinue
-			return p.continueSubscription(ctx, input, continueDraft, &workflow, trusted, outcome)
-		}
-		outcome.WorkflowDecision = WorkflowContinueDecision
-		outcome.WorkflowAfter = &workflow
-		setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseClarify, ClarifyReason: "subscription_missing_fields"}, answerModeToolFirst)
-		outcome.BlockedReason = "missing_scope"
-		return outcome
-	}
-
-	if activeWorkflow.Type != WorkflowSubscriptionStart {
-		response, mode := protocolLiveGuardrailResponse(draft, outcome.Validation, input.User)
-		setProtocolOutcomeResponse(&outcome, response, mode)
-		return outcome
-	}
-
-	if draft.Act != ActWorkflowContinue {
-		response, mode := protocolLiveGuardrailResponse(draft, outcome.Validation, input.User)
-		setProtocolOutcomeResponse(&outcome, response, mode)
-		return outcome
-	}
-
-	trusted, ok := p.resolveSubscriptionTrustedEntities(ctx, input.Message, activeWorkflow)
-	if !ok {
-		outcome.WorkflowAfter = cloneWorkflowSnapshot(activeWorkflow)
-		setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseClarify, ClarifyReason: "subscription_missing_fields"}, answerModeToolFirst)
-		if len(activeWorkflow.MissingSlots) > 0 {
-			outcome.BlockedReason = "missing_" + activeWorkflow.MissingSlots[0]
-		}
-		return outcome
-	}
-
-	return p.continueSubscription(ctx, input, draft, activeWorkflow, trusted, outcome)
-}
-
-func (p protocolLivePipeline) continueSubscription(ctx context.Context, input protocolLiveInput, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot, trusted trustedEntities, outcome protocolLiveOutcome) protocolLiveOutcome {
-	result := continueWorkflow(*activeWorkflow, draft, trusted)
-	outcome.WorkflowDecision = result.Decision
-	switch result.Decision {
-	case WorkflowContinueDecision:
-		if result.Workflow == nil {
-			response, mode := protocolLiveGuardrailResponse(draft, outcome.Validation, input.User)
-			setProtocolOutcomeResponse(&outcome, response, mode)
-			return outcome
-		}
-		outcome.WorkflowAfter = result.Workflow
-		outcome.ResolvedSlots = protocolResolvedSlotsFromTrusted(result.Workflow.Trusted)
-		return p.execute(ctx, input.User, OperationRequest{Operation: "subscription.list_departments"}, outcome)
-	case WorkflowReadyToExecute:
-		if result.Workflow == nil {
-			response, mode := protocolLiveGuardrailResponse(draft, outcome.Validation, input.User)
-			setProtocolOutcomeResponse(&outcome, response, mode)
-			return outcome
-		}
-		deptIDs := subscriptionDeptIDsFromTrusted(result.Workflow.Trusted)
-		params := map[string]any{
-			"conversation_id": userConversationID(input.User),
-			"scope":           result.Workflow.Trusted.Scope,
-		}
-		if len(deptIDs) > 0 {
-			params["dept_ids"] = deptIDs
-		}
-		executed := p.execute(ctx, input.User, OperationRequest{
-			Operation:     "subscription.start",
-			TrustedParams: params,
-		}, outcome)
-		if executed.Response.Kind == ResponseResult {
-			completed := completeWorkflow(*result.Workflow)
-			executed.WorkflowDecision = completed.Decision
-			executed.ClearWorkflow = true
-			executed.WorkflowAfter = nil
-		} else {
-			executed.WorkflowAfter = result.Workflow
-		}
-		return executed
-	default:
-		outcome.WorkflowAfter = cloneWorkflowSnapshot(activeWorkflow)
-		setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseClarify, ClarifyReason: "subscription_invalid_shape"}, answerModeToolFirst)
-		return outcome
-	}
-}
-
-func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserContext, req OperationRequest, outcome protocolLiveOutcome) protocolLiveOutcome {
-	result := p.deps.Executor.Execute(ctx, uctx, req)
-	setProtocolOutcomeResponse(&outcome, result.Response, result.Metrics.AnswerMode)
-	if len(req.TrustedParams) > 0 {
-		outcome.ResolvedSlots = mergeProtocolResolvedSlots(outcome.ResolvedSlots, protocolResolvedSlotsFromParams(req.TrustedParams))
-	}
-	outcome.ExecutionMetrics = result.Metrics
+	response, mode := protocolLiveGuardrailResponse(draft, validation, input.User)
+	setProtocolOutcomeResponse(&outcome, response, mode)
 	return outcome
-}
-
-func setProtocolOutcomeResponse(outcome *protocolLiveOutcome, response ResponseModel, mode answerMode) {
-	if outcome == nil {
-		return
-	}
-	outcome.Response = response
-	outcome.AnswerMode = mode
-	if outcome.BlockedReason == "" {
-		outcome.BlockedReason = protocolResponseBlockedReason(response, outcome.Validation)
-	}
-	if outcome.CandidateCount == 0 {
-		outcome.CandidateCount = len(response.Options)
-	}
-}
-
-func protocolResponseBlockedReason(response ResponseModel, validation ProtocolValidationResult) string {
-	switch response.Kind {
-	case ResponseClarify:
-		if len(response.MissingFields) > 0 {
-			return "missing_" + response.MissingFields[0]
-		}
-		if reason := strings.TrimSpace(response.ClarifyReason); reason != "" {
-			return reason
-		}
-		if validation.ValidationCode != "" && !validation.AllowExecution {
-			return validation.ValidationCode
-		}
-	case ResponseRefuse:
-		if validation.ValidationCode != "" {
-			return validation.ValidationCode
-		}
-		return "refused"
-	}
-	return ""
-}
-
-func mergeProtocolResolvedSlots(base map[string]any, next map[string]any) map[string]any {
-	if len(next) == 0 {
-		return base
-	}
-	merged := make(map[string]any, len(base)+len(next))
-	for key, value := range base {
-		merged[key] = value
-	}
-	for key, value := range next {
-		merged[key] = value
-	}
-	return merged
-}
-
-func protocolResolvedSlotsFromParams(params map[string]any) map[string]any {
-	if len(params) == 0 {
-		return nil
-	}
-	slots := make(map[string]any)
-	for key, value := range params {
-		if key == "conversation_id" {
-			continue
-		}
-		switch key {
-		case "date", "week", "section", "user_id", "scope", "dept_ids", "rule_topic", "query_shape":
-			slots[key] = value
-		}
-	}
-	if len(slots) == 0 {
-		return nil
-	}
-	return slots
-}
-
-func protocolResolvedSlotsFromTrusted(trusted trustedEntities) map[string]any {
-	slots := make(map[string]any)
-	if trusted.Date != "" {
-		slots["date"] = trusted.Date
-	}
-	if trusted.Week != 0 {
-		slots["week"] = trusted.Week
-	}
-	if trusted.Section != 0 {
-		slots["section"] = trusted.Section
-	}
-	if trusted.UserID != 0 {
-		slots["user_id"] = trusted.UserID
-	}
-	if trusted.Scope != "" {
-		slots["scope"] = trusted.Scope
-	}
-	if len(trusted.DeptIDs) > 0 {
-		slots["dept_ids"] = append([]int64(nil), trusted.DeptIDs...)
-	} else if trusted.DepartmentID != 0 {
-		slots["dept_ids"] = []int64{trusted.DepartmentID}
-	}
-	if trusted.QueryShape != "" {
-		slots["query_shape"] = trusted.QueryShape
-	}
-	if len(slots) == 0 {
-		return nil
-	}
-	return slots
-}
-
-func (p protocolLivePipeline) attendanceRequest(ctx context.Context, message string, draft ProtocolDraft) (OperationRequest, ResponseModel, bool) {
-	trusted := trustedEntities{UserRole: 0}
-	if raw := draftSlotRaw(draft, "query_shape"); raw != "" {
-		trusted.QueryShape = raw
-	}
-	now := p.now()
-	dateRaw := firstNonEmpty(draftSlotRaw(draft, "date"), extractDateToken(message))
-	if dateRaw == "" && hasDateSignal(message) {
-		dateRaw = messageDateSignal(message)
-	}
-	date := resolveDateSlot(dateRaw, SlotDefaultToday, func() time.Time { return now })
-	if date.Status == ResolveResolved {
-		trusted.Date = fmt.Sprint(date.Value)
-	}
-
-	sectionRaw := firstNonEmpty(draftSlotRaw(draft, "section"), extractSectionToken(message))
-	section := resolveSectionSlot(sectionRaw, p.schedulePeriods(ctx), func() time.Time { return now })
-	if section.Status == ResolveResolved {
-		if value, ok := section.Value.(int); ok {
-			trusted.Section = value
-		}
-	}
-
-	userRaw := firstNonEmpty(draftSlotRaw(draft, "user"), draftSlotRaw(draft, "user_name"))
-	if userRaw == "" && strings.TrimSpace(draftSlotRaw(draft, "user_id")) != "" {
-		userRaw = draftSlotRaw(draft, "user_id")
-	}
-	if userRaw != "" && p.deps.User != nil {
-		users, err := p.deps.User.SearchByName(ctx, userRaw)
-		if err == nil {
-			resolved := resolveUserSlot(userRaw, users)
-			switch resolved.Status {
-			case ResolveResolved:
-				if userID, ok := resolved.Value.(uint); ok {
-					trusted.UserID = userID
-					trusted.QueryShape = "user_day_status"
-				}
-			case ResolveAmbiguous:
-				return OperationRequest{}, ResponseModel{Kind: ResponseSelectOptions, Options: responseOptionsFromEntityCandidates(resolved.Candidates)}, false
-			}
-		}
-	}
-
-	req, blocked := buildOperationRequest(draft, trusted)
-	if blocked {
-		return OperationRequest{}, ResponseModel{Kind: ResponseClarify, ClarifyReason: "missing_attendance_fields"}, false
-	}
-	if _, ok := req.TrustedParams["week"]; !ok && p.deps.Semester != nil {
-		if week, _, err := p.deps.Semester.GetCurrentWeek(ctx); err == nil && week > 0 {
-			req.TrustedParams["week"] = week
-		}
-	}
-	return req, ResponseModel{}, true
 }
 
 func (p protocolLivePipeline) now() time.Time {
@@ -431,303 +212,4 @@ func (p protocolLivePipeline) now() time.Time {
 		return p.deps.Clock()
 	}
 	return time.Now()
-}
-
-func (p protocolLivePipeline) schedulePeriods(ctx context.Context) []tools.PeriodInfo {
-	if p.deps.SchedulePeriod == nil {
-		return nil
-	}
-	periods, _, err := p.deps.SchedulePeriod.GetScheduleInfo(ctx)
-	if err != nil {
-		return nil
-	}
-	return periods
-}
-
-func (p protocolLivePipeline) scheduleRequest(ctx context.Context, message string, draft ProtocolDraft) (OperationRequest, ResponseModel, bool) {
-	trusted := trustedEntities{UserRole: 0}
-	weekRaw := firstNonEmpty(draftSlotRaw(draft, "week"), extractWeekToken(message))
-	week := resolveWeekSlot(ctx, weekRaw, SlotDefaultCurrentWeek, p.deps.Semester)
-	if week.Status == ResolveResolved {
-		if value, ok := week.Value.(int); ok {
-			trusted.Week = value
-		}
-	}
-
-	if draft.Operation == "schedule.query_user_schedule" {
-		userRaw := firstNonEmpty(draftSlotRaw(draft, "user"), draftSlotRaw(draft, "user_name"), extractScheduleUserName(message))
-		if userRaw == "" || p.deps.User == nil {
-			return OperationRequest{}, missingOperationParamsResponse(draft.Operation, []string{"user_id"}), false
-		}
-		users, err := p.deps.User.SearchByName(ctx, userRaw)
-		if err != nil {
-			return OperationRequest{}, operationErrorResponse(), false
-		}
-		resolved := resolveUserSlot(userRaw, users)
-		switch resolved.Status {
-		case ResolveResolved:
-			if userID, ok := resolved.Value.(uint); ok {
-				trusted.UserID = userID
-			}
-		case ResolveAmbiguous:
-			return OperationRequest{}, ResponseModel{Kind: ResponseSelectOptions, Options: responseOptionsFromEntityCandidates(resolved.Candidates)}, false
-		default:
-			return OperationRequest{}, missingOperationParamsResponse(draft.Operation, []string{"user_id"}), false
-		}
-	}
-
-	req, blocked := buildOperationRequest(draft, trusted)
-	if blocked {
-		return OperationRequest{}, missingOperationParamsResponse(draft.Operation, []string{"week"}), false
-	}
-	return req, ResponseModel{}, true
-}
-
-func (p protocolLivePipeline) resolveSubscriptionTrustedEntities(ctx context.Context, message string, workflow *WorkflowSnapshot) (trustedEntities, bool) {
-	if workflow == nil {
-		return trustedEntities{}, false
-	}
-	switch workflow.State {
-	case WorkflowCollectScope:
-		normalized := normalizeQuery(message)
-		switch {
-		case containsAny(normalized, []string{"全部人员", "全部"}):
-			return trustedEntities{Scope: "all"}, true
-		case containsAny(normalized, []string{"指定部门", "部分部门"}):
-			return trustedEntities{Scope: "department"}, true
-		default:
-			return p.resolveSubscriptionDepartmentSelection(ctx, message)
-		}
-	case WorkflowCollectDepartments:
-		return p.resolveSubscriptionDepartmentSelection(ctx, message)
-	default:
-		return trustedEntities{}, false
-	}
-}
-
-func (p protocolLivePipeline) resolveSubscriptionDepartmentSelection(ctx context.Context, message string) (trustedEntities, bool) {
-	if p.deps.Dept == nil {
-		return trustedEntities{}, false
-	}
-	depts, err := p.deps.Dept.ListDepts(ctx)
-	if err != nil {
-		return trustedEntities{}, false
-	}
-	resolved := resolveDepartment(entityContext{
-		Raw:         message,
-		Departments: depts,
-	})
-	if resolved.Status != ResolveResolved || resolved.Department == nil {
-		return trustedEntities{}, false
-	}
-	return trustedEntities{
-		Scope:        "department",
-		DepartmentID: resolved.Department.DeptID,
-		DeptIDs:      []int64{resolved.Department.DeptID},
-	}, true
-}
-
-func (p protocolLivePipeline) resolveInitialSubscriptionTrustedEntities(ctx context.Context, message string, draft ProtocolDraft) (trustedEntities, bool) {
-	scope := normalizeSubscriptionScope(firstNonEmpty(draftSlotRaw(draft, "scope"), message))
-	if scope == "" {
-		return trustedEntities{}, false
-	}
-	trusted := trustedEntities{Scope: scope}
-	if scope == "all" {
-		return trusted, true
-	}
-
-	deptName := firstNonEmpty(
-		draftSlotRaw(draft, "dept_names"),
-		draftSlotRaw(draft, "dept_name"),
-		draftSlotRaw(draft, "department"),
-		draftSlotRaw(draft, "department_name"),
-	)
-	if deptName == "" || p.deps.Dept == nil {
-		return trusted, true
-	}
-	depts, err := p.deps.Dept.ListDepts(ctx)
-	if err != nil {
-		return trusted, true
-	}
-	resolved := resolveDepartment(entityContext{
-		Raw:         deptName,
-		Departments: depts,
-	})
-	if resolved.Status != ResolveResolved || resolved.Department == nil {
-		return trusted, true
-	}
-	trusted.DepartmentID = resolved.Department.DeptID
-	trusted.DeptIDs = []int64{resolved.Department.DeptID}
-	return trusted, true
-}
-
-func normalizeSubscriptionScope(raw string) string {
-	normalized := normalizeQuery(raw)
-	switch {
-	case containsAny(normalized, []string{"全部人员", "全部"}):
-		return "all"
-	case containsAny(normalized, []string{"指定部门", "部分部门", "部门"}):
-		return "department"
-	default:
-		return ""
-	}
-}
-
-func protocolLiveRoleRefusal(uctx *tools.UserContext, draft ProtocolDraft) (bool, ResponseModel) {
-	if draft.Act == ActWorkflowCancel {
-		return false, ResponseModel{}
-	}
-	metadata, ok := lookupOperation(draft.Operation)
-	if !ok || metadata.MinRole <= 0 {
-		return false, ResponseModel{}
-	}
-	if uctx != nil && uctx.UserRole >= metadata.MinRole {
-		return false, ResponseModel{}
-	}
-	return true, ResponseModel{
-		Kind:          ResponseRefuse,
-		RefusalReason: "该操作需要管理员权限。",
-	}
-}
-
-func protocolLiveGuardrailResponse(draft ProtocolDraft, validation ProtocolValidationResult, uctx *tools.UserContext) (ResponseModel, answerMode) {
-	switch draft.Act {
-	case ActCapabilityQuestion:
-		return ResponseModel{Kind: ResponseAnswer, Answer: buildProtocolCapabilityReply(draft.Domain, uctx)}, answerModeToolFirst
-	case ActHelp:
-		return ResponseModel{Kind: ResponseAnswer, Answer: buildHelpReply(uctx)}, answerModeToolFirst
-	case ActUnknown:
-		return ResponseModel{Kind: ResponseClarify, ClarifyReason: protocolUnknownIntentReasonCode(draft)}, answerModeReject
-	default:
-		switch validation.ValidationCode {
-		case "operation_not_allowed", "act_operation_mismatch", "read_query_cannot_write", "unsupported_act", "domain_operation_mismatch", "workflow_operation_mismatch":
-			return ResponseModel{Kind: ResponseRefuse, RefusalReason: "抱歉，我当前不能直接执行这个请求。"}, answerModeReject
-		case "low_confidence_write":
-			return ResponseModel{Kind: ResponseClarify, ClarifyReason: "unknown_intent"}, answerModeReject
-		default:
-			return ResponseModel{Kind: ResponseClarify, ClarifyReason: "unknown_intent"}, answerModeReject
-		}
-	}
-}
-
-func protocolUnknownIntentReasonCode(draft ProtocolDraft) string {
-	switch strings.TrimSpace(firstNonEmpty(draft.ClarifyReason, draft.Reason)) {
-	case "empty_message":
-		return "empty_message"
-	case "intent_parse_failed":
-		return "intent_parse_failed"
-	case "intent_compiler_unavailable":
-		return "intent_compiler_unavailable"
-	case "operation_not_allowed":
-		return "operation_not_allowed"
-	default:
-		return "unknown_intent"
-	}
-}
-
-func protocolRuleTopic(message string, draft ProtocolDraft) string {
-	if raw := draftSlotRaw(draft, "rule_topic"); raw != "" {
-		return raw
-	}
-	return strings.TrimSpace(message)
-}
-
-func draftSlotRaw(draft ProtocolDraft, field string) string {
-	if draft.Slots == nil {
-		return ""
-	}
-	slot, ok := draft.Slots[field]
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(slot.Raw)
-}
-
-func inputUserRole(uctx *tools.UserContext) int {
-	if uctx == nil {
-		return 0
-	}
-	return uctx.UserRole
-}
-
-func userConversationID(uctx *tools.UserContext) string {
-	if uctx == nil {
-		return ""
-	}
-	return uctx.ConversationID
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
-func messageDateSignal(message string) string {
-	for _, candidate := range []string{"今天", "昨天", "明天"} {
-		if strings.Contains(message, candidate) {
-			return candidate
-		}
-	}
-	return ""
-}
-
-func extractSectionToken(message string) string {
-	for i := 1; i <= 12; i++ {
-		token := fmt.Sprintf("第%d节", i)
-		if strings.Contains(message, token) {
-			return token
-		}
-	}
-	for _, token := range []string{"第一节", "第二节", "第三节", "第四节", "第五节", "第六节", "第七节", "第八节", "第九节", "第十节"} {
-		if strings.Contains(message, token) {
-			return token
-		}
-	}
-	return ""
-}
-
-func extractWeekToken(message string) string {
-	normalized := normalizeQuery(message)
-	for i := 1; i <= 30; i++ {
-		token := fmt.Sprintf("第%d周", i)
-		if strings.Contains(normalized, token) {
-			return token
-		}
-	}
-	if strings.Contains(normalized, "本周") {
-		return "本周"
-	}
-	return ""
-}
-
-func extractScheduleUserName(message string) string {
-	value := strings.TrimSpace(message)
-	value = strings.TrimPrefix(value, "查")
-	value = strings.TrimPrefix(value, "查询")
-	if idx := strings.Index(value, "第"); idx > 0 {
-		value = value[:idx]
-	}
-	value = strings.ReplaceAll(value, "课表", "")
-	value = strings.ReplaceAll(value, "的", "")
-	value = strings.TrimSpace(value)
-	if value == "" || strings.Contains(value, "我") {
-		return ""
-	}
-	return value
-}
-
-func responseOptionsFromEntityCandidates(candidates []EntityCandidate) []ResponseOption {
-	options := make([]ResponseOption, 0, len(candidates))
-	for _, candidate := range candidates {
-		options = append(options, ResponseOption{
-			Label: candidate.Label,
-			Value: candidate.ID,
-		})
-	}
-	return options
 }

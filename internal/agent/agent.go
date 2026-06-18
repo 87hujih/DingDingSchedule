@@ -27,15 +27,17 @@ const (
 
 // Deps Agent 依赖注入
 type Deps struct {
-	LLMBaseURL       string
-	LLMAPIKey        string
-	LLMModel         string
-	RouterLLMBaseURL string
-	RouterLLMAPIKey  string
-	RouterLLMModel   string
-	RouteMode        string
-	ProtocolMode     string
-	IntentCompiler   IntentCompiler
+	LLMBaseURL            string
+	LLMAPIKey             string
+	LLMModel              string
+	RouterLLMBaseURL      string
+	RouterLLMAPIKey       string
+	RouterLLMModel        string
+	RouteMode             string
+	ProtocolMode          string
+	IntentCompiler        IntentCompiler
+	IntentCompilerTimeout time.Duration
+	WorkflowStore         WorkflowStore
 
 	Schedule                SchedulePort
 	Attendance              AttendancePort
@@ -68,6 +70,7 @@ type Agent struct {
 	runtime        *taskRuntime
 	taskCatalog    *taskCatalog
 	sessions       *sessionManager
+	workflowStore  WorkflowStore
 	limiter        *rateLimiter
 	logWriter      *callLogWriter
 	stopCleanup    chan struct{}
@@ -101,7 +104,12 @@ func NewAgent(deps Deps) *Agent {
 	}
 	intentCompiler := deps.IntentCompiler
 	if intentCompiler == nil && protocolMode == ProtocolModeLive && protocolLLMCompilerAvailable(mainClient) {
-		intentCompiler = newLLMIntentCompiler(mainClient, intentCompilerOptions{})
+		intentCompiler = newLLMIntentCompiler(mainClient, intentCompilerOptions{Timeout: deps.IntentCompilerTimeout})
+	}
+
+	workflowStore := deps.WorkflowStore
+	if workflowStore == nil {
+		workflowStore = newMemoryWorkflowStore(nil)
 	}
 
 	a := &Agent{
@@ -111,7 +119,8 @@ func NewAgent(deps Deps) *Agent {
 		routeMode:      routeMode,
 		protocolMode:   protocolMode,
 		intentCompiler: intentCompiler,
-		sessions:       newSessionManager(),
+		workflowStore:  workflowStore,
+		sessions:       newSessionManager(workflowStore),
 		limiter:        newRateLimiter(),
 		stopCleanup:    make(chan struct{}),
 	}
@@ -206,16 +215,33 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 
 	// 2. protocol_live 作为独占主链。shadow 模式只记录协议草稿，不抢占 route / legacy 主流程。
 	if primaryChain == decisionChainProtocol {
-		_, activeWorkflow := a.sessions.getWorkflowState(sessionKey)
-		if activeWorkflow != nil {
-			metrics.Wf.IDBefore = activeWorkflow.ID
+		workflowKey := workflowKeyFromUserContext(uctx)
+		var workflowBefore *WorkflowSnapshot
+		var outcome protocolLiveOutcome
+
+		activeWorkflow, workflowErr := a.workflowStore.Load(ctx, workflowKey)
+		if workflowErr != nil {
+			a.deps.Logger.Warnw("读取 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", workflowErr)
+			outcome = workflowStoreFailureOutcome()
+		} else {
+			workflowBefore = cloneWorkflowSnapshot(activeWorkflow)
+			if activeWorkflow != nil {
+				metrics.Wf.IDBefore = activeWorkflow.ID
+			}
+			outcome = a.protocolLivePipeline().Handle(ctx, protocolLiveInput{
+				Message:        msg.Content,
+				User:           uctx,
+				ActiveWorkflow: activeWorkflow,
+			})
+			if persistErr := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, outcome); persistErr != nil {
+				a.deps.Logger.Warnw("更新 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", persistErr)
+				outcome = workflowStoreFailureOutcome()
+			}
 		}
-		outcome := a.protocolLivePipeline().Handle(ctx, protocolLiveInput{
-			Message:        msg.Content,
-			User:           uctx,
-			ActiveWorkflow: activeWorkflow,
-		})
-		a.applyProtocolLiveOutcome(sessionKey, &metrics, outcome)
+		if a.sessions != nil {
+			a.sessions.bindWorkflowKey(sessionKey, workflowKey)
+		}
+		a.applyProtocolLiveOutcomeMetrics(&metrics, outcome, workflowBefore)
 		reply := renderProtocolResponse(outcome.Response)
 		a.writeCallLog(ctx, uctx, msg.Content, reply, nil, 0, startTime, "success", "", metrics)
 		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
@@ -225,10 +251,6 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 	if a.protocolMode == ProtocolModeShadow {
 		_, activeWorkflow := a.sessions.getWorkflowState(sessionKey)
 		protocolWorkflow := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
-		if protocolWorkflow == nil {
-			_, activeTask := a.sessions.getSessionState(sessionKey)
-			protocolWorkflow = protocolWorkflowContextFromActiveTask(activeTask)
-		}
 		protocolDraft := compileProtocol(protocolInput{
 			Message:        msg.Content,
 			ActiveWorkflow: protocolWorkflow,
@@ -242,10 +264,12 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 
 	// 3. 语义路由器为主决策入口。
 	if primaryChain == decisionChainRoute {
+		metrics.Proto.LegacyCalled = true
 		return a.chatWithSemanticRouter(ctx, uctx, sessionKey, msg, userMsg, startTime, &metrics)
 	}
 
 	// 4. legacy 路径（routeMode=shadow 或 off）
+	metrics.Proto.LegacyCalled = true
 	return a.chatLegacy(ctx, uctx, sessionKey, msg, userMsg, startTime, &metrics)
 }
 
@@ -289,6 +313,7 @@ func protocolLLMCompilerAvailable(client *LLMClient) bool {
 	return !strings.HasSuffix(trimmed, ":0")
 }
 
+// legacy-only: chatWithSemanticRouter is the old semantic-router main path used outside protocol_live.
 // chatWithSemanticRouter 使用语义路由器作为唯一决策入口的处理路径。
 func (a *Agent) chatWithSemanticRouter(
 	ctx context.Context,
@@ -357,6 +382,7 @@ func (a *Agent) chatWithSemanticRouter(
 	return "请再具体说明你要查询或操作的内容。", nil
 }
 
+// legacy-only: chatLegacy uses planner + ReAct interpreter and must not run under protocol_live.
 // chatLegacy 使用 planner + interpreter 的遗留处理路径。
 func (a *Agent) chatLegacy(
 	ctx context.Context,
@@ -1190,73 +1216,98 @@ func (a *Agent) writeCallLog(_ context.Context, uctx *tools.UserContext, questio
 		return
 	}
 	log := tools.CallLog{
-		TenantID:                uctx.TenantID,
-		UserID:                  uctx.UserID,
-		UserName:                uctx.Name,
-		ConvType:                uctx.ConversationType,
-		QueryType:               string(metrics.QueryType),
-		ConversationEvent:       string(metrics.ConversationEvent),
-		ActiveTaskType:          metrics.Task.ActiveTaskType,
-		TaskStatusBefore:        metrics.Task.TaskStatusBefore,
-		TaskStatusAfter:         metrics.Task.TaskStatusAfter,
-		DomainResult:            string(metrics.DomainResult),
-		DomainHint:              string(metrics.DomainHint),
-		PlanKind:                string(metrics.PlanKind),
-		KnowledgeStrength:       string(metrics.KnowledgeStrength),
-		PlannerReason:           metrics.Planner.Reason,
-		PlannerAction:           metrics.Planner.Action,
-		PlannerConfidence:       metrics.Planner.Confidence,
-		TaskID:                  metrics.Task.TaskID,
-		TaskKeepOpen:            metrics.Task.TaskKeepOpen,
-		TaskSwitch:              metrics.Task.TaskSwitch,
-		LastErrorCode:           metrics.Task.LastErrorCode,
-		ShadowPlannerAction:     metrics.Shadow.PlannerAction,
-		ShadowPlannerMatched:    metrics.Shadow.PlannerMatched,
-		RouteKind:               metrics.Route.Kind,
-		RouteConfidence:         metrics.Route.Confidence,
-		RouteReasonCode:         metrics.Route.ReasonCode,
-		RouteSource:             metrics.Route.Source,
-		ClarifyCode:             metrics.Route.ClarifyCode,
-		SoftNoticeCode:          metrics.Route.SoftNoticeCode,
-		ExecutorName:            metrics.Route.ExecutorName,
-		ToolPool:                metrics.Route.ToolPool,
-		RouterLatencyMs:         metrics.Route.RouterLatencyMs,
-		ExecutorLatencyMs:       metrics.Route.ExecutorLatencyMs,
-		ShadowRouteKind:         metrics.Shadow.RouteKind,
-		ShadowRouteMatched:      metrics.Shadow.RouteMatched,
-		ProtocolMode:            metrics.Proto.Mode,
-		ProtocolAct:             metrics.Proto.Act,
-		ProtocolDomain:          metrics.Proto.Domain,
-		ProtocolOperation:       metrics.Proto.Operation,
-		ProtocolValidationCode:  metrics.Proto.ValidationCode,
-		ProtocolBlockedReason:   metrics.Proto.BlockedReason,
-		ProtocolResolvedSlots:   metrics.Proto.ResolvedSlots,
-		ProtocolCandidateCount:  metrics.Proto.CandidateCount,
-		WorkflowIDBefore:        metrics.Wf.IDBefore,
-		WorkflowIDAfter:         metrics.Wf.IDAfter,
-		WorkflowStateBefore:     metrics.Wf.StateBefore,
-		WorkflowStateAfter:      metrics.Wf.StateAfter,
-		ResponseKind:            metrics.ResponseKind,
-		ExecutionAllowed:        metrics.Proto.ExecutionAllowed,
-		AnswerMode:              string(metrics.AnswerMode),
-		Question:                question,
-		ToolsCalled:             toolsCalled,
-		ToolCallCount:           len(toolsCalled),
-		Reply:                   reply,
-		SourceRefs:              append([]string(nil), metrics.SourceRefs...),
-		RetrievalHitCount:       metrics.Retrieval.HitCount,
-		RetrievalCandidateCount: metrics.Retrieval.CandidateCount,
-		RetrievalTopRefs:        append([]string(nil), metrics.Retrieval.TopRefs...),
-		RetrievalScores:         append([]int(nil), metrics.Retrieval.TopScores...),
-		FollowUpMatchedSlots:    append([]string(nil), metrics.FollowUpMatchedSlots...),
-		RetrievalFilteredReason: metrics.Retrieval.FilteredReason,
-		KnowledgeDocTypes:       append([]string(nil), metrics.Retrieval.DocTypes...),
-		RetrievalDurationMs:     metrics.Retrieval.DurationMs,
-		LLMDurationMs:           metrics.LLMDurationMs,
-		Rounds:                  rounds,
-		DurationMs:              elapsedMs(startTime),
-		Status:                  status,
-		ErrorMsg:                errMsg,
+		TenantID:                   uctx.TenantID,
+		UserID:                     uctx.UserID,
+		UserRole:                   uctx.UserRole,
+		UserName:                   uctx.Name,
+		ConvType:                   uctx.ConversationType,
+		QueryType:                  string(metrics.QueryType),
+		ConversationEvent:          string(metrics.ConversationEvent),
+		ActiveTaskType:             metrics.Task.ActiveTaskType,
+		TaskStatusBefore:           metrics.Task.TaskStatusBefore,
+		TaskStatusAfter:            metrics.Task.TaskStatusAfter,
+		DomainResult:               string(metrics.DomainResult),
+		DomainHint:                 string(metrics.DomainHint),
+		PlanKind:                   string(metrics.PlanKind),
+		KnowledgeStrength:          string(metrics.KnowledgeStrength),
+		PlannerReason:              metrics.Planner.Reason,
+		PlannerAction:              metrics.Planner.Action,
+		PlannerConfidence:          metrics.Planner.Confidence,
+		TaskID:                     metrics.Task.TaskID,
+		TaskKeepOpen:               metrics.Task.TaskKeepOpen,
+		TaskSwitch:                 metrics.Task.TaskSwitch,
+		LastErrorCode:              metrics.Task.LastErrorCode,
+		ShadowPlannerAction:        metrics.Shadow.PlannerAction,
+		ShadowPlannerMatched:       metrics.Shadow.PlannerMatched,
+		RouteKind:                  metrics.Route.Kind,
+		RouteConfidence:            metrics.Route.Confidence,
+		RouteReasonCode:            metrics.Route.ReasonCode,
+		RouteSource:                metrics.Route.Source,
+		ClarifyCode:                metrics.Route.ClarifyCode,
+		SoftNoticeCode:             metrics.Route.SoftNoticeCode,
+		ExecutorName:               metrics.Route.ExecutorName,
+		ToolPool:                   metrics.Route.ToolPool,
+		RouterLatencyMs:            metrics.Route.RouterLatencyMs,
+		ExecutorLatencyMs:          metrics.Route.ExecutorLatencyMs,
+		ShadowRouteKind:            metrics.Shadow.RouteKind,
+		ShadowRouteMatched:         metrics.Shadow.RouteMatched,
+		ProtocolMode:               metrics.Proto.Mode,
+		ProtocolAct:                metrics.Proto.Act,
+		ProtocolDomain:             metrics.Proto.Domain,
+		ProtocolOperation:          metrics.Proto.Operation,
+		ProtocolValidationCode:     metrics.Proto.ValidationCode,
+		ProtocolBlockedReason:      metrics.Proto.BlockedReason,
+		ProtocolResolvedSlots:      metrics.Proto.ResolvedSlots,
+		ProtocolCandidateCount:     metrics.Proto.CandidateCount,
+		RequestID:                  metrics.Proto.RequestID,
+		ConversationID:             uctx.ConversationID,
+		CompilerStatus:             metrics.Proto.CompilerStatus,
+		CompilerLatencyMs:          metrics.Proto.CompilerLatencyMs,
+		IntentDraftJSON:            metrics.Proto.IntentDraftJSON,
+		CatalogValidationCode:      metrics.Proto.CatalogValidationCode,
+		WorkflowDecision:           metrics.Proto.WorkflowDecision,
+		WorkflowInterruptReason:    metrics.Proto.WorkflowInterruptReason,
+		ResolvedSlotsJSON:          metrics.Proto.ResolvedSlotsJSON,
+		EntityResolutionStatus:     metrics.Proto.EntityResolutionStatus,
+		PrePolicyResult:            metrics.Proto.PrePolicyResult,
+		ResourcePolicyResult:       metrics.Proto.ResourcePolicyResult,
+		BlockedReason:              metrics.Proto.BlockedReason,
+		WriteGuardResult:           metrics.Proto.WriteGuardResult,
+		IdempotencyKey:             metrics.Proto.IdempotencyKey,
+		ExecutorStatus:             metrics.Proto.ExecutorStatus,
+		RendererName:               metrics.Proto.RendererName,
+		FailureLayer:               metrics.Proto.FailureLayer,
+		LegacyCalled:               metrics.Proto.LegacyCalled,
+		ReplayCaseID:               metrics.Proto.RequestID,
+		WorkflowIDBefore:           metrics.Wf.IDBefore,
+		WorkflowIDAfter:            metrics.Wf.IDAfter,
+		WorkflowTypeBefore:         metrics.Wf.TypeBefore,
+		WorkflowTypeAfter:          metrics.Wf.TypeAfter,
+		WorkflowStateBefore:        metrics.Wf.StateBefore,
+		WorkflowStateAfter:         metrics.Wf.StateAfter,
+		WorkflowSnapshotBeforeJSON: metrics.Wf.SnapshotBeforeJSON,
+		WorkflowSnapshotAfterJSON:  metrics.Wf.SnapshotAfterJSON,
+		ResponseKind:               metrics.ResponseKind,
+		ExecutionAllowed:           metrics.Proto.ExecutionAllowed,
+		AnswerMode:                 string(metrics.AnswerMode),
+		Question:                   question,
+		ToolsCalled:                toolsCalled,
+		ToolCallCount:              len(toolsCalled),
+		Reply:                      reply,
+		SourceRefs:                 append([]string(nil), metrics.SourceRefs...),
+		RetrievalHitCount:          metrics.Retrieval.HitCount,
+		RetrievalCandidateCount:    metrics.Retrieval.CandidateCount,
+		RetrievalTopRefs:           append([]string(nil), metrics.Retrieval.TopRefs...),
+		RetrievalScores:            append([]int(nil), metrics.Retrieval.TopScores...),
+		FollowUpMatchedSlots:       append([]string(nil), metrics.FollowUpMatchedSlots...),
+		RetrievalFilteredReason:    metrics.Retrieval.FilteredReason,
+		KnowledgeDocTypes:          append([]string(nil), metrics.Retrieval.DocTypes...),
+		RetrievalDurationMs:        metrics.Retrieval.DurationMs,
+		LLMDurationMs:              metrics.LLMDurationMs,
+		Rounds:                     rounds,
+		DurationMs:                 elapsedMs(startTime),
+		Status:                     status,
+		ErrorMsg:                   errMsg,
 	}
 	a.logWriter.Write(log)
 }
@@ -1293,6 +1344,9 @@ func applyProtocolMetrics(metrics *callMetrics, draft ProtocolDraft, validation 
 	metrics.Proto.Domain = string(draft.Domain)
 	metrics.Proto.Operation = draft.Operation
 	metrics.Proto.ValidationCode = validation.ValidationCode
+	if metrics.Proto.CatalogValidationCode == "" {
+		metrics.Proto.CatalogValidationCode = validation.ValidationCode
+	}
 	metrics.Proto.ExecutionAllowed = validation.AllowExecution
 }
 
@@ -1305,137 +1359,6 @@ func protocolPrimaryDispatchAllowed(_ ProtocolDraft, validation ProtocolValidati
 		return true
 	}
 	return validation.ResponseKind == ResponseAnswer
-}
-
-// tryHandleProtocolPrimary attempts to answer through the protocol-primary path.
-func (a *Agent) tryHandleProtocolPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, activeWorkflow *WorkflowSnapshot, workflowCtx *protocolWorkflowContext) (bool, string, error) {
-	if a.protocolMode != ProtocolModeLive {
-		return false, "", nil
-	}
-
-	draft := compileProtocol(protocolInput{
-		Message:        question,
-		ActiveWorkflow: workflowCtx,
-	})
-	validation := validateProtocol(draft, workflowCtx)
-	applyProtocolMetrics(metrics, draft, validation)
-	if activeWorkflow != nil {
-		metrics.Wf.IDBefore = activeWorkflow.ID
-	}
-	if blocked, reply := a.protocolRoleRefusal(uctx, draft); blocked {
-		metrics.Proto.ExecutionAllowed = false
-		metrics.Proto.BlockedReason = "role_denied"
-		metrics.ResponseKind = string(ResponseRefuse)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
-		metrics.Route.ExecutorName = "protocol_live_role_gate"
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
-	}
-
-	if !protocolPrimaryDispatchAllowed(draft, validation) {
-		return false, "", nil
-	}
-	if draft.Act == ActWorkflowCancel {
-		if activeWorkflow == nil {
-			return false, "", nil
-		}
-		result := continueWorkflow(*activeWorkflow, draft, trustedEntities{})
-		a.sessions.applyWorkflowResult(sessionKey, result)
-		metrics.Wf.IDAfter = ""
-		metrics.ResponseKind = string(ResponseResult)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
-		metrics.Route.ExecutorName = "protocol_live_workflow"
-		reply := "已取消当前任务。如需继续，请重新告诉我。"
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
-	}
-	if validation.InterruptActiveWorkflow {
-		interruptActiveWorkflow(a.sessions, sessionKey, activeWorkflow, draft)
-		activeWorkflow = nil
-		metrics.Wf.IDAfter = ""
-	}
-
-	switch draft.Operation {
-	case "subscription.query_status":
-		if !validation.AllowExecution {
-			return false, "", nil
-		}
-		params := map[string]any{}
-		if uctx != nil {
-			params["conversation_id"] = uctx.ConversationID
-		}
-		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
-			Operation:     draft.Operation,
-			TrustedParams: params,
-		})
-	case "subscription.cancel":
-		if !validation.AllowExecution || uctx == nil || uctx.ConversationType != "2" || a.deps.GroupSub == nil {
-			return false, "", nil
-		}
-		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
-			Operation: draft.Operation,
-			TrustedParams: map[string]any{
-				"conversation_id": uctx.ConversationID,
-			},
-		})
-	case "subscription.start", "subscription.list_departments":
-		return a.handleProtocolSubscriptionPrimary(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, draft, activeWorkflow)
-	case "manual_sign.create":
-		return a.handleProtocolManualSignPrimary(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, draft, activeWorkflow)
-	case "manual_sign.describe_capability":
-		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
-			Operation: draft.Operation,
-		})
-	case "attendance.query_status":
-		if !validation.AllowExecution || a.deps.Attendance == nil {
-			return false, "", nil
-		}
-
-		trusted, ok := resolveAttendanceTrustedEntities(question)
-		if !ok {
-			reply := renderProtocolResponse(ResponseModel{
-				Kind:          ResponseClarify,
-				ClarifyReason: "missing_attendance_fields",
-			})
-			metrics.ResponseKind = string(ResponseClarify)
-			metrics.AnswerMode = answerModeToolFirst
-			metrics.QueryType = queryKindTool
-			a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-			return true, reply, nil
-		}
-
-		req, blocked := buildOperationRequest(draft, trusted)
-		if blocked {
-			reply := renderProtocolResponse(ResponseModel{
-				Kind:          ResponseClarify,
-				ClarifyReason: "missing_attendance_fields",
-			})
-			metrics.ResponseKind = string(ResponseClarify)
-			metrics.AnswerMode = answerModeToolFirst
-			metrics.QueryType = queryKindTool
-			a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-			return true, reply, nil
-		}
-
-		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, req)
-	default:
-		return false, "", nil
-	}
-}
-
-func (a *Agent) executeProtocolOperation(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, req OperationRequest) (bool, string, error) {
-	result := a.operationExecutor().Execute(ctx, uctx, req)
-	applyOperationExecutionMetrics(metrics, result)
-	reply := renderProtocolResponse(result.Response)
-	a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-	a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-	return true, reply, nil
 }
 
 func (a *Agent) operationExecutor() operationExecutor {
@@ -1462,18 +1385,61 @@ func (a *Agent) protocolLivePipeline() protocolLivePipeline {
 }
 
 func (a *Agent) applyProtocolLiveOutcome(sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome) {
+	a.applyProtocolLiveOutcomeForKey(context.Background(), workflowKeyFromSessionKey(sessionKey, nil), sessionKey, metrics, outcome)
+}
+
+func (a *Agent) applyProtocolLiveOutcomeForKey(ctx context.Context, workflowKey WorkflowKey, sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome) {
 	var workflowBefore *WorkflowSnapshot
-	if a != nil && a.sessions != nil {
+	if a != nil && a.workflowStore != nil {
+		if loaded, err := a.workflowStore.Load(ctx, workflowKey); err == nil {
+			workflowBefore = loaded
+		} else if a.deps.Logger != nil {
+			a.deps.Logger.Warnw("读取 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", err)
+		}
+	}
+	if workflowBefore == nil && a != nil && a.sessions != nil {
 		_, workflowBefore = a.sessions.getWorkflowState(sessionKey)
 	}
 
-	if outcome.ClearWorkflow {
-		a.sessions.clearWorkflowState(sessionKey)
+	if a != nil {
+		if err := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, outcome); err != nil && a.deps.Logger != nil {
+			a.deps.Logger.Warnw("更新 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", err)
+		}
 	}
-	if outcome.WorkflowAfter != nil {
-		a.sessions.setWorkflowState(sessionKey, outcome.WorkflowAfter)
+	a.applyProtocolLiveOutcomeAfterStore(sessionKey, metrics, outcome, workflowBefore)
+}
+
+func (a *Agent) persistProtocolLiveWorkflowOutcome(ctx context.Context, workflowKey WorkflowKey, outcome protocolLiveOutcome) error {
+	if a == nil || a.workflowStore == nil {
+		return nil
+	}
+	if outcome.ClearWorkflow {
+		return a.workflowStore.Clear(ctx, workflowKey, string(outcome.WorkflowDecision))
+	}
+	if outcome.WorkflowAfter == nil {
+		return nil
+	}
+	next := cloneWorkflowSnapshot(outcome.WorkflowAfter)
+	next.TenantID = workflowKey.TenantID
+	next.ConversationID = workflowKey.ConversationID
+	next.ActorUserID = workflowKey.ActorUserID
+	return a.workflowStore.Save(ctx, next)
+}
+
+func (a *Agent) applyProtocolLiveOutcomeAfterStore(sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome, workflowBefore *WorkflowSnapshot) {
+	if a != nil && a.sessions != nil {
+		if outcome.ClearWorkflow {
+			a.sessions.clearWorkflowState(sessionKey)
+		}
+		if outcome.WorkflowAfter != nil {
+			a.sessions.setWorkflowState(sessionKey, outcome.WorkflowAfter)
+		}
 	}
 
+	a.applyProtocolLiveOutcomeMetrics(metrics, outcome, workflowBefore)
+}
+
+func (a *Agent) applyProtocolLiveOutcomeMetrics(metrics *callMetrics, outcome protocolLiveOutcome, workflowBefore *WorkflowSnapshot) {
 	applyProtocolMetrics(metrics, outcome.Draft, outcome.Validation)
 	if metrics == nil {
 		return
@@ -1482,11 +1448,30 @@ func (a *Agent) applyProtocolLiveOutcome(sessionKey string, metrics *callMetrics
 		if metrics.Wf.IDBefore == "" {
 			metrics.Wf.IDBefore = workflowBefore.ID
 		}
+		metrics.Wf.TypeBefore = string(workflowBefore.Type)
 		metrics.Wf.StateBefore = string(workflowBefore.State)
+		metrics.Wf.SnapshotBeforeJSON = compactWorkflowSnapshotForReplay(workflowBefore)
 	}
 	metrics.Proto.BlockedReason = outcome.BlockedReason
 	metrics.Proto.ResolvedSlots = compactProtocolResolvedSlots(outcome.ResolvedSlots)
+	metrics.Proto.ResolvedSlotsJSON = metrics.Proto.ResolvedSlots
 	metrics.Proto.CandidateCount = outcome.CandidateCount
+	metrics.Proto.RequestID = outcome.RequestID
+	metrics.Proto.CompilerStatus = outcome.CompilerStatus
+	metrics.Proto.CompilerLatencyMs = outcome.CompilerLatencyMs
+	metrics.Proto.IntentDraftJSON = outcome.IntentDraftJSON
+	metrics.Proto.CatalogValidationCode = firstNonEmpty(outcome.CatalogValidationCode, outcome.Validation.ValidationCode)
+	metrics.Proto.WorkflowDecision = string(outcome.WorkflowDecision)
+	metrics.Proto.WorkflowInterruptReason = outcome.WorkflowInterruptReason
+	metrics.Proto.EntityResolutionStatus = outcome.EntityResolutionStatus
+	metrics.Proto.PrePolicyResult = outcome.PrePolicyResult
+	metrics.Proto.ResourcePolicyResult = outcome.ResourcePolicyResult
+	metrics.Proto.WriteGuardResult = outcome.WriteGuardResult
+	metrics.Proto.IdempotencyKey = outcome.IdempotencyKey
+	metrics.Proto.ExecutorStatus = outcome.ExecutorStatus
+	metrics.Proto.RendererName = outcome.RendererName
+	metrics.Proto.FailureLayer = string(outcome.FailureLayer)
+	metrics.Proto.LegacyCalled = outcome.LegacyCalled
 	if outcome.ExecutionMetrics.ExecutorName != "" {
 		applyOperationExecutionMetrics(metrics, OperationExecutionResult{
 			Response: outcome.Response,
@@ -1496,7 +1481,7 @@ func (a *Agent) applyProtocolLiveOutcome(sessionKey string, metrics *callMetrics
 		metrics.ResponseKind = string(outcome.Response.Kind)
 		metrics.AnswerMode = outcome.AnswerMode
 		metrics.QueryType = modeToQueryKind(outcome.AnswerMode)
-		if outcome.WorkflowDecision != "" {
+		if outcome.WorkflowDecision != "" && outcome.WorkflowDecision != WorkflowSingleTurn {
 			metrics.Route.ExecutorName = "protocol_live_workflow"
 		} else {
 			metrics.Route.ExecutorName = "protocol_live_guardrail"
@@ -1504,11 +1489,37 @@ func (a *Agent) applyProtocolLiveOutcome(sessionKey string, metrics *callMetrics
 	}
 	if outcome.WorkflowAfter != nil {
 		metrics.Wf.IDAfter = outcome.WorkflowAfter.ID
+		metrics.Wf.TypeAfter = string(outcome.WorkflowAfter.Type)
 		metrics.Wf.StateAfter = string(outcome.WorkflowAfter.State)
+		metrics.Wf.SnapshotAfterJSON = compactWorkflowSnapshotForReplay(outcome.WorkflowAfter)
 	} else if outcome.ClearWorkflow {
 		metrics.Wf.IDAfter = ""
+		metrics.Wf.TypeAfter = ""
 		metrics.Wf.StateAfter = workflowStateAfterFromDecision(outcome.WorkflowDecision)
+		metrics.Wf.SnapshotAfterJSON = ""
 	}
+}
+
+func workflowStoreFailureOutcome() protocolLiveOutcome {
+	draft := unknownIntentDraft("workflow_store_failed")
+	validation := ProtocolValidationResult{
+		ValidationCode: "workflow_store_failed",
+		ResponseKind:   ResponseRefuse,
+	}
+	outcome := protocolLiveOutcome{
+		Draft:           draft,
+		Validation:      validation,
+		Response:        ResponseModel{Kind: ResponseRefuse, RefusalReason: "系统暂时无法处理当前任务状态，请稍后重试。"},
+		AnswerMode:      answerModeReject,
+		BlockedReason:   "workflow_store_failed",
+		RequestID:       newProtocolLiveRequestID(time.Now()),
+		CompilerStatus:  "skipped",
+		IntentDraftJSON: compactIntentDraft(draft),
+		FailureLayer:    FailurePersistence,
+		RendererName:    "response_renderer",
+	}
+	finalizeProtocolLiveOutcome(&outcome)
+	return outcome
 }
 
 func workflowStateAfterFromDecision(decision WorkflowDecision) string {
@@ -1548,24 +1559,6 @@ func applyOperationExecutionMetrics(metrics *callMetrics, result OperationExecut
 	metrics.Retrieval.CandidateCount = result.Metrics.RetrievalCandidateCount
 	metrics.Retrieval.TopRefs = append([]string(nil), result.Metrics.SourceRefs...)
 	metrics.SourceRefs = append([]string(nil), result.Metrics.SourceRefs...)
-}
-
-// protocolRoleRefusal blocks protocol operations when the current user role is below catalog metadata.
-func (a *Agent) protocolRoleRefusal(uctx *tools.UserContext, draft ProtocolDraft) (bool, string) {
-	if draft.Act == ActWorkflowCancel {
-		return false, ""
-	}
-	metadata, ok := lookupOperation(draft.Operation)
-	if !ok || metadata.MinRole <= 0 {
-		return false, ""
-	}
-	if uctx != nil && uctx.UserRole >= metadata.MinRole {
-		return false, ""
-	}
-	return true, renderProtocolResponse(ResponseModel{
-		Kind:          ResponseRefuse,
-		RefusalReason: "该操作需要管理员权限。",
-	})
 }
 
 // legacyTaskPlannerAction maps legacy task transitions to a planner action label.
@@ -1663,7 +1656,7 @@ func protocolWorkflowContextFromWorkflowSnapshot(workflow *WorkflowSnapshot) *pr
 	}
 	return &protocolWorkflowContext{
 		Type:          string(workflow.Type),
-		MissingFields: append([]string(nil), workflow.MissingSlots...),
+		MissingFields: cloneStringSlice(workflowMissingFields(workflow)),
 	}
 }
 
@@ -1731,83 +1724,12 @@ func extractDateToken(message string) string {
 	return ""
 }
 
-// buildAttendanceStatusReply builds the plain-text reply for an attendance query result.
-func buildAttendanceStatusReply(result *tools.AttendanceResult) string {
-	if result == nil {
-		return "未查询到相关考勤数据。"
-	}
-
-	notArrivedLabel := "未到"
-	if result.ViewMode == "current" {
-		notArrivedLabel = "当前未到"
-	}
-
-	return fmt.Sprintf("%s第%d节考勤状态：应到%d人，正常%d人，迟到%d人，请假%d人，%s%d人。",
-		result.Date,
-		result.Section,
-		result.ShouldAttend,
-		result.OnTimeCount,
-		result.LateCount,
-		result.LeaveCount,
-		notArrivedLabel,
-		result.AbsentCount,
-	)
-}
-
 // buildManualSignCapabilityReply builds the capability-only reply for manual sign questions.
 func buildManualSignCapabilityReply(uctx *tools.UserContext) string {
 	if uctx != nil && uctx.UserRole >= 1 {
 		return "代签（补签）属于管理员能力；当前聊天路径只说明权限、规则和所需信息，不直接执行代签。"
 	}
 	return "代签（补签）属于管理员能力；普通用户不能通过当前聊天路径执行代签。"
-}
-
-// handleProtocolFallback returns a safe fallback reply when protocol primary cannot execute.
-func (a *Agent) handleProtocolFallback(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, draft ProtocolDraft, validation ProtocolValidationResult, activeWorkflow *WorkflowSnapshot) (string, error) {
-	model := ResponseModel{
-		Kind:          ResponseClarify,
-		ClarifyReason: "unknown_intent",
-	}
-	answerMode := answerModeReject
-
-	switch draft.Act {
-	case ActCapabilityQuestion:
-		model = ResponseModel{
-			Kind:   ResponseAnswer,
-			Answer: buildProtocolCapabilityReply(draft.Domain, uctx),
-		}
-		answerMode = answerModeToolFirst
-	case ActHelp:
-		model = ResponseModel{
-			Kind:   ResponseAnswer,
-			Answer: buildHelpReply(uctx),
-		}
-		answerMode = answerModeToolFirst
-	case ActUnknown:
-		if strings.TrimSpace(draft.ClarifyReason) != "" {
-			model.ClarifyReason = draft.ClarifyReason
-		}
-	default:
-		switch validation.ValidationCode {
-		case "operation_not_allowed", "act_operation_mismatch", "read_query_cannot_write", "unsupported_act":
-			model = ResponseModel{
-				Kind:          ResponseRefuse,
-				RefusalReason: "抱歉，我当前不能直接执行这个请求。",
-			}
-		}
-	}
-
-	reply := renderProtocolResponse(model)
-	if activeWorkflow != nil {
-		metrics.Wf.IDAfter = activeWorkflow.ID
-	}
-	metrics.ResponseKind = string(model.Kind)
-	metrics.AnswerMode = answerMode
-	metrics.QueryType = queryKindTool
-	metrics.Route.ExecutorName = "protocol_live_guardrail"
-	a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-	a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-	return reply, nil
 }
 
 // buildProtocolCapabilityReply builds the capability reply for a protocol domain question.
@@ -1824,345 +1746,16 @@ func buildProtocolCapabilityReply(domain BusinessDomain, uctx *tools.UserContext
 		}
 		return entry.Description
 	}
-	switch domain {
-	case DomainManualSign:
-		return buildManualSignCapabilityReply(uctx)
-	case DomainSubscription:
-		return "我可以帮助开启、取消或查询当前群的考勤订阅。"
-	case DomainAttendance:
-		return "我可以帮助查询指定日期和节次的考勤状态。"
-	case DomainSchedule:
-		return "我可以帮助查询课表、空闲人员和节次时间。"
-	case DomainLeave:
-		return "我可以帮助查询请假信息。"
-	case DomainAnalytics:
-		return "我可以帮助查询考勤统计分析。"
-	default:
-		return buildHelpReply(uctx)
-	}
+	return buildHelpReply(uctx)
 }
 
 func capabilityOperationForDomain(domain BusinessDomain) string {
-	switch domain {
-	case DomainSystem:
-		return "system.describe_capability"
-	case DomainAttendance:
-		return "attendance.describe_capability"
-	case DomainSchedule:
-		return "schedule.describe_capability"
-	case DomainSubscription:
-		return "subscription.describe_capability"
-	case DomainManualSign:
-		return "manual_sign.describe_capability"
-	default:
-		return ""
-	}
-}
-
-type manualSignResolution struct {
-	Trusted        trustedEntities
-	UserInput      string
-	UserResolution entityResolution
-}
-
-// handleProtocolManualSignPrimary runs the manual-sign protocol primary flow.
-func (a *Agent) handleProtocolManualSignPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot) (bool, string, error) {
-	if uctx == nil || a.deps.Attendance == nil || a.deps.User == nil {
-		return false, "", nil
-	}
-	if uctx.UserRole < 1 {
-		reply := buildManualSignCapabilityReply(uctx)
-		metrics.ResponseKind = string(ResponseRefuse)
-		metrics.AnswerMode = answerModeReject
-		metrics.QueryType = queryKindTool
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
-	}
-
-	workflow := cloneWorkflowSnapshot(activeWorkflow)
-	if workflow == nil {
-		if draft.Act != ActWriteRequest {
-			return false, "", nil
-		}
-		started, ok := startWorkflow(draft)
-		if !ok {
-			return false, "", nil
-		}
-		workflow = &started
-	}
-	if workflow.Type != WorkflowManualSignCreate {
-		return false, "", nil
-	}
-
-	resolution, err := a.resolveManualSignInput(ctx, question)
-	if err != nil {
-		return false, "", nil
-	}
-
-	result := continueWorkflow(*workflow, draft, resolution.Trusted)
-	if result.Workflow == nil {
-		result.Workflow = workflow
-	}
-
-	switch resolution.UserResolution.Status {
-	case ResolveAmbiguous:
-		a.sessions.setWorkflowState(sessionKey, result.Workflow)
-		metrics.Wf.IDAfter = result.Workflow.ID
-		metrics.ResponseKind = string(ResponseSelectOptions)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
-		reply := renderProtocolResponse(ResponseModel{
-			Kind:    ResponseSelectOptions,
-			Options: buildResponseOptions(resolution.UserResolution.Candidates),
-		})
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
-	case ResolveNotFound:
-		if resolution.UserInput != "" {
-			a.sessions.setWorkflowState(sessionKey, result.Workflow)
-			metrics.Wf.IDAfter = result.Workflow.ID
-			metrics.ResponseKind = string(ResponseClarify)
-			metrics.AnswerMode = answerModeToolFirst
-			metrics.QueryType = queryKindTool
-			reply := fmt.Sprintf("找不到用户「%s」，请确认姓名。", resolution.UserInput)
-			a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-			return true, reply, nil
+	for _, manifest := range operationManifests() {
+		if manifest.Domain == domain && manifest.Capability != nil {
+			return manifest.Name
 		}
 	}
-
-	switch result.Decision {
-	case WorkflowReadyToExecute:
-		req, blocked := buildOperationRequest(draft, result.Workflow.Trusted)
-		if blocked {
-			reply := buildManualSignMissingFieldsReply(result.Workflow.MissingSlots)
-			a.sessions.setWorkflowState(sessionKey, result.Workflow)
-			metrics.Wf.IDAfter = result.Workflow.ID
-			metrics.ResponseKind = string(ResponseClarify)
-			metrics.AnswerMode = answerModeToolFirst
-			metrics.QueryType = queryKindTool
-			a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-			a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-			return true, reply, nil
-		}
-		dateStr, ok := extractParamString(req.TrustedParams, "date")
-		if !ok {
-			return false, "", nil
-		}
-		sectionInt, ok := extractParamInt(req.TrustedParams, "section")
-		if !ok {
-			return false, "", nil
-		}
-		userIDUint, ok := extractParamUint(req.TrustedParams, "user_id")
-		if !ok {
-			return false, "", nil
-		}
-		if err := a.deps.Attendance.SignForUsersBySlot(ctx, dateStr, sectionInt, []uint{userIDUint}); err != nil {
-			return false, "", nil
-		}
-		a.sessions.clearWorkflowState(sessionKey)
-		reply := fmt.Sprintf("已为%s补签 %s 第%d节考勤", result.Workflow.Trusted.UserName, dateStr, sectionInt)
-		metrics.Wf.IDAfter = ""
-		metrics.ResponseKind = string(ResponseResult)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
-		metrics.Route.ExecutorName = "protocol_live_write"
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
-	case WorkflowContinueDecision, WorkflowRejectInvalidShape:
-		a.sessions.setWorkflowState(sessionKey, result.Workflow)
-		metrics.Wf.IDAfter = result.Workflow.ID
-		metrics.ResponseKind = string(ResponseClarify)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
-		reply := buildManualSignMissingFieldsReply(result.Workflow.MissingSlots)
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
-	default:
-		return false, "", nil
-	}
-}
-
-// resolveManualSignInput resolves trusted manual-sign input fields from the current message.
-func (a *Agent) resolveManualSignInput(ctx context.Context, message string) (manualSignResolution, error) {
-	resolution := manualSignResolution{
-		Trusted: trustedEntities{
-			Date:    resolveDateFromMessage(message),
-			Section: resolveSectionFromMessage(message),
-		},
-	}
-
-	userName := extractManualSignUserName(message)
-	if userName == "" {
-		return resolution, nil
-	}
-	resolution.UserInput = userName
-
-	users, err := a.deps.User.SearchByName(ctx, userName)
-	if err != nil {
-		return manualSignResolution{}, err
-	}
-
-	resolution.UserResolution = resolveUser(entityContext{
-		Raw:   userName,
-		Users: users,
-	})
-	if resolution.UserResolution.Status == ResolveResolved && resolution.UserResolution.User != nil {
-		resolution.Trusted.UserID = resolution.UserResolution.User.ID
-		resolution.Trusted.UserName = resolution.UserResolution.User.Name
-	}
-	return resolution, nil
-}
-
-// buildManualSignMissingFieldsReply builds the reply asking for missing manual-sign fields.
-func buildManualSignMissingFieldsReply(missing []string) string {
-	if len(missing) == 0 {
-		return "请补充需要补签的姓名、日期和节次。"
-	}
-	names := make([]string, 0, len(missing))
-	for _, field := range missing {
-		switch field {
-		case "user_id":
-			names = append(names, "姓名")
-		case "date":
-			names = append(names, "日期")
-		case "section":
-			names = append(names, "节次")
-		}
-	}
-	if len(names) == 0 {
-		return "请补充需要补签的姓名、日期和节次。"
-	}
-	return fmt.Sprintf("我还缺少%s，请补充后我再帮你补签。", strings.Join(names, "和"))
-}
-
-// buildResponseOptions builds response options from a string candidate list.
-func buildResponseOptions(candidates []string) []ResponseOption {
-	options := make([]ResponseOption, 0, len(candidates))
-	for _, candidate := range candidates {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			continue
-		}
-		options = append(options, ResponseOption{
-			Label: candidate,
-			Value: candidate,
-		})
-	}
-	return options
-}
-
-// handleProtocolSubscriptionPrimary runs the subscription protocol primary flow.
-func (a *Agent) handleProtocolSubscriptionPrimary(ctx context.Context, uctx *tools.UserContext, sessionKey, question string, userMsg tools.Message, startTime time.Time, metrics *callMetrics, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot) (bool, string, error) {
-	if uctx == nil || uctx.ConversationType != "2" || a.deps.GroupSub == nil {
-		return false, "", nil
-	}
-
-	if activeWorkflow == nil {
-		if draft.Act != ActWriteRequest || draft.Operation != "subscription.start" {
-			return false, "", nil
-		}
-		workflow, ok := startWorkflow(draft)
-		if !ok {
-			return false, "", nil
-		}
-		a.sessions.setWorkflowState(sessionKey, &workflow)
-		metrics.Wf.IDAfter = workflow.ID
-		metrics.ResponseKind = string(ResponseClarify)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
-		reply := "需要先确认订阅范围。你可以回复“全部人员”，也可以回复“指定部门”。"
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
-	}
-
-	if activeWorkflow.Type != WorkflowSubscriptionStart {
-		return false, "", nil
-	}
-
-	if draft.Operation == "subscription.list_departments" {
-		metrics.Wf.IDAfter = activeWorkflow.ID
-		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
-			Operation: "subscription.list_departments",
-		})
-	}
-
-	if draft.Act != ActWorkflowContinue {
-		return false, "", nil
-	}
-
-	trusted, ok := a.resolveSubscriptionTrustedEntities(ctx, question, activeWorkflow)
-	if !ok {
-		reply := renderProtocolResponse(ResponseModel{
-			Kind:          ResponseClarify,
-			ClarifyReason: "subscription_missing_fields",
-		})
-		metrics.Wf.IDAfter = activeWorkflow.ID
-		metrics.ResponseKind = string(ResponseClarify)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
-	}
-
-	result := continueWorkflow(*activeWorkflow, draft, trusted)
-	switch result.Decision {
-	case WorkflowContinueDecision:
-		if result.Workflow == nil {
-			return false, "", nil
-		}
-		a.sessions.setWorkflowState(sessionKey, result.Workflow)
-		metrics.Wf.IDAfter = result.Workflow.ID
-		return a.executeProtocolOperation(ctx, uctx, sessionKey, question, userMsg, startTime, metrics, OperationRequest{
-			Operation: "subscription.list_departments",
-		})
-	case WorkflowReadyToExecute:
-		if result.Workflow == nil {
-			return false, "", nil
-		}
-		deptIDs := subscriptionDeptIDsFromTrusted(result.Workflow.Trusted)
-		params := map[string]any{
-			"conversation_id": uctx.ConversationID,
-			"scope":           result.Workflow.Trusted.Scope,
-		}
-		if len(deptIDs) > 0 {
-			params["dept_ids"] = deptIDs
-		}
-		execResult := a.operationExecutor().Execute(ctx, uctx, OperationRequest{
-			Operation:     "subscription.start",
-			TrustedParams: params,
-		})
-		applyOperationExecutionMetrics(metrics, execResult)
-		if execResult.Response.Kind == ResponseResult {
-			a.sessions.applyWorkflowResult(sessionKey, completeWorkflow(*result.Workflow))
-			metrics.Wf.IDAfter = ""
-		} else {
-			a.sessions.setWorkflowState(sessionKey, result.Workflow)
-			metrics.Wf.IDAfter = result.Workflow.ID
-		}
-		reply := renderProtocolResponse(execResult.Response)
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
-	default:
-		reply := renderProtocolResponse(ResponseModel{
-			Kind:          ResponseClarify,
-			ClarifyReason: "subscription_invalid_shape",
-		})
-		metrics.Wf.IDAfter = activeWorkflow.ID
-		metrics.ResponseKind = string(ResponseClarify)
-		metrics.AnswerMode = answerModeToolFirst
-		metrics.QueryType = queryKindTool
-		a.writeCallLog(ctx, uctx, question, reply, nil, 0, startTime, "success", "", *metrics)
-		a.sessions.appendMessages(sessionKey, userMsg, tools.Message{Role: "assistant", Content: reply})
-		return true, reply, nil
-	}
+	return ""
 }
 
 func subscriptionDeptIDsFromTrusted(trusted trustedEntities) []int64 {
@@ -2173,69 +1766,6 @@ func subscriptionDeptIDsFromTrusted(trusted trustedEntities) []int64 {
 		return []int64{trusted.DepartmentID}
 	}
 	return nil
-}
-
-// buildProtocolDepartmentOptionsReply builds the reply that lists selectable departments.
-func (a *Agent) buildProtocolDepartmentOptionsReply(ctx context.Context) (string, error) {
-	if a.deps.Dept == nil {
-		return "请告诉我需要订阅哪些部门。", nil
-	}
-	depts, err := a.deps.Dept.ListDepts(ctx)
-	if err != nil {
-		return "", err
-	}
-	names := make([]string, 0, len(depts))
-	for _, dept := range depts {
-		name := strings.TrimSpace(dept.Name)
-		if name == "" {
-			continue
-		}
-		names = append(names, name)
-	}
-	if len(names) == 0 {
-		return "当前暂无可选部门。", nil
-	}
-	return fmt.Sprintf("当前可选部门有：%s。请告诉我需要订阅哪些部门。", strings.Join(names, "、")), nil
-}
-
-// resolveSubscriptionTrustedEntities resolves trusted subscription fields from the current message.
-func (a *Agent) resolveSubscriptionTrustedEntities(ctx context.Context, message string, workflow *WorkflowSnapshot) (trustedEntities, bool) {
-	if workflow == nil {
-		return trustedEntities{}, false
-	}
-	switch workflow.State {
-	case WorkflowCollectScope:
-		normalized := normalizeQuery(message)
-		switch {
-		case containsAny(normalized, []string{"全部人员", "全部"}):
-			return trustedEntities{Scope: "all"}, true
-		case containsAny(normalized, []string{"指定部门", "部分部门"}):
-			return trustedEntities{Scope: "department"}, true
-		default:
-			return trustedEntities{}, false
-		}
-	case WorkflowCollectDepartments:
-		if a.deps.Dept == nil {
-			return trustedEntities{}, false
-		}
-		depts, err := a.deps.Dept.ListDepts(ctx)
-		if err != nil {
-			return trustedEntities{}, false
-		}
-		resolved := resolveDepartment(entityContext{
-			Raw:         message,
-			Departments: depts,
-		})
-		if resolved.Status != ResolveResolved || resolved.Department == nil {
-			return trustedEntities{}, false
-		}
-		return trustedEntities{
-			Scope:        "department",
-			DepartmentID: resolved.Department.DeptID,
-		}, true
-	default:
-		return trustedEntities{}, false
-	}
 }
 
 // buildSystemPrompt 构建系统提示词
@@ -2362,18 +1892,6 @@ func buildClarifyReply(plan clarifyPlan, toolResult string) (string, error) {
 	}
 }
 
-func buildSubscriptionStatusReply(info *tools.GroupSubInfo) string {
-	if info == nil || !info.Subscribed {
-		return "当前群还没有订阅考勤推送。"
-	}
-
-	reply := "当前群已订阅考勤推送。"
-	if len(info.DeptIDs) > 0 {
-		reply += "目前是按指定部门范围推送。"
-	}
-	return reply
-}
-
 // extractToolError extracts a structured tool error payload from a tool result.
 func extractToolError(toolResult string) string {
 	return strings.TrimSpace(parseToolErrorPayload(toolResult).Error)
@@ -2389,11 +1907,8 @@ func parseToolErrorPayload(toolResult string) toolErrorPayload {
 }
 
 // extractParamString safely extracts a string value from a params map.
-func extractParamString(params map[string]any, key string) (string, bool) {
-	if params == nil {
-		return "", false
-	}
-	v, ok := params[key]
+func extractParamString(params map[string]TrustedParam, key string) (string, bool) {
+	v, ok := trustedParamConcreteValue(params, key)
 	if !ok {
 		return "", false
 	}
@@ -2402,11 +1917,8 @@ func extractParamString(params map[string]any, key string) (string, bool) {
 }
 
 // extractParamInt safely extracts an int value from a params map.
-func extractParamInt(params map[string]any, key string) (int, bool) {
-	if params == nil {
-		return 0, false
-	}
-	v, ok := params[key]
+func extractParamInt(params map[string]TrustedParam, key string) (int, bool) {
+	v, ok := trustedParamConcreteValue(params, key)
 	if !ok {
 		return 0, false
 	}
@@ -2422,11 +1934,8 @@ func extractParamInt(params map[string]any, key string) (int, bool) {
 }
 
 // extractParamUint safely extracts a uint value from a params map.
-func extractParamUint(params map[string]any, key string) (uint, bool) {
-	if params == nil {
-		return 0, false
-	}
-	v, ok := params[key]
+func extractParamUint(params map[string]TrustedParam, key string) (uint, bool) {
+	v, ok := trustedParamConcreteValue(params, key)
 	if !ok {
 		return 0, false
 	}

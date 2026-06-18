@@ -5,7 +5,7 @@ type toolPool struct {
 	ToolNames []string
 }
 
-// selectToolPool selects tool pool.
+// legacy-only: selectToolPool chooses the old ReAct tool pool outside protocol_live.
 func selectToolPool(question string, userRole int) toolPool {
 	normalized := normalizeQuery(question)
 

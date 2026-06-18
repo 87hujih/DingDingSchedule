@@ -2,7 +2,11 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -25,14 +29,14 @@ func TestOperationExecutorAttendanceSlotStatusUsesAttendancePort(t *testing.T) {
 	}
 	executor := newOperationExecutor(operationExecutorDeps{Attendance: attendance})
 
-	result := executor.Execute(context.Background(), executorUserContext(), OperationRequest{
+	result := executor.Execute(context.Background(), OperationRequest{
 		Operation: "attendance.query_status",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"query_shape": "slot_status",
 			"date":        "2026-06-06",
 			"week":        10,
 			"section":     2,
-		},
+		}),
 	})
 
 	if result.Response.Kind != ResponseResult {
@@ -47,12 +51,75 @@ func TestOperationExecutorAttendanceSlotStatusUsesAttendancePort(t *testing.T) {
 	if attendance.lastQuery.Date != "2026-06-06" || attendance.lastQuery.Week != 10 || attendance.lastQuery.Section != 2 {
 		t.Fatalf("lastQuery = %+v", attendance.lastQuery)
 	}
+	payload, ok := result.Response.Payload.(AttendanceStatusPayload)
+	if !ok || payload.Result == nil {
+		t.Fatalf("Payload = %#v, want AttendanceStatusPayload", result.Response.Payload)
+	}
+	if result.Response.ResultText != "" {
+		t.Fatalf("ResultText = %q, want renderer-owned text", result.Response.ResultText)
+	}
 	if !strings.Contains(renderProtocolResponse(result.Response), "2026-06-06第2节考勤状态") {
 		t.Fatalf("reply = %q, want deterministic attendance status", renderProtocolResponse(result.Response))
 	}
 }
 
-func TestOperationExecutorAttendanceSlotStatusDefaultsWeekFromSemester(t *testing.T) {
+func TestOperationExecutorExecuteSignatureConsumesOnlyRequest(t *testing.T) {
+	t.Parallel()
+
+	method, ok := reflect.TypeOf(operationExecutor{}).MethodByName("Execute")
+	if !ok {
+		t.Fatalf("operationExecutor.Execute missing")
+	}
+	if method.Type.NumIn() != 3 {
+		t.Fatalf("Execute inputs = %d, want receiver, context.Context, OperationRequest", method.Type.NumIn())
+	}
+	if method.Type.In(1) != reflect.TypeOf((*context.Context)(nil)).Elem() {
+		t.Fatalf("Execute arg1 = %v, want context.Context", method.Type.In(1))
+	}
+	if method.Type.In(2) != reflect.TypeOf(OperationRequest{}) {
+		t.Fatalf("Execute arg2 = %v, want OperationRequest", method.Type.In(2))
+	}
+}
+
+func TestOperationExecutorHasCatalogBindingsForActiveOperations(t *testing.T) {
+	t.Parallel()
+
+	for _, manifest := range operationManifests() {
+		if _, ok := lookupOperationExecutorBinding(manifest.Executor.Name); !ok {
+			t.Fatalf("%s executor binding %q is not registered", manifest.Name, manifest.Executor.Name)
+		}
+	}
+}
+
+func TestOperationExecutorBindingsDoNotDispatchByOperationSwitch(t *testing.T) {
+	t.Parallel()
+
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	sourcePath := filepath.Join(filepath.Dir(testFile), "operation_executor_bindings.go")
+	source, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", sourcePath, err)
+	}
+
+	forbidden := []struct {
+		name    string
+		pattern string
+	}{
+		{name: "operation switch", pattern: `switch\s+req\.Operation`},
+		{name: "operation string case", pattern: `case\s+"[a-z_]+\.[a-z_]+`},
+		{name: "operation comparison", pattern: `req\.Operation\s*(!=|==)\s+"[a-z_]+\.[a-z_]+`},
+	}
+	for _, item := range forbidden {
+		if regexp.MustCompile(item.pattern).Match(source) {
+			t.Fatalf("operation_executor_bindings.go still uses %s; executor dispatch must come from OperationCatalog executor binding", item.name)
+		}
+	}
+}
+
+func TestOperationExecutorAttendanceSlotStatusRequiresTrustedWeek(t *testing.T) {
 	t.Parallel()
 
 	attendance := &executorFakeAttendancePort{
@@ -70,23 +137,23 @@ func TestOperationExecutorAttendanceSlotStatusDefaultsWeekFromSemester(t *testin
 		Semester:   semester,
 	})
 
-	result := executor.Execute(context.Background(), executorUserContext(), OperationRequest{
+	result := executor.Execute(context.Background(), OperationRequest{
 		Operation: "attendance.query_status",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"query_shape": "slot_status",
 			"date":        "2026-06-06",
 			"section":     2,
-		},
+		}),
 	})
 
-	if result.Response.Kind != ResponseResult {
-		t.Fatalf("Kind = %q, want %q; reply=%q", result.Response.Kind, ResponseResult, renderProtocolResponse(result.Response))
+	if result.Response.Kind != ResponseClarify {
+		t.Fatalf("Kind = %q, want %q; reply=%q", result.Response.Kind, ResponseClarify, renderProtocolResponse(result.Response))
 	}
-	if semester.calls != 1 {
-		t.Fatalf("semester calls = %d, want 1", semester.calls)
+	if semester.calls != 0 {
+		t.Fatalf("semester calls = %d, want 0 because defaults must be resolver trusted params", semester.calls)
 	}
-	if attendance.lastQuery.Week != 3 {
-		t.Fatalf("attendance week = %d, want current week 3", attendance.lastQuery.Week)
+	if attendance.detailCalls != 0 {
+		t.Fatalf("detailCalls = %d, want 0 without trusted week", attendance.detailCalls)
 	}
 }
 
@@ -110,13 +177,13 @@ func TestOperationExecutorAttendanceUserDayStatusUsesUserDayPort(t *testing.T) {
 		AttendanceUserDayStatus: userDay,
 	})
 
-	result := executor.Execute(context.Background(), executorUserContext(), OperationRequest{
+	result := executor.Execute(context.Background(), OperationRequest{
 		Operation: "attendance.query_status",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"query_shape": "user_day_status",
 			"date":        "2026-06-06",
 			"user_id":     uint(9),
-		},
+		}),
 	})
 
 	if result.Response.Kind != ResponseResult {
@@ -145,12 +212,12 @@ func TestOperationExecutorScheduleQueriesUseSchedulePort(t *testing.T) {
 	executor := newOperationExecutor(operationExecutorDeps{Schedule: schedule})
 	uctx := executorUserContext()
 
-	myResult := executor.Execute(context.Background(), uctx, OperationRequest{
+	myResult := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "schedule.query_my_schedule",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"week": 6,
-		},
-	})
+		}),
+	}, uctx))
 	if myResult.Response.Kind != ResponseResult {
 		t.Fatalf("my schedule Kind = %q, want %q", myResult.Response.Kind, ResponseResult)
 	}
@@ -161,13 +228,13 @@ func TestOperationExecutorScheduleQueriesUseSchedulePort(t *testing.T) {
 		t.Fatalf("my schedule reply = %q, want course name", renderProtocolResponse(myResult.Response))
 	}
 
-	userResult := executor.Execute(context.Background(), uctx, OperationRequest{
+	userResult := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "schedule.query_user_schedule",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"user_id": uint(9),
 			"week":    6,
-		},
-	})
+		}),
+	}, uctx))
 	if userResult.Response.Kind != ResponseResult {
 		t.Fatalf("user schedule Kind = %q, want %q", userResult.Response.Kind, ResponseResult)
 	}
@@ -190,13 +257,13 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 	uctx.ConversationID = "conv-runtime"
 	uctx.ConversationTitle = "测试群"
 
-	startAll := executor.Execute(context.Background(), uctx, OperationRequest{
+	startAll := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.start",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-runtime",
 			"scope":           "all",
-		},
-	})
+		}),
+	}, uctx))
 	if startAll.Response.Kind != ResponseResult {
 		t.Fatalf("startAll Kind = %q, want %q", startAll.Response.Kind, ResponseResult)
 	}
@@ -204,14 +271,14 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 		t.Fatalf("Subscribe all calls=%d conversation=%q deptIDs=%v", groupSub.subscribeCalls, groupSub.lastConversationID, groupSub.lastDeptIDs)
 	}
 
-	startDept := executor.Execute(context.Background(), uctx, OperationRequest{
+	startDept := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.start",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-runtime",
 			"scope":           "department",
 			"dept_ids":        []int64{101, 102},
-		},
-	})
+		}),
+	}, uctx))
 	if startDept.Response.Kind != ResponseResult {
 		t.Fatalf("startDept Kind = %q, want %q", startDept.Response.Kind, ResponseResult)
 	}
@@ -219,20 +286,20 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 		t.Fatalf("Subscribe dept calls=%d deptIDs=%v", groupSub.subscribeCalls, groupSub.lastDeptIDs)
 	}
 
-	status := executor.Execute(context.Background(), uctx, OperationRequest{
+	status := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.query_status",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-runtime",
-		},
-	})
+		}),
+	}, uctx))
 	if status.Response.Kind != ResponseResult || !strings.Contains(renderProtocolResponse(status.Response), "已订阅") {
 		t.Fatalf("status = %+v reply=%q, want subscribed result", status, renderProtocolResponse(status.Response))
 	}
-	if groupSub.getCalls != 1 {
-		t.Fatalf("GetSubscription calls = %d, want 1", groupSub.getCalls)
+	if groupSub.getCalls != 3 {
+		t.Fatalf("GetSubscription calls = %d, want 3", groupSub.getCalls)
 	}
 
-	options := executor.Execute(context.Background(), uctx, OperationRequest{Operation: "subscription.list_departments"})
+	options := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{Operation: "subscription.list_departments"}, uctx))
 	if options.Response.Kind != ResponseSelectOptions {
 		t.Fatalf("department list Kind = %q, want %q", options.Response.Kind, ResponseSelectOptions)
 	}
@@ -240,12 +307,12 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 		t.Fatalf("department options = %+v", options.Response.Options)
 	}
 
-	cancel := executor.Execute(context.Background(), uctx, OperationRequest{
+	cancel := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.cancel",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-runtime",
-		},
-	})
+		}),
+	}, uctx))
 	if cancel.Response.Kind != ResponseResult {
 		t.Fatalf("cancel Kind = %q, want %q", cancel.Response.Kind, ResponseResult)
 	}
@@ -261,19 +328,142 @@ func TestOperationExecutorSubscriptionStartRejectsInvalidScope(t *testing.T) {
 	executor := newOperationExecutor(operationExecutorDeps{GroupSub: groupSub})
 	uctx := executorUserContext()
 
-	result := executor.Execute(context.Background(), uctx, OperationRequest{
+	result := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.start",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": uctx.ConversationID,
 			"scope":           "everyone",
-		},
-	})
+		}),
+	}, uctx))
 
 	if result.Response.Kind != ResponseRefuse {
 		t.Fatalf("Kind = %q, want %q", result.Response.Kind, ResponseRefuse)
 	}
 	if groupSub.subscribeCalls != 0 {
 		t.Fatalf("Subscribe calls = %d, want 0", groupSub.subscribeCalls)
+	}
+}
+
+func TestOperationExecutorSubscriptionStartReturnsStableWriteStatuses(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		existing           *tools.GroupSubInfo
+		scope              string
+		deptIDs            []int64
+		wantStatus         WriteStatus
+		wantSubscribeCalls int
+	}{
+		{
+			name:               "creates missing subscription",
+			existing:           &tools.GroupSubInfo{Subscribed: false},
+			scope:              "all",
+			wantStatus:         WriteStatusCreated,
+			wantSubscribeCalls: 1,
+		},
+		{
+			name:               "already exists with same all scope",
+			existing:           &tools.GroupSubInfo{Subscribed: true},
+			scope:              "all",
+			wantStatus:         WriteStatusAlreadyExists,
+			wantSubscribeCalls: 0,
+		},
+		{
+			name:               "updates changed department scope",
+			existing:           &tools.GroupSubInfo{Subscribed: true, DeptIDs: []int64{101}},
+			scope:              "department",
+			deptIDs:            []int64{102, 103},
+			wantStatus:         WriteStatusUpdated,
+			wantSubscribeCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			groupSub := &executorFakeGroupSubPort{info: tt.existing}
+			executor := newOperationExecutor(operationExecutorDeps{GroupSub: groupSub})
+			uctx := executorUserContext()
+			params := map[string]any{
+				"conversation_id": uctx.ConversationID,
+				"scope":           tt.scope,
+			}
+			if len(tt.deptIDs) > 0 {
+				params["dept_ids"] = tt.deptIDs
+			}
+
+			result := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
+				Operation:     "subscription.start",
+				TrustedParams: executorTrustedParams(params),
+			}, uctx))
+
+			payload, ok := result.Response.Payload.(OperationStatusPayload)
+			if !ok {
+				t.Fatalf("Payload = %T, want OperationStatusPayload", result.Response.Payload)
+			}
+			if payload.Status != tt.wantStatus {
+				t.Fatalf("Status = %q, want %q", payload.Status, tt.wantStatus)
+			}
+			if groupSub.subscribeCalls != tt.wantSubscribeCalls {
+				t.Fatalf("Subscribe() calls = %d, want %d", groupSub.subscribeCalls, tt.wantSubscribeCalls)
+			}
+		})
+	}
+}
+
+func TestOperationExecutorSubscriptionCancelReturnsStableWriteStatuses(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		existing             *tools.GroupSubInfo
+		wantStatus           WriteStatus
+		wantUnsubscribeCalls int
+	}{
+		{
+			name:                 "no active subscription is no op",
+			existing:             &tools.GroupSubInfo{Subscribed: false},
+			wantStatus:           WriteStatusNoOp,
+			wantUnsubscribeCalls: 0,
+		},
+		{
+			name:                 "active subscription is updated",
+			existing:             &tools.GroupSubInfo{Subscribed: true},
+			wantStatus:           WriteStatusUpdated,
+			wantUnsubscribeCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			groupSub := &executorFakeGroupSubPort{info: tt.existing}
+			executor := newOperationExecutor(operationExecutorDeps{GroupSub: groupSub})
+			uctx := executorUserContext()
+
+			result := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
+				Operation: "subscription.cancel",
+				TrustedParams: executorTrustedParams(map[string]any{
+					"conversation_id": uctx.ConversationID,
+				}),
+			}, uctx))
+
+			payload, ok := result.Response.Payload.(OperationStatusPayload)
+			if !ok {
+				t.Fatalf("Payload = %T, want OperationStatusPayload", result.Response.Payload)
+			}
+			if payload.Status != tt.wantStatus {
+				t.Fatalf("Status = %q, want %q", payload.Status, tt.wantStatus)
+			}
+			if groupSub.unsubscribeCalls != tt.wantUnsubscribeCalls {
+				t.Fatalf("Unsubscribe() calls = %d, want %d", groupSub.unsubscribeCalls, tt.wantUnsubscribeCalls)
+			}
+		})
 	}
 }
 
@@ -285,13 +475,13 @@ func TestOperationExecutorSubscriptionOperationsBindConversationIDToRuntimeGroup
 	uctx := executorUserContext()
 	uctx.ConversationID = "conv-runtime"
 
-	start := executor.Execute(context.Background(), uctx, OperationRequest{
+	start := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.start",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-other",
 			"scope":           "all",
-		},
-	})
+		}),
+	}, uctx))
 	if start.Response.Kind != ResponseRefuse {
 		t.Fatalf("start Kind = %q, want %q", start.Response.Kind, ResponseRefuse)
 	}
@@ -299,12 +489,12 @@ func TestOperationExecutorSubscriptionOperationsBindConversationIDToRuntimeGroup
 		t.Fatalf("Subscribe calls = %d, want 0", groupSub.subscribeCalls)
 	}
 
-	status := executor.Execute(context.Background(), uctx, OperationRequest{
+	status := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.query_status",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-other",
-		},
-	})
+		}),
+	}, uctx))
 	if status.Response.Kind != ResponseRefuse {
 		t.Fatalf("status Kind = %q, want %q", status.Response.Kind, ResponseRefuse)
 	}
@@ -312,12 +502,12 @@ func TestOperationExecutorSubscriptionOperationsBindConversationIDToRuntimeGroup
 		t.Fatalf("GetSubscription calls = %d, want 0", groupSub.getCalls)
 	}
 
-	cancel := executor.Execute(context.Background(), uctx, OperationRequest{
+	cancel := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.cancel",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "conv-other",
-		},
-	})
+		}),
+	}, uctx))
 	if cancel.Response.Kind != ResponseRefuse {
 		t.Fatalf("cancel Kind = %q, want %q", cancel.Response.Kind, ResponseRefuse)
 	}
@@ -335,12 +525,12 @@ func TestOperationExecutorSubscriptionCancelRequiresGroupChat(t *testing.T) {
 	uctx.ConversationType = "1"
 	uctx.ConversationID = "single-conv"
 
-	result := executor.Execute(context.Background(), uctx, OperationRequest{
+	result := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.cancel",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "single-conv",
-		},
-	})
+		}),
+	}, uctx))
 
 	if result.Response.Kind != ResponseRefuse {
 		t.Fatalf("Kind = %q, want %q", result.Response.Kind, ResponseRefuse)
@@ -359,13 +549,13 @@ func TestOperationExecutorSubscriptionStartRequiresGroupChat(t *testing.T) {
 	uctx.ConversationType = "1"
 	uctx.ConversationID = "single-conv"
 
-	result := executor.Execute(context.Background(), uctx, OperationRequest{
+	result := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "subscription.start",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"conversation_id": "single-conv",
 			"scope":           "all",
-		},
-	})
+		}),
+	}, uctx))
 
 	if result.Response.Kind != ResponseRefuse {
 		t.Fatalf("Kind = %q, want %q", result.Response.Kind, ResponseRefuse)
@@ -388,7 +578,7 @@ func TestOperationExecutorCapabilityAndRuleAnswersDoNotUseBusinessTools(t *testi
 	})
 	uctx := executorUserContext()
 
-	capability := executor.Execute(context.Background(), uctx, OperationRequest{Operation: "manual_sign.describe_capability"})
+	capability := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{Operation: "manual_sign.describe_capability"}, uctx))
 	if capability.Response.Kind != ResponseAnswer || !strings.Contains(renderProtocolResponse(capability.Response), "代签") {
 		t.Fatalf("capability = %+v reply=%q, want manual sign answer", capability, renderProtocolResponse(capability.Response))
 	}
@@ -396,12 +586,12 @@ func TestOperationExecutorCapabilityAndRuleAnswersDoNotUseBusinessTools(t *testi
 		t.Fatalf("attendance detail calls = %d, want 0 for capability answer", attendance.detailCalls)
 	}
 
-	rule := executor.Execute(context.Background(), uctx, OperationRequest{
+	rule := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "attendance.rule_explain",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"rule_topic": "迟到规则",
-		},
-	})
+		}),
+	}, uctx))
 	if rule.Response.Kind != ResponseAnswer || !strings.Contains(renderProtocolResponse(rule.Response), "迟到按上课开始时间判定") {
 		t.Fatalf("rule = %+v reply=%q, want knowledge answer", rule, renderProtocolResponse(rule.Response))
 	}
@@ -410,12 +600,12 @@ func TestOperationExecutorCapabilityAndRuleAnswersDoNotUseBusinessTools(t *testi
 	}
 
 	knowledge.hits = nil
-	noHit := executor.Execute(context.Background(), uctx, OperationRequest{
+	noHit := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
 		Operation: "attendance.rule_explain",
-		TrustedParams: map[string]any{
+		TrustedParams: executorTrustedParams(map[string]any{
 			"rule_topic": "迟到规则",
-		},
-	})
+		}),
+	}, uctx))
 	if noHit.Response.Kind != ResponseAnswer || noHit.Response.BusinessError != "no_knowledge_hit" {
 		t.Fatalf("noHit = %+v, want no_knowledge_hit answer", noHit)
 	}
@@ -426,7 +616,7 @@ func TestOperationExecutorUnsupportedOperationRefuses(t *testing.T) {
 
 	executor := newOperationExecutor(operationExecutorDeps{})
 
-	result := executor.Execute(context.Background(), executorUserContext(), OperationRequest{
+	result := executor.Execute(context.Background(), OperationRequest{
 		Operation: "manual_sign.create",
 	})
 
@@ -459,6 +649,13 @@ func executorUserContext() *tools.UserContext {
 		ConversationType:  "2",
 		ConversationTitle: "测试群",
 	}
+}
+
+func executorTrustedParams(values map[string]any) map[string]TrustedParam {
+	return trustedParamsFromValues(42, TrustedParamSource{
+		Kind:     TrustedParamSourceWorkflow,
+		Resolver: "executor_test",
+	}, values)
 }
 
 type executorFakeAttendancePort struct {

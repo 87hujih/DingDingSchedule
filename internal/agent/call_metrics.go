@@ -76,22 +76,43 @@ type routeMetrics struct {
 }
 
 type protocolMetrics struct {
-	Mode             string
-	Act              string
-	Domain           string
-	Operation        string
-	ValidationCode   string
-	BlockedReason    string
-	ResolvedSlots    string
-	CandidateCount   int
-	ExecutionAllowed bool
+	Mode                    string
+	Act                     string
+	Domain                  string
+	Operation               string
+	ValidationCode          string
+	BlockedReason           string
+	ResolvedSlots           string
+	CandidateCount          int
+	ExecutionAllowed        bool
+	RequestID               string
+	CompilerStatus          string
+	CompilerLatencyMs       int64
+	IntentDraftJSON         string
+	CatalogValidationCode   string
+	WorkflowDecision        string
+	WorkflowInterruptReason string
+	ResolvedSlotsJSON       string
+	EntityResolutionStatus  string
+	PrePolicyResult         string
+	ResourcePolicyResult    string
+	WriteGuardResult        string
+	IdempotencyKey          string
+	ExecutorStatus          string
+	RendererName            string
+	FailureLayer            string
+	LegacyCalled            bool
 }
 
 type workflowMetrics struct {
-	IDBefore    string
-	IDAfter     string
-	StateBefore string
-	StateAfter  string
+	IDBefore           string
+	IDAfter            string
+	TypeBefore         string
+	TypeAfter          string
+	StateBefore        string
+	StateAfter         string
+	SnapshotBeforeJSON string
+	SnapshotAfterJSON  string
 }
 
 type retrievalMetrics struct {

@@ -2,12 +2,157 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"schedule_server/internal/agent/tools"
 )
+
+func TestProtocolLivePipelineDoesNotSwitchOnOperation(t *testing.T) {
+	t.Parallel()
+
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	pipelinePath := filepath.Join(filepath.Dir(testFile), "protocol_live_pipeline.go")
+	source, err := os.ReadFile(pipelinePath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", pipelinePath, err)
+	}
+	operationSwitch := regexp.MustCompile(`switch\s+(draft\.)?Operation|switch\s+.*Operation`)
+	if operationSwitch.Match(source) {
+		t.Fatalf("protocol_live_pipeline.go must dispatch operations through OperationCatalog, not switch on operation names")
+	}
+}
+
+func TestProtocolLivePipelineDoesNotOwnBusinessLayerHelpers(t *testing.T) {
+	t.Parallel()
+
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	pipelinePath := filepath.Join(filepath.Dir(testFile), "protocol_live_pipeline.go")
+	sourceBytes, err := os.ReadFile(pipelinePath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", pipelinePath, err)
+	}
+	source := string(sourceBytes)
+
+	forbiddenSymbols := []string{
+		"handleSubscription",
+		"continueSubscription",
+		"attendanceRequest",
+		"scheduleRequest",
+		"resolveSubscriptionTrustedEntities",
+		"resolveSubscriptionDepartmentSelection",
+		"resolveInitialSubscriptionTrustedEntities",
+		"subscriptionStartTrustedParams",
+		"persistWorkflowCandidatesFromResponse",
+		"persistWorkflowCandidatesFromEntityCandidates",
+		"workflowDepartmentCandidateSelection",
+		"parseCandidateOrdinal",
+		"normalizeSubscriptionScope",
+		"protocolLiveRoleRefusal",
+		"protocolLiveGuardrailResponse",
+		"resourceRefusalText",
+		"writeGuardResponseText",
+		"protocolRuleTopic",
+		"messageDateSignal",
+		"extractSectionToken",
+		"extractWeekToken",
+		"extractScheduleUserName",
+		"responseOptionsFromEntityCandidates",
+	}
+	for _, symbol := range forbiddenSymbols {
+		if regexp.MustCompile(`\bfunc\s+(\([^)]*\)\s+)?` + regexp.QuoteMeta(symbol) + `\b`).MatchString(source) {
+			t.Fatalf("protocol_live_pipeline.go still defines %s; pipeline must only orchestrate protocol layers", symbol)
+		}
+	}
+
+	forbiddenBusinessTokens := []string{
+		`"subscription.start"`,
+		`"subscription.list_departments"`,
+		`"schedule.query_user_schedule"`,
+		`"missing_attendance_fields"`,
+		`"subscription_missing_fields"`,
+		`"subscription_invalid_shape"`,
+		`"group_chat_required"`,
+		`"write_confirmation_required"`,
+		`"schedule_user_visibility_denied"`,
+		`"department_scope_denied"`,
+	}
+	for _, token := range forbiddenBusinessTokens {
+		if strings.Contains(source, token) {
+			t.Fatalf("protocol_live_pipeline.go still contains business token %s; move business rules to the owning layer", token)
+		}
+	}
+}
+
+func TestProtocolLiveRequestBuilderDoesNotSpecialCaseScheduleOperationNames(t *testing.T) {
+	t.Parallel()
+
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	sourcePath := filepath.Join(filepath.Dir(testFile), "protocol_live_request_builder.go")
+	source, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", sourcePath, err)
+	}
+
+	if strings.Contains(string(source), `"schedule.query_user_schedule"`) {
+		t.Fatalf("protocol_live_request_builder.go still special-cases schedule.query_user_schedule; schedule request shape must come from OperationCatalog")
+	}
+}
+
+func TestOperationRequiresTrustedParamIgnoresOptionalParams(t *testing.T) {
+	t.Parallel()
+
+	manifest := OperationManifest{
+		RequiredTrustedParams: params("week"),
+		OptionalTrustedParams: params("user_id"),
+	}
+	if operationRequiresTrustedParam(manifest, "user_id") {
+		t.Fatalf("operationRequiresTrustedParam returned true for optional param; optional params must not force entity resolution")
+	}
+}
+
+func TestExtractScheduleUserNamePrefersLongQueryPrefix(t *testing.T) {
+	t.Parallel()
+
+	if got := extractScheduleUserName("查询张三的课表"); got != "张三" {
+		t.Fatalf("extractScheduleUserName() = %q, want 张三", got)
+	}
+}
+
+func TestWorkflowCodeUsesCatalogOperationNames(t *testing.T) {
+	t.Parallel()
+
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	for _, filename := range []string{"protocol_live_subscription_workflow.go", "workflow_engine.go"} {
+		sourcePath := filepath.Join(filepath.Dir(testFile), filename)
+		source, err := os.ReadFile(sourcePath)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", sourcePath, err)
+		}
+		for _, operation := range []string{`"subscription.start"`, `"subscription.list_departments"`} {
+			if strings.Contains(string(source), operation) {
+				t.Fatalf("%s still hard-codes %s; workflow operation names must be resolved from OperationCatalog", filename, operation)
+			}
+		}
+	}
+}
 
 func TestProtocolLivePipelineExplicitNewRequestInterruptsWorkflow(t *testing.T) {
 	t.Parallel()
@@ -92,6 +237,46 @@ func TestProtocolLivePipelineExecutesAttendanceSlotQuery(t *testing.T) {
 	}
 	if outcome.ResolvedSlots["date"] != "2026-06-06" || outcome.ResolvedSlots["section"] != 2 || outcome.ResolvedSlots["week"] != 10 {
 		t.Fatalf("ResolvedSlots = %#v, want date/section/week", outcome.ResolvedSlots)
+	}
+}
+
+func TestProtocolLivePipelineIgnoresTrustedIDSlotFromDraft(t *testing.T) {
+	t.Parallel()
+
+	attendance := &executorFakeAttendancePort{detailResp: &tools.AttendanceResult{Date: "2026-06-06", Week: 10, Section: 2}}
+	user := &pipelineSearchUserPort{users: []tools.UserInfo{{ID: 42, Name: "张三"}}}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActReadQuery,
+			Domain:     DomainAttendance,
+			Operation:  "attendance.query_status",
+			Confidence: 0.92,
+			Slots: map[string]SlotDraft{
+				"date":        {Field: "date", Raw: "2026-06-06"},
+				"user_id":     {Field: "user_id", Raw: "张三"},
+				"query_shape": {Field: "query_shape", Raw: "user_day_status"},
+			},
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{
+			Attendance: attendance,
+			Semester:   &executorFakeSemesterPort{week: 10},
+		}),
+		User: user,
+	})
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message: "查张三今天考勤",
+		User:    executorUserContext(),
+	})
+
+	if outcome.Response.Kind != ResponseClarify {
+		t.Fatalf("Response = %+v, want clarify because user_id slot is not raw user input", outcome.Response)
+	}
+	if user.searchCalls != 0 {
+		t.Fatalf("SearchByName calls = %d, want 0 for trusted ID slot", user.searchCalls)
+	}
+	if attendance.detailCalls != 0 {
+		t.Fatalf("detailCalls = %d, want 0 without trusted user resolver output", attendance.detailCalls)
 	}
 }
 
@@ -185,7 +370,7 @@ func TestProtocolLivePipelineSubscriptionStartExecutesCompleteAllScopeFirstTurn(
 func TestProtocolLivePipelineListsDepartmentsWithoutActiveWorkflow(t *testing.T) {
 	t.Parallel()
 
-	dept := executorFakeDeptPort{depts: []tools.DeptItem{{DeptID: 101, Name: "信工24级"}}}
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{{TenantID: 42, DeptID: 101, Name: "信工24级"}}}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
 		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
 			Act:        ActReadQuery,
@@ -218,7 +403,7 @@ func TestProtocolLivePipelineListsDepartmentsWithoutActiveWorkflow(t *testing.T)
 func TestProtocolLivePipelineListsDepartmentsInDMWithoutGroupGate(t *testing.T) {
 	t.Parallel()
 
-	dept := executorFakeDeptPort{depts: []tools.DeptItem{{DeptID: 101, Name: "信工24级"}}}
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{{TenantID: 42, DeptID: 101, Name: "信工24级"}}}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
 		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
 			Act:        ActReadQuery,
@@ -312,6 +497,35 @@ func TestProtocolLivePipelineWithoutCompilerFailsClosed(t *testing.T) {
 	}
 }
 
+func TestProtocolLivePipelineCompilerTimeoutFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	attendance := &executorFakeAttendancePort{detailResp: &tools.AttendanceResult{Date: "2026-06-06", Week: 10, Section: 2}}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{err: context.DeadlineExceeded},
+		Executor: newOperationExecutor(operationExecutorDeps{Attendance: attendance, Semester: &executorFakeSemesterPort{week: 10}}),
+		Semester: &executorFakeSemesterPort{week: 10},
+	})
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message: "查询今天第二节考勤状态",
+		User:    executorUserContext(),
+	})
+
+	if outcome.Response.Kind != ResponseClarify {
+		t.Fatalf("Response = %+v, want clarify", outcome.Response)
+	}
+	if outcome.Draft.Act != ActUnknown || outcome.Draft.Reason != "intent_timeout" {
+		t.Fatalf("Draft = %+v, want timeout unknown draft", outcome.Draft)
+	}
+	if outcome.BlockedReason != "intent_timeout" {
+		t.Fatalf("BlockedReason = %q, want intent_timeout", outcome.BlockedReason)
+	}
+	if attendance.detailCalls != 0 {
+		t.Fatalf("detailCalls = %d, want 0 after compiler timeout", attendance.detailCalls)
+	}
+}
+
 func TestProtocolLivePipelineRoleDeniedRequestInterruptsActiveWorkflow(t *testing.T) {
 	t.Parallel()
 
@@ -344,11 +558,73 @@ func TestProtocolLivePipelineRoleDeniedRequestInterruptsActiveWorkflow(t *testin
 	if outcome.WorkflowDecision != WorkflowInterrupted || !outcome.ClearWorkflow {
 		t.Fatalf("WorkflowDecision=%q ClearWorkflow=%v, want interrupted and clear", outcome.WorkflowDecision, outcome.ClearWorkflow)
 	}
-	if outcome.Validation.ValidationCode != "allowed_write_request" {
-		t.Fatalf("ValidationCode = %q, want allowed_write_request", outcome.Validation.ValidationCode)
+	if outcome.Validation.ValidationCode != "role_denied" {
+		t.Fatalf("ValidationCode = %q, want role_denied", outcome.Validation.ValidationCode)
 	}
 	if outcome.BlockedReason != "role_denied" {
 		t.Fatalf("BlockedReason = %q, want role_denied", outcome.BlockedReason)
+	}
+}
+
+func TestProtocolLivePipelineResourcePolicyDenialStopsBeforeExecutor(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.cancel",
+			Confidence: 0.96,
+		}},
+		Executor:       newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+		ResourcePolicy: pipelineDenyResourcePolicy{reason: "subscription_conversation_mismatch"},
+	})
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message: "取消本群考勤订阅",
+		User:    executorUserContext(),
+	})
+
+	if outcome.Response.Kind != ResponseRefuse {
+		t.Fatalf("Response = %+v, want refuse", outcome.Response)
+	}
+	if outcome.BlockedReason != "subscription_conversation_mismatch" {
+		t.Fatalf("BlockedReason = %q, want subscription_conversation_mismatch", outcome.BlockedReason)
+	}
+	if groupSub.unsubscribeCalls != 0 {
+		t.Fatalf("Unsubscribe calls = %d, want 0 when resource policy denies", groupSub.unsubscribeCalls)
+	}
+}
+
+func TestProtocolLivePipelineCarriesWriteGuardIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true}}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.cancel",
+			Confidence: 0.96,
+		}},
+		Executor:   newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+		WriteGuard: pipelineAllowWriteGuard{key: "idem-subscription-cancel"},
+	})
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message: "取消本群考勤订阅",
+		User:    executorUserContext(),
+	})
+
+	if outcome.Response.Kind != ResponseResult {
+		t.Fatalf("Response = %+v, want result", outcome.Response)
+	}
+	if outcome.IdempotencyKey != "idem-subscription-cancel" {
+		t.Fatalf("IdempotencyKey = %q, want fake write guard key", outcome.IdempotencyKey)
+	}
+	if groupSub.unsubscribeCalls != 1 {
+		t.Fatalf("Unsubscribe calls = %d, want 1", groupSub.unsubscribeCalls)
 	}
 }
 
@@ -387,7 +663,7 @@ func TestProtocolLivePipelineUnsupportedExplicitWriteInterruptsActiveWorkflow(t 
 func TestProtocolLivePipelineDepartmentListChoosesDepartmentScopeDuringScopeCollection(t *testing.T) {
 	t.Parallel()
 
-	dept := executorFakeDeptPort{depts: []tools.DeptItem{{DeptID: 101, Name: "信工24级"}}}
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{{TenantID: 42, DeptID: 101, Name: "信工24级"}}}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
 		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
 			Act:        ActWorkflowContinue,
@@ -428,13 +704,17 @@ func TestProtocolLivePipelineDepartmentListChoosesDepartmentScopeDuringScopeColl
 	if outcome.ResolvedSlots["scope"] != "department" {
 		t.Fatalf("ResolvedSlots = %#v, want department scope", outcome.ResolvedSlots)
 	}
+	candidates := outcome.WorkflowAfter.Candidates["dept_ids"]
+	if len(candidates) != 1 || candidates[0].ID != "101" || candidates[0].Label != "信工24级" {
+		t.Fatalf("WorkflowAfter candidates = %+v, want persisted department candidate", candidates)
+	}
 }
 
 func TestProtocolLivePipelineDepartmentNameChoosesDepartmentScopeDuringScopeCollection(t *testing.T) {
 	t.Parallel()
 
 	groupSub := &executorFakeGroupSubPort{}
-	dept := executorFakeDeptPort{depts: []tools.DeptItem{{DeptID: 125, Name: "信工25级"}}}
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{{TenantID: 42, DeptID: 125, Name: "信工25级"}}}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
 		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
 			Act:        ActWorkflowContinue,
@@ -472,6 +752,160 @@ func TestProtocolLivePipelineDepartmentNameChoosesDepartmentScopeDuringScopeColl
 	}
 	if outcome.ResolvedSlots["scope"] != "department" {
 		t.Fatalf("ResolvedSlots = %#v, want department scope", outcome.ResolvedSlots)
+	}
+}
+
+func TestProtocolLivePipelineDepartmentAmbiguitySelectsCandidatesForWrite(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{
+		{TenantID: 42, DeptID: 101, Name: "信工24级"},
+		{TenantID: 42, DeptID: 125, Name: "信工25级"},
+	}}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.9,
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+		Dept:     dept,
+	})
+	workflow := &WorkflowSnapshot{
+		ID:             "wf-sub",
+		TenantID:       42,
+		ActorUserID:    7,
+		ConversationID: "conv-1",
+		Type:           WorkflowSubscriptionStart,
+		State:          WorkflowCollectDepartments,
+		MissingSlots:   []string{"dept_names"},
+		Trusted: trustedEntities{
+			Scope: "department",
+		},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "信工",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if outcome.Response.Kind != ResponseSelectOptions {
+		t.Fatalf("Response = %+v, want select options for ambiguous write target", outcome.Response)
+	}
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 before user chooses candidate", groupSub.subscribeCalls)
+	}
+	if outcome.WorkflowAfter == nil || outcome.WorkflowAfter.State != WorkflowCollectDepartments {
+		t.Fatalf("WorkflowAfter = %+v, want workflow still collecting departments", outcome.WorkflowAfter)
+	}
+	candidates := outcome.WorkflowAfter.Candidates["dept_ids"]
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %+v, want two tenant-bound choices", candidates)
+	}
+	for _, candidate := range candidates {
+		if candidate.TenantID != 42 {
+			t.Fatalf("candidate = %+v, want tenant 42 only", candidate)
+		}
+	}
+	if outcome.CandidateCount != 2 {
+		t.Fatalf("CandidateCount = %d, want 2", outcome.CandidateCount)
+	}
+}
+
+func TestProtocolLivePipelineDepartmentOrdinalUsesCurrentWorkflowCandidates(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.9,
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+		Dept: executorFakeDeptPort{depts: []tools.DeptItem{
+			{TenantID: 42, DeptID: 999, Name: "当前库里的第二项"},
+		}},
+	})
+	workflow := &WorkflowSnapshot{
+		ID:           "wf-sub",
+		Type:         WorkflowSubscriptionStart,
+		State:        WorkflowCollectDepartments,
+		MissingSlots: []string{"dept_names"},
+		Trusted: trustedEntities{
+			Scope: "department",
+		},
+		Candidates: map[string][]Candidate{
+			"dept_ids": {
+				{ID: "101", Label: "信工24级", Value: int64(101), TenantID: 42},
+				{ID: "125", Label: "信工25级", Value: int64(125), TenantID: 42},
+			},
+		},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "第 2 个",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if outcome.Response.Kind != ResponseResult {
+		t.Fatalf("Response = %+v, want result", outcome.Response)
+	}
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 125 {
+		t.Fatalf("lastDeptIDs = %v, want [125] from workflow candidates", groupSub.lastDeptIDs)
+	}
+}
+
+func TestProtocolLivePipelineDepartmentOrdinalRejectsCrossTenantWorkflowCandidate(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.9,
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+	})
+	workflow := &WorkflowSnapshot{
+		ID:             "wf-sub",
+		TenantID:       42,
+		ActorUserID:    7,
+		ConversationID: "conv-1",
+		Type:           WorkflowSubscriptionStart,
+		State:          WorkflowCollectDepartments,
+		MissingSlots:   []string{"dept_names"},
+		Trusted: trustedEntities{
+			Scope: "department",
+		},
+		Candidates: map[string][]Candidate{
+			"dept_ids": {
+				{ID: "125", Label: "其他租户部门", Value: int64(125), TenantID: 99},
+			},
+		},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "第 1 个",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if outcome.Response.Kind == ResponseResult {
+		t.Fatalf("Response = %+v, want no execution for cross-tenant candidate", outcome.Response)
+	}
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 for cross-tenant candidate", groupSub.subscribeCalls)
 	}
 }
 
@@ -585,4 +1019,42 @@ type pipelineFakeSchedulePeriodPort struct {
 
 func (p pipelineFakeSchedulePeriodPort) GetScheduleInfo(context.Context) ([]tools.PeriodInfo, string, error) {
 	return append([]tools.PeriodInfo(nil), p.periods...), "test", nil
+}
+
+type pipelineSearchUserPort struct {
+	users       []tools.UserInfo
+	searchCalls int
+}
+
+func (p *pipelineSearchUserPort) FindByDingUserID(context.Context, string) (*tools.UserInfo, error) {
+	return nil, nil
+}
+
+func (p *pipelineSearchUserPort) SearchByName(context.Context, string) ([]tools.UserInfo, error) {
+	p.searchCalls++
+	return append([]tools.UserInfo(nil), p.users...), nil
+}
+
+type pipelineDenyResourcePolicy struct {
+	reason string
+}
+
+func (p pipelineDenyResourcePolicy) Validate(context.Context, ResourcePolicyGateInput) ResourcePolicyGateResult {
+	return ResourcePolicyGateResult{
+		Allow:         false,
+		BlockedReason: p.reason,
+		ResponseKind:  ResponseRefuse,
+	}
+}
+
+type pipelineAllowWriteGuard struct {
+	key string
+}
+
+func (p pipelineAllowWriteGuard) Check(WriteGuardInput) WriteGuardResult {
+	return WriteGuardResult{
+		Allow:          true,
+		ResponseKind:   ResponseResult,
+		IdempotencyKey: p.key,
+	}
 }

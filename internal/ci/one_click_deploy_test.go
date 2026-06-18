@@ -18,8 +18,22 @@ func readScript(t *testing.T, name string) string {
 	return string(content)
 }
 
+func readOptionalLocalScript(t *testing.T, name string) string {
+	t.Helper()
+
+	path := filepath.Join("..", "..", name)
+	content, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		t.Skipf("%s is a local-only deployment helper and is not tracked in CI", name)
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return string(content)
+}
+
 func TestOneClickDeployUsesSourceBundleFlow(t *testing.T) {
-	script := readScript(t, "one-click-deploy.sh")
+	script := readOptionalLocalScript(t, "one-click-deploy.sh")
 
 	requiredFragments := []string{
 		"./pack-for-deploy.sh",

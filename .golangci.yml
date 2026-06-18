@@ -6,15 +6,12 @@ run:
   issues-exit-code: 1
   # 包含测试文件
   tests: true
-  # 跳过目录
-  skip-dirs:
-    - vendor
-    - .git
 
 # 输出设置
 output:
   # 输出格式：colored-line-number, line-number, json, tab, checkstyle, code-climate
-  format: colored-line-number
+  formats:
+    - format: colored-line-number
   # 打印有问题的行
   print-issued-lines: true
   # 打印 linter 名称
@@ -84,6 +81,11 @@ linters-settings:
 
 # 问题过滤（排除误报）
 issues:
+  # 跳过目录
+  exclude-dirs:
+    - vendor
+    - .git
+
   # 不要在以下情况报错
   exclude-rules:
     # 测试文件中，忽略一些严格检查
@@ -93,6 +95,15 @@ issues:
         - funlen
         - gocyclo
         - errcheck
+    # Agent protocol code intentionally repeats machine-readable operation,
+    # slot, and blocked-reason literals near the branches that emit or check
+    # them. Keep correctness linters on, but do not force these into constants.
+    - path: ^internal/agent/
+      linters:
+        - goconst
+    - path: ^internal/adminui/tables/agent_call_log\.go
+      linters:
+        - goconst
     # 允许在 main 函数中使用 fmt.Println 等（生产环境通常建议用 log 库）
     - path: main\.go
       text: "SA1019" # staticcheck 的某个特定规则 ID

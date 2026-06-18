@@ -36,6 +36,177 @@ func TestPolicyGateBlocksUnknownIntent(t *testing.T) {
 	}
 }
 
+func TestCatalogValidatorRejectsOperationOutsideCatalog(t *testing.T) {
+	t.Parallel()
+
+	result := newCatalogValidator().Validate(IntentDraft{
+		Act:        ActWriteRequest,
+		Domain:     DomainManualSign,
+		Operation:  "manual_sign.create",
+		Confidence: 0.96,
+	}, nil)
+
+	if result.AllowExecution {
+		t.Fatalf("AllowExecution = true, want false")
+	}
+	if result.ValidationCode != "operation_not_allowed" {
+		t.Fatalf("ValidationCode = %q, want operation_not_allowed", result.ValidationCode)
+	}
+	if result.ResponseKind != ResponseRefuse {
+		t.Fatalf("ResponseKind = %q, want %q", result.ResponseKind, ResponseRefuse)
+	}
+}
+
+func TestPrePolicyGateEnforcesConversationScopeBeforeResolution(t *testing.T) {
+	t.Parallel()
+
+	result := newPrePolicyGate().Validate(PrePolicyGateInput{
+		Draft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.96,
+		},
+		ConversationType: "1",
+		UserRole:         1,
+		HasUserContext:   true,
+	})
+
+	if result.AllowExecution {
+		t.Fatalf("AllowExecution = true, want false")
+	}
+	if result.ValidationCode != "conversation_scope_denied" {
+		t.Fatalf("ValidationCode = %q, want conversation_scope_denied", result.ValidationCode)
+	}
+	if result.ResponseKind != ResponseRefuse {
+		t.Fatalf("ResponseKind = %q, want %q", result.ResponseKind, ResponseRefuse)
+	}
+}
+
+func TestPrePolicyGateEnforcesMinRoleBeforeResolution(t *testing.T) {
+	t.Parallel()
+
+	result := newPrePolicyGate().Validate(PrePolicyGateInput{
+		Draft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.cancel",
+			Confidence: 0.96,
+		},
+		ConversationType: "2",
+		UserRole:         0,
+		HasUserContext:   true,
+	})
+
+	if result.AllowExecution {
+		t.Fatalf("AllowExecution = true, want false")
+	}
+	if result.ValidationCode != "role_denied" {
+		t.Fatalf("ValidationCode = %q, want role_denied", result.ValidationCode)
+	}
+	if result.ResponseKind != ResponseRefuse {
+		t.Fatalf("ResponseKind = %q, want %q", result.ResponseKind, ResponseRefuse)
+	}
+}
+
+func TestPrePolicyGateAllowsGroupAdminSubscriptionWrite(t *testing.T) {
+	t.Parallel()
+
+	result := newPrePolicyGate().Validate(PrePolicyGateInput{
+		Draft: ProtocolDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.cancel",
+			Confidence: 0.96,
+		},
+		ConversationType: "2",
+		UserRole:         1,
+		HasUserContext:   true,
+	})
+
+	if !result.AllowExecution {
+		t.Fatalf("AllowExecution = false, want true: %+v", result)
+	}
+	if result.ValidationCode != "allowed_write_request" {
+		t.Fatalf("ValidationCode = %q, want allowed_write_request", result.ValidationCode)
+	}
+}
+
+func TestCatalogValidatorUsesManifestRendererKind(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		draft    IntentDraft
+		workflow *protocolWorkflowContext
+		wantKind ResponseKind
+	}{
+		{
+			name: "read result",
+			draft: IntentDraft{
+				Act:       ActReadQuery,
+				Domain:    DomainAttendance,
+				Operation: "attendance.query_status",
+			},
+			wantKind: ResponseResult,
+		},
+		{
+			name: "read select options",
+			draft: IntentDraft{
+				Act:       ActReadQuery,
+				Domain:    DomainSubscription,
+				Operation: "subscription.list_departments",
+			},
+			wantKind: ResponseSelectOptions,
+		},
+		{
+			name: "workflow continue select options",
+			draft: IntentDraft{
+				Act:       ActWorkflowContinue,
+				Domain:    DomainSubscription,
+				Operation: "subscription.list_departments",
+			},
+			workflow: &protocolWorkflowContext{Type: "subscription.start", MissingFields: []string{"scope"}},
+			wantKind: ResponseSelectOptions,
+		},
+		{
+			name: "capability answer",
+			draft: IntentDraft{
+				Act:       ActCapabilityQuestion,
+				Domain:    DomainManualSign,
+				Operation: "manual_sign.describe_capability",
+			},
+			wantKind: ResponseAnswer,
+		},
+		{
+			name: "write result",
+			draft: IntentDraft{
+				Act:        ActWriteRequest,
+				Domain:     DomainSubscription,
+				Operation:  "subscription.start",
+				Confidence: 0.96,
+			},
+			wantKind: ResponseResult,
+		},
+	}
+
+	validator := newCatalogValidator()
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := validator.Validate(tt.draft, tt.workflow)
+			if !result.AllowExecution && result.ResponseKind != ResponseAnswer {
+				t.Fatalf("Validate() = %+v, want allowed execution or answer", result)
+			}
+			if result.ResponseKind != tt.wantKind {
+				t.Fatalf("ResponseKind = %q, want manifest renderer kind %q", result.ResponseKind, tt.wantKind)
+			}
+		})
+	}
+}
+
 func TestPolicyGateAllowsReadQueryWithoutWorkflowHijack(t *testing.T) {
 	t.Parallel()
 

@@ -26,6 +26,8 @@ func NewGroupAttendanceSubscriptionRepository(db *gorm.DB) GroupAttendanceSubscr
 	return &groupAttendanceSubscriptionRepository{db: db}
 }
 
+// Upsert is idempotent for subscription.start because the model declares a
+// unique tenant_id + conversation_id key and this write uses ON CONFLICT.
 func (r *groupAttendanceSubscriptionRepository) Upsert(ctx context.Context, sub *model.GroupAttendanceSubscription) error {
 	return r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
@@ -34,6 +36,8 @@ func (r *groupAttendanceSubscriptionRepository) Upsert(ctx context.Context, sub 
 		}).Create(sub).Error
 }
 
+// SoftDelete is idempotent for subscription.cancel; deleting an already
+// deleted or missing subscription is a no-op at the repository boundary.
 func (r *groupAttendanceSubscriptionRepository) SoftDelete(ctx context.Context, tenantID uint, conversationID string) error {
 	return r.db.WithContext(ctx).
 		Where("tenant_id = ? AND conversation_id = ?", tenantID, conversationID).

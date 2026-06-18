@@ -16,7 +16,7 @@ type capability struct {
 	FollowUpHint      string
 }
 
-// listCapabilities returns capabilities.
+// listCapabilities returns legacy-only tool capabilities for non-protocol fallback paths.
 func listCapabilities() []capability {
 	return []capability{
 		{
@@ -107,7 +107,6 @@ func buildHelpReply(uctx *tools.UserContext) string {
 		UserRole:         role,
 		ConversationType: convType,
 	})
-	currentCaps := filterCapabilities(listCapabilities(), role, convType)
 
 	var b strings.Builder
 	b.WriteString("我可以帮助处理这些系统能力：\n")
@@ -115,6 +114,7 @@ func buildHelpReply(uctx *tools.UserContext) string {
 		b.WriteString(fmt.Sprintf("- %s：%s\n", entry.Title, entry.Description))
 	}
 	if len(protocolCaps) == 0 {
+		currentCaps := filterCapabilities(listCapabilities(), role, convType)
 		for _, cap := range currentCaps {
 			b.WriteString(fmt.Sprintf("- %s：%s\n", cap.Title, cap.Description))
 		}
@@ -141,5 +141,6 @@ func buildHelpReply(uctx *tools.UserContext) string {
 }
 
 func directlyUsableCapability(entry CapabilityEntry) bool {
-	return entry.OperationScope != "manual_sign.describe_capability"
+	manifest, ok := lookupOperation(entry.OperationScope)
+	return ok && manifest.Capability != nil && manifest.Capability.DirectlyUsable
 }

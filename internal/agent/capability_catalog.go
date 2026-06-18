@@ -1,5 +1,7 @@
 package agent
 
+// OperationCatalog-derived capability view; this is not an independent capability source.
+
 type capabilityContext struct {
 	UserRole         int
 	ConversationType string
@@ -15,43 +17,22 @@ type CapabilityEntry struct {
 }
 
 func capabilityCatalogEntries() []CapabilityEntry {
-	return []CapabilityEntry{
-		{
-			OperationScope:    "system.describe_capability",
-			Title:             "功能说明",
-			Description:       "说明我当前可以处理的考勤、订阅、规则和课表能力。",
-			ConversationScope: "both",
-			AnswerOnly:        true,
-		},
-		{
-			OperationScope:    "attendance.describe_capability",
-			Title:             "考勤查询",
-			Description:       "查询指定日期和节次的考勤状态。",
-			ConversationScope: "both",
-			AnswerOnly:        true,
-		},
-		{
-			OperationScope:    "schedule.describe_capability",
-			Title:             "课表查询",
-			Description:       "查询自己的课表，也可以查询指定姓名用户的课表。",
-			ConversationScope: "both",
-			AnswerOnly:        true,
-		},
-		{
-			OperationScope:    "subscription.describe_capability",
-			Title:             "群考勤订阅",
-			Description:       "在群聊里可以查询当前群考勤推送订阅状态；管理员还可以开启、取消或按部门管理订阅。",
-			ConversationScope: "group",
-			AnswerOnly:        true,
-		},
-		{
-			OperationScope:    "manual_sign.describe_capability",
-			Title:             "管理员补签",
-			Description:       "说明代签/补签能力和所需信息；当前聊天路径不直接执行补签。",
-			ConversationScope: "both",
-			AnswerOnly:        true,
-		},
+	manifests := operationManifests()
+	entries := make([]CapabilityEntry, 0, len(manifests))
+	for _, manifest := range manifests {
+		if manifest.Capability == nil {
+			continue
+		}
+		entries = append(entries, CapabilityEntry{
+			OperationScope:    manifest.Name,
+			Title:             manifest.Capability.Title,
+			Description:       manifest.Capability.Description,
+			MinRole:           manifest.MinRole,
+			ConversationScope: string(manifest.Scope),
+			AnswerOnly:        manifest.Capability.AnswerOnly,
+		})
 	}
+	return entries
 }
 
 func lookupCapability(operation string) (CapabilityEntry, bool) {

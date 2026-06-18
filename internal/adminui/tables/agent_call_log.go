@@ -129,7 +129,52 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
 	info.AddField("阻断原因", "protocol_blocked_reason", db.Varchar).
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
-	info.AddField("已解析槽位", "protocol_resolved_slots", db.Text)
+	info.AddField("失败层", "failure_layer", db.Varchar).
+		FieldFilterable(types.FilterType{FormType: form.SelectSingle}).
+		FieldFilterOptions(types.FieldOptions{
+			{Text: "入口失败", Value: "ingress_failed"},
+			{Text: "意图失败", Value: "intent_failed"},
+			{Text: "目录失败", Value: "catalog_failed"},
+			{Text: "工作流失败", Value: "workflow_failed"},
+			{Text: "实体歧义", Value: "entity_ambiguous"},
+			{Text: "实体不存在", Value: "entity_not_found"},
+			{Text: "前置策略拒绝", Value: "pre_policy_denied"},
+			{Text: "资源策略拒绝", Value: "resource_policy_denied"},
+			{Text: "写保护阻断", Value: "write_guard_blocked"},
+			{Text: "执行失败", Value: "executor_failed"},
+			{Text: "渲染失败", Value: "renderer_failed"},
+			{Text: "持久化失败", Value: "persistence_failed"},
+		})
+	info.AddField("V2阻断原因", "blocked_reason", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("工作流决策", "workflow_decision", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("Legacy触发", "legacy_called", db.Tinyint).
+		FieldDisplay(func(m types.FieldModel) interface{} {
+			if m.Value == "1" || m.Value == "true" {
+				return "是"
+			}
+			return "否"
+		}).
+		FieldFilterable(types.FilterType{FormType: form.SelectSingle}).
+		FieldFilterOptions(types.FieldOptions{
+			{Text: "否", Value: "0"},
+			{Text: "是", Value: "1"},
+		})
+	info.AddField("Replay Case", "replay_case_id", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("已解析槽位", "protocol_resolved_slots", db.Text).
+		FieldDisplay(func(m types.FieldModel) interface{} {
+			return truncateAgentCallLogAdminText(m.Value, 80)
+		})
+	info.AddField("V2槽位JSON", "resolved_slots_json", db.Text).
+		FieldDisplay(func(m types.FieldModel) interface{} {
+			return truncateAgentCallLogAdminText(m.Value, 80)
+		})
+	info.AddField("意图草稿", "intent_draft_json", db.Text).
+		FieldDisplay(func(m types.FieldModel) interface{} {
+			return truncateAgentCallLogAdminText(m.Value, 80)
+		})
 	info.AddField("协议候选数", "protocol_candidate_count", db.Int).FieldSortable()
 	info.AddField("前置 workflow", "workflow_id_before", db.Varchar).
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
@@ -144,11 +189,7 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 	info.AddField("允许执行", "execution_allowed", db.Tinyint)
 	info.AddField("提问", "question", db.Text).
 		FieldDisplay(func(m types.FieldModel) interface{} {
-			runes := []rune(m.Value)
-			if len(runes) > 40 {
-				return string(runes[:40]) + "..."
-			}
-			return m.Value
+			return truncateAgentCallLogAdminText(m.Value, 40)
 		}).
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
 	info.AddField("调用工具", "tools_called", db.Varchar).
@@ -160,30 +201,18 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 	info.AddField("LLM耗时(ms)", "llm_duration_ms", db.Int).FieldSortable()
 	info.AddField("来源引用", "source_refs", db.Text).
 		FieldDisplay(func(m types.FieldModel) interface{} {
-			runes := []rune(m.Value)
-			if len(runes) > 50 {
-				return string(runes[:50]) + "..."
-			}
-			return m.Value
+			return truncateAgentCallLogAdminText(m.Value, 50)
 		})
 	info.AddField("Top来源", "retrieval_top_refs", db.Text).
 		FieldDisplay(func(m types.FieldModel) interface{} {
-			runes := []rune(m.Value)
-			if len(runes) > 50 {
-				return string(runes[:50]) + "..."
-			}
-			return m.Value
+			return truncateAgentCallLogAdminText(m.Value, 50)
 		})
 	info.AddField("检索分数", "retrieval_scores", db.Text)
 	info.AddField("过滤原因", "retrieval_filtered_reason", db.Varchar)
 	info.AddField("文档类型", "knowledge_doc_types", db.Text)
 	info.AddField("回复", "reply", db.Text).
 		FieldDisplay(func(m types.FieldModel) interface{} {
-			runes := []rune(m.Value)
-			if len(runes) > 60 {
-				return string(runes[:60]) + "..."
-			}
-			return m.Value
+			return truncateAgentCallLogAdminText(m.Value, 60)
 		})
 	info.AddField("轮数", "rounds", db.Int).FieldSortable()
 	info.AddField("耗时(ms)", "duration_ms", db.Int).FieldSortable()
@@ -208,11 +237,7 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 		})
 	info.AddField("失败原因", "error_msg", db.Varchar).
 		FieldDisplay(func(m types.FieldModel) interface{} {
-			runes := []rune(m.Value)
-			if len(runes) > 50 {
-				return string(runes[:50]) + "..."
-			}
-			return m.Value
+			return truncateAgentCallLogAdminText(m.Value, 50)
 		})
 	info.AddField("时间", "created_at", db.Timestamp).FieldSortable().
 		FieldFilterable(types.FilterType{FormType: form.DatetimeRange})
@@ -220,4 +245,15 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 	info.SetTable("agent_call_logs").SetTitle("AI 对话记录").SetDescription("Agent 每次对话的调用情况")
 
 	return
+}
+
+func truncateAgentCallLogAdminText(value string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes]) + "..."
 }

@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"schedule_server/internal/agent/tools"
 )
 
 func TestResponseRendererClarifyForUnknownIntent(t *testing.T) {
@@ -74,6 +76,27 @@ func TestRenderProtocolResponseSelectOptionsListsCandidates(t *testing.T) {
 	})
 	if !strings.Contains(reply, "张三") || !strings.Contains(reply, "张四") {
 		t.Fatalf("reply = %q, want candidate names", reply)
+	}
+	if !strings.Contains(reply, "1. 张三") || !strings.Contains(reply, "2. 张四") {
+		t.Fatalf("reply = %q, want stable candidate numbering", reply)
+	}
+}
+
+func TestRenderProtocolResponseResultUsesStructuredAttendancePayload(t *testing.T) {
+	t.Parallel()
+
+	reply := renderProtocolResponse(ResponseModel{
+		Kind: ResponseResult,
+		Payload: AttendanceStatusPayload{Result: &tools.AttendanceResult{
+			Date:         "2026-06-06",
+			Section:      2,
+			ShouldAttend: 3,
+			OnTimeCount:  2,
+			LateCount:    1,
+		}},
+	})
+	if !strings.Contains(reply, "2026-06-06第2节考勤状态") {
+		t.Fatalf("reply = %q, want attendance payload rendered by renderer", reply)
 	}
 }
 
@@ -146,13 +169,25 @@ func TestResponseRendererSanitizesAllFreeTextChannels(t *testing.T) {
 	}
 }
 
-func TestResponseModelHasNoConfirmOrInternalErrorFields(t *testing.T) {
+func TestRenderProtocolResponseConfirmUsesPlainText(t *testing.T) {
+	t.Parallel()
+
+	reply := renderProtocolResponse(ResponseModel{
+		Kind:    ResponseConfirm,
+		Message: "请确认是否执行该写操作。",
+	})
+	if !strings.Contains(reply, "请确认") {
+		t.Fatalf("reply = %q, want confirmation prompt", reply)
+	}
+	if strings.Contains(reply, "**") || strings.Contains(reply, "|") {
+		t.Fatalf("reply = %q, should stay plain text", reply)
+	}
+}
+
+func TestResponseModelHasNoInternalErrorField(t *testing.T) {
 	t.Parallel()
 
 	modelType := reflect.TypeOf(ResponseModel{})
-	if _, ok := modelType.FieldByName("ConfirmText"); ok {
-		t.Fatalf("ResponseModel should not expose ConfirmText")
-	}
 	if _, ok := modelType.FieldByName("InternalError"); ok {
 		t.Fatalf("ResponseModel should not expose InternalError")
 	}

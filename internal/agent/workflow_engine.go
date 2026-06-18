@@ -8,12 +8,13 @@ import (
 // startWorkflow starts a workflow snapshot from a protocol draft.
 func startWorkflow(draft ProtocolDraft) (WorkflowSnapshot, bool) {
 	switch draft.Operation {
-	case "subscription.start":
+	case workflowPrimaryOperationName(WorkflowSubscriptionStart):
 		return WorkflowSnapshot{
-			ID:           fmt.Sprintf("wf-%d", time.Now().UnixNano()),
-			Type:         WorkflowSubscriptionStart,
-			State:        WorkflowCollectScope,
-			MissingSlots: []string{"scope"},
+			ID:            fmt.Sprintf("wf-%d", time.Now().UnixNano()),
+			Type:          WorkflowSubscriptionStart,
+			State:         WorkflowCollectScope,
+			MissingFields: []string{"scope"},
+			MissingSlots:  []string{"scope"},
 		}, true
 	default:
 		return WorkflowSnapshot{}, false
@@ -24,13 +25,13 @@ func startWorkflow(draft ProtocolDraft) (WorkflowSnapshot, bool) {
 func continueWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft, trusted trustedEntities) WorkflowResult {
 	if draft.Act == ActWorkflowCancel {
 		workflow.State = WorkflowCancelled
-		workflow.MissingSlots = nil
+		setWorkflowMissingFields(&workflow, nil)
 		return WorkflowResult{Decision: WorkflowCanceled, Workflow: &workflow}
 	}
 
 	if isExplicitNewRequest(draft.Act) {
 		workflow.State = WorkflowInterruptedState
-		workflow.MissingSlots = nil
+		setWorkflowMissingFields(&workflow, nil)
 		return WorkflowResult{Decision: WorkflowInterrupted, Workflow: &workflow}
 	}
 
@@ -48,7 +49,7 @@ func continueWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft, trusted tr
 // completeWorkflow marks an executed workflow as completed.
 func completeWorkflow(workflow WorkflowSnapshot) WorkflowResult {
 	workflow.State = WorkflowCompleted
-	workflow.MissingSlots = nil
+	setWorkflowMissingFields(&workflow, nil)
 	return WorkflowResult{Decision: WorkflowCompletedDecision, Workflow: &workflow}
 }
 
@@ -61,7 +62,7 @@ func interruptActiveWorkflow(sessions *sessionManager, sessionKey string, workfl
 	if result.Decision != WorkflowInterrupted {
 		next := cloneWorkflowSnapshot(workflow)
 		next.State = WorkflowInterruptedState
-		next.MissingSlots = nil
+		setWorkflowMissingFields(next, nil)
 		result = WorkflowResult{Decision: WorkflowInterrupted, Workflow: next}
 	}
 	if sessions != nil {
@@ -72,10 +73,10 @@ func interruptActiveWorkflow(sessions *sessionManager, sessionKey string, workfl
 
 // continueSubscriptionWorkflow continues subscription workflow.
 func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft, trusted trustedEntities) WorkflowResult {
-	if draft.Operation == "subscription.list_departments" && workflow.State == WorkflowCollectDepartments {
+	if draft.Operation == workflowAuxiliaryOperationName(WorkflowSubscriptionStart, ExecutorBindingSubscriptionListDepartments) && workflow.State == WorkflowCollectDepartments {
 		return WorkflowResult{Decision: WorkflowMetaResult, Workflow: &workflow}
 	}
-	if draft.Operation != "subscription.start" {
+	if draft.Operation != workflowPrimaryOperationName(WorkflowSubscriptionStart) {
 		return WorkflowResult{Decision: WorkflowRejectInvalidShape, Workflow: &workflow}
 	}
 
@@ -84,11 +85,13 @@ func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft
 		switch trusted.Scope {
 		case "all":
 			workflow.Trusted.Scope = trusted.Scope
+			mergeTrustedParams(&workflow.Trusted, trusted.TrustedParams)
 			workflow.State = WorkflowReady
-			workflow.MissingSlots = nil
+			setWorkflowMissingFields(&workflow, nil)
 			return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}
 		case "department":
 			workflow.Trusted.Scope = trusted.Scope
+			mergeTrustedParams(&workflow.Trusted, trusted.TrustedParams)
 			deptIDs := trusted.DeptIDs
 			if len(deptIDs) == 0 && trusted.DepartmentID != 0 {
 				deptIDs = []int64{trusted.DepartmentID}
@@ -97,11 +100,11 @@ func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft
 				workflow.Trusted.DepartmentID = deptIDs[0]
 				workflow.Trusted.DeptIDs = append([]int64(nil), deptIDs...)
 				workflow.State = WorkflowReady
-				workflow.MissingSlots = nil
+				setWorkflowMissingFields(&workflow, nil)
 				return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}
 			}
 			workflow.State = WorkflowCollectDepartments
-			workflow.MissingSlots = []string{"dept_names"}
+			setWorkflowMissingFields(&workflow, []string{"dept_names"})
 			return WorkflowResult{Decision: WorkflowContinueDecision, Workflow: &workflow}
 		default:
 			return WorkflowResult{Decision: WorkflowRejectInvalidShape, Workflow: &workflow}
@@ -116,8 +119,9 @@ func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft
 		}
 		workflow.Trusted.DepartmentID = deptIDs[0]
 		workflow.Trusted.DeptIDs = append([]int64(nil), deptIDs...)
+		mergeTrustedParams(&workflow.Trusted, trusted.TrustedParams)
 		workflow.State = WorkflowReady
-		workflow.MissingSlots = nil
+		setWorkflowMissingFields(&workflow, nil)
 		return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}
 	default:
 		return WorkflowResult{Decision: WorkflowRejectInvalidShape, Workflow: &workflow}
@@ -132,6 +136,7 @@ func continueManualSignWorkflow(workflow WorkflowSnapshot, trusted trustedEntiti
 	if trusted.UserName != "" {
 		workflow.Trusted.UserName = trusted.UserName
 	}
+	mergeTrustedParams(&workflow.Trusted, trusted.TrustedParams)
 	if trusted.Date != "" {
 		workflow.Trusted.Date = trusted.Date
 	}
@@ -139,7 +144,7 @@ func continueManualSignWorkflow(workflow WorkflowSnapshot, trusted trustedEntiti
 		workflow.Trusted.Section = trusted.Section
 	}
 
-	workflow.MissingSlots = workflowMissingSlots(workflow.Trusted)
+	setWorkflowMissingFields(&workflow, workflowMissingSlots(workflow.Trusted))
 	if len(workflow.MissingSlots) == 0 {
 		workflow.State = WorkflowReady
 		return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}
@@ -175,6 +180,18 @@ func nextManualSignState(slot string) WorkflowState {
 		return WorkflowCollectSection
 	default:
 		return WorkflowCollectUser
+	}
+}
+
+func mergeTrustedParams(dst *trustedEntities, params map[string]TrustedParam) {
+	if dst == nil || len(params) == 0 {
+		return
+	}
+	if dst.TrustedParams == nil {
+		dst.TrustedParams = make(map[string]TrustedParam, len(params))
+	}
+	for field, param := range params {
+		dst.TrustedParams[field] = param
 	}
 }
 

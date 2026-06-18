@@ -1,6 +1,11 @@
 package agent
 
-import "strings"
+import (
+	"context"
+	"strings"
+
+	"schedule_server/internal/agent/tools"
+)
 
 const lowConfidenceWriteThreshold = 0.75
 
@@ -12,14 +17,56 @@ type ProtocolValidationResult struct {
 	ResponseKind            ResponseKind
 }
 
-// validateProtocol validates whether a protocol draft is allowed to proceed.
+type CatalogValidator interface {
+	Validate(draft ProtocolDraft, activeWorkflow *protocolWorkflowContext) ProtocolValidationResult
+}
+
+type PrePolicyGate interface {
+	Validate(input PrePolicyGateInput) ProtocolValidationResult
+}
+
+type PrePolicyGateInput struct {
+	Draft            ProtocolDraft
+	ActiveWorkflow   *protocolWorkflowContext
+	ConversationType string
+	UserRole         int
+	HasUserContext   bool
+}
+
+type catalogValidator struct{}
+
+type prePolicyGate struct{}
+
+func newCatalogValidator() CatalogValidator {
+	return catalogValidator{}
+}
+
+func newPrePolicyGate() PrePolicyGate {
+	return prePolicyGate{}
+}
+
 func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowContext) ProtocolValidationResult {
+	return newCatalogValidator().Validate(draft, activeWorkflow)
+}
+
+// Validate checks the untrusted intent draft against OperationCatalog protocol contracts.
+func (catalogValidator) Validate(draft ProtocolDraft, activeWorkflow *protocolWorkflowContext) ProtocolValidationResult {
+	return newPrePolicyGate().Validate(PrePolicyGateInput{
+		Draft:          draft,
+		ActiveWorkflow: activeWorkflow,
+	})
+}
+
+// Validate checks the untrusted intent draft against pre-resolution protocol policy.
+func (prePolicyGate) Validate(input PrePolicyGateInput) ProtocolValidationResult { //nolint:gocyclo,funlen // The policy decision matrix is centralized for auditability.
+	draft := input.Draft
+	activeWorkflow := input.ActiveWorkflow
 	if draft.Act == ActUnknown {
 		return ProtocolValidationResult{ValidationCode: "unknown_intent", ResponseKind: ResponseClarify}
 	}
 
 	if draft.Act == ActWorkflowContinue {
-		return validateWorkflowContinue(draft, activeWorkflow)
+		return validateWorkflowContinue(input)
 	}
 
 	if draft.Act == ActWorkflowCancel {
@@ -45,6 +92,7 @@ func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowConte
 			ResponseKind:            ResponseRefuse,
 		}
 	}
+	responseKind := catalogResponseKind(metadata, ResponseResult)
 
 	if draft.Domain != metadata.Domain {
 		return ProtocolValidationResult{
@@ -79,7 +127,10 @@ func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowConte
 
 	switch draft.Act {
 	case ActCapabilityQuestion:
-		if !strings.HasSuffix(draft.Operation, ".describe_capability") {
+		if denied, result := enforcePreUserPolicy(input, metadata, interrupt); denied {
+			return result
+		}
+		if metadata.Capability == nil {
 			return ProtocolValidationResult{
 				ValidationCode: "act_operation_mismatch",
 				ResponseKind:   ResponseRefuse,
@@ -88,22 +139,22 @@ func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowConte
 		return ProtocolValidationResult{
 			ValidationCode:          "capability_non_executable",
 			InterruptActiveWorkflow: interrupt,
-			ResponseKind:            ResponseAnswer,
+			ResponseKind:            responseKind,
 		}
 	case ActRuleQuestion:
-		if !strings.HasSuffix(draft.Operation, ".rule_explain") {
-			return ProtocolValidationResult{
-				ValidationCode: "act_operation_mismatch",
-				ResponseKind:   ResponseRefuse,
-			}
+		if denied, result := enforcePreUserPolicy(input, metadata, interrupt); denied {
+			return result
 		}
 		return ProtocolValidationResult{
 			ValidationCode:          "rule_non_executable",
 			InterruptActiveWorkflow: interrupt,
-			ResponseKind:            ResponseAnswer,
+			ResponseKind:            responseKind,
 		}
 	case ActHelp:
-		if draft.Operation != "system.describe_capability" {
+		if denied, result := enforcePreUserPolicy(input, metadata, interrupt); denied {
+			return result
+		}
+		if metadata.Capability == nil || metadata.Domain != DomainSystem {
 			return ProtocolValidationResult{
 				ValidationCode: "act_operation_mismatch",
 				ResponseKind:   ResponseRefuse,
@@ -112,14 +163,17 @@ func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowConte
 		return ProtocolValidationResult{
 			ValidationCode:          "help_non_executable",
 			InterruptActiveWorkflow: interrupt,
-			ResponseKind:            ResponseAnswer,
+			ResponseKind:            responseKind,
 		}
 	case ActReadQuery:
+		if denied, result := enforcePreUserPolicy(input, metadata, interrupt); denied {
+			return result
+		}
 		return ProtocolValidationResult{
 			AllowExecution:          true,
 			ValidationCode:          "allowed_read_query",
 			InterruptActiveWorkflow: interrupt,
-			ResponseKind:            ResponseResult,
+			ResponseKind:            responseKind,
 		}
 	case ActWriteRequest:
 		if draft.Confidence < lowConfidenceWriteThreshold {
@@ -128,11 +182,14 @@ func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowConte
 				ResponseKind:   ResponseClarify,
 			}
 		}
+		if denied, result := enforcePreUserPolicy(input, metadata, interrupt); denied {
+			return result
+		}
 		return ProtocolValidationResult{
 			AllowExecution:          true,
 			ValidationCode:          "allowed_write_request",
 			InterruptActiveWorkflow: interrupt,
-			ResponseKind:            ResponseResult,
+			ResponseKind:            responseKind,
 		}
 	default:
 		return ProtocolValidationResult{
@@ -143,7 +200,9 @@ func validateProtocol(draft ProtocolDraft, activeWorkflow *protocolWorkflowConte
 }
 
 // validateWorkflowContinue validates active workflow continuation without treating it as a generic write.
-func validateWorkflowContinue(draft ProtocolDraft, activeWorkflow *protocolWorkflowContext) ProtocolValidationResult {
+func validateWorkflowContinue(input PrePolicyGateInput) ProtocolValidationResult {
+	draft := input.Draft
+	activeWorkflow := input.ActiveWorkflow
 	if activeWorkflow == nil {
 		return ProtocolValidationResult{ValidationCode: "workflow_missing", ResponseKind: ResponseClarify}
 	}
@@ -177,12 +236,23 @@ func validateWorkflowContinue(draft ProtocolDraft, activeWorkflow *protocolWorkf
 			ResponseKind:      ResponseRefuse,
 		}
 	}
+	if denied, result := enforcePreUserPolicy(input, metadata, false); denied {
+		result.UseActiveWorkflow = true
+		return result
+	}
 	return ProtocolValidationResult{
 		AllowExecution:    true,
 		ValidationCode:    "workflow_continue_allowed",
 		UseActiveWorkflow: true,
-		ResponseKind:      ResponseResult,
+		ResponseKind:      catalogResponseKind(metadata, ResponseResult),
 	}
+}
+
+func catalogResponseKind(metadata OperationManifest, fallback ResponseKind) ResponseKind {
+	if metadata.Renderer.Kind != "" {
+		return metadata.Renderer.Kind
+	}
+	return fallback
 }
 
 // workflowContinueTargetsActiveWorkflow reports whether a continuation targets the active workflow.
@@ -228,4 +298,172 @@ func actAllowed(act UserAct, allowed []UserAct) bool {
 		}
 	}
 	return false
+}
+
+func enforcePreUserPolicy(input PrePolicyGateInput, metadata OperationManifest, interrupt bool) (bool, ProtocolValidationResult) {
+	if !input.HasUserContext {
+		return false, ProtocolValidationResult{}
+	}
+	if !conversationScopeAllowed(metadata.Scope, input.ConversationType) {
+		return true, ProtocolValidationResult{
+			ValidationCode:          "conversation_scope_denied",
+			InterruptActiveWorkflow: interrupt,
+			ResponseKind:            ResponseRefuse,
+		}
+	}
+	if input.UserRole < metadata.MinRole {
+		return true, ProtocolValidationResult{
+			ValidationCode:          "role_denied",
+			InterruptActiveWorkflow: interrupt,
+			ResponseKind:            ResponseRefuse,
+		}
+	}
+	return false, ProtocolValidationResult{}
+}
+
+func conversationScopeAllowed(scope ConversationScope, conversationType string) bool {
+	switch scope {
+	case ConversationScopeBoth, "":
+		return true
+	case ConversationScopeGroup:
+		return strings.TrimSpace(conversationType) == "2"
+	case ConversationScopeDM:
+		return strings.TrimSpace(conversationType) != "2"
+	default:
+		return false
+	}
+}
+
+type ResourcePolicyGate interface {
+	Validate(ctx context.Context, input ResourcePolicyGateInput) ResourcePolicyGateResult
+}
+
+type ResourcePolicyGateInput struct {
+	User    *tools.UserContext
+	Request OperationRequest
+	Dept    DeptPort
+}
+
+type ResourcePolicyGateResult struct {
+	Allow         bool
+	BlockedReason string
+	ResponseKind  ResponseKind
+}
+
+type resourcePolicyGate struct{}
+
+func newResourcePolicyGate() ResourcePolicyGate {
+	return resourcePolicyGate{}
+}
+
+func (resourcePolicyGate) Validate(ctx context.Context, input ResourcePolicyGateInput) ResourcePolicyGateResult {
+	manifest, ok := lookupOperation(input.Request.Operation)
+	if !ok {
+		return denyResourcePolicy("operation_not_allowed")
+	}
+	for _, policy := range manifest.Policies {
+		switch policy.Name {
+		case "group_conversation":
+			if input.User == nil || strings.TrimSpace(input.User.ConversationType) != "2" {
+				return denyResourcePolicy("group_chat_required")
+			}
+		case "subscription_scope":
+			if !subscriptionScopeValid(input.Request.Operation, input.Request.TrustedParams) {
+				return denyResourcePolicy("subscription_scope_invalid")
+			}
+			if denied := validateDepartmentScope(ctx, input); denied.BlockedReason != "" {
+				return denied
+			}
+		case "schedule_user_visibility":
+			if !scheduleUserVisible(input.User, input.Request.TrustedParams) {
+				return denyResourcePolicy("schedule_user_visibility_denied")
+			}
+		}
+	}
+	if subscriptionOperationRequiresCurrentConversation(input.Request.Operation) {
+		if !requestConversationMatchesUser(input.User, input.Request) {
+			return denyResourcePolicy("subscription_conversation_mismatch")
+		}
+	}
+	return ResourcePolicyGateResult{Allow: true, ResponseKind: ResponseResult}
+}
+
+func denyResourcePolicy(reason string) ResourcePolicyGateResult {
+	return ResourcePolicyGateResult{
+		Allow:         false,
+		BlockedReason: reason,
+		ResponseKind:  ResponseRefuse,
+	}
+}
+
+func subscriptionOperationRequiresCurrentConversation(operation string) bool {
+	switch operation {
+	case "subscription.start", "subscription.cancel", "subscription.query_status":
+		return true
+	default:
+		return false
+	}
+}
+
+func requestConversationMatchesUser(user *tools.UserContext, req OperationRequest) bool {
+	if user == nil {
+		return false
+	}
+	conversationID, ok := extractParamString(req.TrustedParams, "conversation_id")
+	if !ok {
+		conversationID = strings.TrimSpace(req.ConversationID)
+	}
+	return conversationID != "" && conversationID == strings.TrimSpace(user.ConversationID)
+}
+
+func scheduleUserVisible(user *tools.UserContext, params map[string]TrustedParam) bool {
+	if user == nil {
+		return false
+	}
+	targetUserID, ok := extractParamUint(params, "user_id")
+	if !ok {
+		return false
+	}
+	return targetUserID == user.UserID || user.UserRole >= 1
+}
+
+func validateDepartmentScope(ctx context.Context, input ResourcePolicyGateInput) ResourcePolicyGateResult {
+	scope, ok := extractParamString(input.Request.TrustedParams, "scope")
+	if !ok || scope != "department" || input.Dept == nil {
+		return ResourcePolicyGateResult{}
+	}
+	deptIDs, ok := extractParamInt64Slice(input.Request.TrustedParams, "dept_ids")
+	if !ok {
+		return denyResourcePolicy("department_scope_denied")
+	}
+	if candidateDeptParamAllowed(input.User, input.Request.TrustedParams["dept_ids"]) {
+		return ResourcePolicyGateResult{}
+	}
+	depts, err := input.Dept.ListDepts(ctx)
+	if err != nil {
+		return denyResourcePolicy("department_scope_unverified")
+	}
+	allowed := make(map[int64]struct{}, len(depts))
+	for _, dept := range depts {
+		if input.User != nil && input.User.TenantID != 0 && dept.TenantID != 0 && dept.TenantID != input.User.TenantID {
+			continue
+		}
+		allowed[dept.DeptID] = struct{}{}
+	}
+	for _, deptID := range deptIDs {
+		if _, ok := allowed[deptID]; !ok {
+			return denyResourcePolicy("department_scope_denied")
+		}
+	}
+	return ResourcePolicyGateResult{}
+}
+
+func candidateDeptParamAllowed(user *tools.UserContext, param TrustedParam) bool {
+	if param.Source.Kind != TrustedParamSourceCandidate {
+		return false
+	}
+	if user == nil || user.TenantID == 0 {
+		return param.TenantID != 0
+	}
+	return param.TenantID == user.TenantID
 }

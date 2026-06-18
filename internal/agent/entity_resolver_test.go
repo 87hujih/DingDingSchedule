@@ -42,6 +42,23 @@ func TestResolveDepartmentNormalizedUniqueMatch(t *testing.T) {
 	}
 }
 
+func TestResolveDepartmentIgnoresSelectionPrefix(t *testing.T) {
+	t.Parallel()
+
+	result := resolveDepartment(entityContext{
+		Raw: "就信工25级",
+		Departments: []agenttools.DeptItem{
+			{DeptID: 102, Name: "信工25级"},
+		},
+	})
+	if result.Status != ResolveResolved {
+		t.Fatalf("Status = %q, want %q", result.Status, ResolveResolved)
+	}
+	if result.Department == nil || result.Department.DeptID != 102 {
+		t.Fatalf("Department = %+v, want dept 102", result.Department)
+	}
+}
+
 func TestResolveDepartmentReturnsAmbiguousCandidates(t *testing.T) {
 	t.Parallel()
 
@@ -184,8 +201,100 @@ func TestResolveDateSlotReturnsMissingWhenRequiredWithoutDefault(t *testing.T) {
 	t.Parallel()
 
 	result := resolveDateSlot("", SlotDefaultNone, fixedResolverClock("2026-06-06T09:00:00+08:00"))
-	if result.Status != ResolveMissing {
-		t.Fatalf("Status = %q, want %q", result.Status, ResolveMissing)
+	if result.Status != ResolveNotFound {
+		t.Fatalf("Status = %q, want %q", result.Status, ResolveNotFound)
+	}
+}
+
+func TestResolveStatusUsesProtocolV2Set(t *testing.T) {
+	t.Parallel()
+
+	results := []ResolveResult{
+		resolveDateSlot("", SlotDefaultNone, fixedResolverClock("2026-06-06T09:00:00+08:00")),
+		resolveWeekSlot(context.Background(), "", SlotDefaultNone, nil),
+		resolveSectionSlot("", nil, fixedResolverClock("2026-06-06T09:00:00+08:00")),
+		resolveUserSlot("", nil),
+		resolveDepartmentSlot("", nil),
+	}
+	allowed := map[ResolveStatus]bool{
+		ResolveResolved:     true,
+		ResolveAmbiguous:    true,
+		ResolveNotFound:     true,
+		ResolveInvalidShape: true,
+	}
+	for _, result := range results {
+		if !allowed[result.Status] {
+			t.Fatalf("%s status = %q, want protocol v2 status", result.Field, result.Status)
+		}
+	}
+}
+
+func TestResolveSlotsReturnTrustedParamsWithSourceAndTenant(t *testing.T) {
+	t.Parallel()
+
+	resolveCtx := EntityResolveContext{TenantID: 42}
+	clock := fixedResolverClock("2026-06-06T09:00:00+08:00")
+
+	date := resolveDateParam(resolveCtx.RawSlot("date", "今天"), SlotDefaultToday, clock)
+	assertTrustedParam(t, date, "date", "2026-06-06", TrustedParamSourceRawSlot, "今天", "date_slot", 42)
+
+	week := resolveWeekParam(context.Background(), resolveCtx.Default("week"), SlotDefaultCurrentWeek, fakeResolverSemester{week: 10})
+	assertTrustedParam(t, week, "week", 10, TrustedParamSourceDefault, "", "week_slot", 42)
+
+	section := resolveSectionParam(resolveCtx.RawSlot("section", "第二节"), nil, clock)
+	assertTrustedParam(t, section, "section", 2, TrustedParamSourceRawSlot, "第二节", "section_slot", 42)
+
+	conversation := resolveConversationParam(resolveCtx.Runtime("conversation_id", "conv-1"))
+	assertTrustedParam(t, conversation, "conversation_id", "conv-1", TrustedParamSourceRuntime, "", "conversation_runtime", 42)
+}
+
+func TestResolveUserParamFiltersCrossTenantCandidates(t *testing.T) {
+	t.Parallel()
+
+	result := resolveUserParam(EntityResolveContext{TenantID: 42}.RawSlot("user_id", "张"), []agenttools.UserInfo{
+		{ID: 7, Name: "张三", TenantID: 42},
+		{ID: 6, Name: "张零", TenantID: 0},
+		{ID: 8, Name: "张四", TenantID: 99},
+	})
+	if result.Status != ResolveResolved {
+		t.Fatalf("Status = %q, want resolved after cross-tenant candidate filtered: %+v", result.Status, result)
+	}
+	assertTrustedParam(t, result, "user_id", uint(7), TrustedParamSourceRawSlot, "张", "user_resolver", 42)
+
+	crossTenantOnly := resolveUserParam(EntityResolveContext{TenantID: 42}.RawSlot("user_id", "张"), []agenttools.UserInfo{
+		{ID: 6, Name: "张零", TenantID: 0},
+		{ID: 8, Name: "张四", TenantID: 99},
+	})
+	if crossTenantOnly.Status != ResolveNotFound {
+		t.Fatalf("crossTenantOnly Status = %q, want not_found", crossTenantOnly.Status)
+	}
+	if len(crossTenantOnly.Candidates) != 0 {
+		t.Fatalf("crossTenantOnly candidates = %+v, want none", crossTenantOnly.Candidates)
+	}
+}
+
+func TestResolveDepartmentParamFiltersCrossTenantCandidates(t *testing.T) {
+	t.Parallel()
+
+	result := resolveDepartmentParam(EntityResolveContext{TenantID: 42}.RawSlot("dept_ids", "信工"), []agenttools.DeptItem{
+		{TenantID: 42, DeptID: 101, Name: "信工24级"},
+		{TenantID: 0, DeptID: 100, Name: "信工未绑定"},
+		{TenantID: 99, DeptID: 102, Name: "信工25级"},
+	})
+	if result.Status != ResolveResolved {
+		t.Fatalf("Status = %q, want resolved after cross-tenant candidate filtered: %+v", result.Status, result)
+	}
+	assertTrustedParam(t, result, "dept_ids", []int64{101}, TrustedParamSourceRawSlot, "信工", "department_resolver", 42)
+
+	crossTenantOnly := resolveDepartmentParam(EntityResolveContext{TenantID: 42}.RawSlot("dept_ids", "信工"), []agenttools.DeptItem{
+		{TenantID: 0, DeptID: 100, Name: "信工未绑定"},
+		{TenantID: 99, DeptID: 102, Name: "信工25级"},
+	})
+	if crossTenantOnly.Status != ResolveNotFound {
+		t.Fatalf("crossTenantOnly Status = %q, want not_found", crossTenantOnly.Status)
+	}
+	if len(crossTenantOnly.Candidates) != 0 {
+		t.Fatalf("crossTenantOnly candidates = %+v, want none", crossTenantOnly.Candidates)
 	}
 }
 
@@ -248,8 +357,8 @@ func TestResolveSectionSlotReturnsMissingOutsideCurrentPeriod(t *testing.T) {
 	result := resolveSectionSlot("本节", []agenttools.PeriodInfo{
 		{Name: "第一节", Start: "08:00", End: "08:45"},
 	}, fixedResolverClock("2026-06-06T09:10:00+08:00"))
-	if result.Status != ResolveMissing {
-		t.Fatalf("Status = %q, want %q", result.Status, ResolveMissing)
+	if result.Status != ResolveNotFound {
+		t.Fatalf("Status = %q, want %q", result.Status, ResolveNotFound)
 	}
 }
 
@@ -369,5 +478,42 @@ func fixedResolverClock(value string) func() time.Time {
 			panic(err)
 		}
 		return parsed
+	}
+}
+
+func assertTrustedParam(t *testing.T, result ResolveResult, field string, value any, source TrustedParamSourceKind, raw string, resolver string, tenantID uint) {
+	t.Helper()
+	if result.Status != ResolveResolved {
+		t.Fatalf("Status = %q, want resolved: %+v", result.Status, result)
+	}
+	if result.Param.Field != field {
+		t.Fatalf("Param.Field = %q, want %q", result.Param.Field, field)
+	}
+	if !trustedParamValueEqual(result.Param.Value, value) {
+		t.Fatalf("Param.Value = %#v, want %#v", result.Param.Value, value)
+	}
+	if result.Param.Source.Kind != source || result.Param.Source.Raw != raw || result.Param.Source.Resolver != resolver {
+		t.Fatalf("Param.Source = %+v, want kind=%q raw=%q resolver=%q", result.Param.Source, source, raw, resolver)
+	}
+	if result.Param.TenantID != tenantID {
+		t.Fatalf("Param.TenantID = %d, want %d", result.Param.TenantID, tenantID)
+	}
+}
+
+func trustedParamValueEqual(got any, want any) bool {
+	switch wantTyped := want.(type) {
+	case []int64:
+		gotTyped, ok := got.([]int64)
+		if !ok || len(gotTyped) != len(wantTyped) {
+			return false
+		}
+		for i := range wantTyped {
+			if gotTyped[i] != wantTyped[i] {
+				return false
+			}
+		}
+		return true
+	default:
+		return got == want
 	}
 }

@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -291,77 +293,113 @@ func TestBuildAgentUsesConfiguredProtocolMode(t *testing.T) {
 	}
 }
 
+func TestIntentCompilerTimeoutFromConfig(t *testing.T) {
+	t.Parallel()
+
+	if got := intentCompilerTimeoutFromConfig(config.LLM{IntentCompilerTimeout: "4s"}); got != 4*time.Second {
+		t.Fatalf("intentCompilerTimeoutFromConfig(valid) = %s, want 4s", got)
+	}
+	if got := intentCompilerTimeoutFromConfig(config.LLM{IntentCompilerTimeout: "bad-value"}); got != 0 {
+		t.Fatalf("intentCompilerTimeoutFromConfig(invalid) = %s, want 0", got)
+	}
+}
+
 func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	db := newCallLogTestDB(t)
 	adapter := &callLogAdapter{db: db}
 
 	adapter.Write(context.Background(), agenttool.CallLog{
-		TenantID:                1,
-		UserID:                  7,
-		UserName:                "Alice",
-		ConvType:                "1",
-		QueryType:               "rag",
-		ConversationEvent:       "task_follow_up",
-		ActiveTaskType:          "subscribe_attendance_push",
-		TaskStatusBefore:        "waiting_slots",
-		TaskStatusAfter:         "completed",
-		DomainResult:            "in_domain",
-		DomainHint:              "unknown",
-		PlanKind:                "clarify",
-		KnowledgeStrength:       "weak",
-		PlannerReason:           "weak_domain_match",
-		PlannerAction:           "continue_task",
-		PlannerConfidence:       0.82,
-		TaskID:                  "task-123",
-		TaskKeepOpen:            true,
-		TaskSwitch:              false,
-		LastErrorCode:           "department_name_not_found",
-		ShadowPlannerAction:     "clarify",
-		ShadowPlannerMatched:    false,
-		RouteKind:               "rag_query",
-		RouteConfidence:         0.91,
-		RouteReasonCode:         "rule_query",
-		RouteSource:             "semantic_router",
-		ClarifyCode:             "ambiguous_intent",
-		SoftNoticeCode:          "task_switched",
-		ExecutorName:            "rag_executor",
-		ToolPool:                "knowledge_only",
-		RouterLatencyMs:         7,
-		ExecutorLatencyMs:       28,
-		ShadowRouteKind:         "tool_query",
-		ShadowRouteMatched:      false,
-		ProtocolMode:            "protocol_shadow",
-		ProtocolAct:             "read_query",
-		ProtocolDomain:          "attendance",
-		ProtocolOperation:       "attendance.query_status",
-		ProtocolValidationCode:  "allowed_read_query",
-		ProtocolBlockedReason:   "missing_scope",
-		ProtocolResolvedSlots:   `{"date":"2026-06-06","section":2}`,
-		ProtocolCandidateCount:  2,
-		WorkflowIDBefore:        "wf-before",
-		WorkflowIDAfter:         "wf-after",
-		WorkflowStateBefore:     "collect_scope",
-		WorkflowStateAfter:      "ready",
-		ResponseKind:            "clarify",
-		ExecutionAllowed:        false,
-		AnswerMode:              "knowledge-only",
-		Question:                "如果请假信息没能同步到位，会出现什么情况",
-		ToolsCalled:             []string{"get_current_time"},
-		ToolCallCount:           1,
-		Reply:                   "同步失败不会直接覆盖已生成快照。",
-		SourceRefs:              []string{"请假同步说明#3"},
-		RetrievalHitCount:       1,
-		RetrievalCandidateCount: 3,
-		RetrievalTopRefs:        []string{"请假同步说明#3", "系统总览#1"},
-		RetrievalScores:         []int{18, 9},
-		FollowUpMatchedSlots:    []string{"dept_names", "scope"},
-		RetrievalFilteredReason: "no_hits",
-		KnowledgeDocTypes:       []string{"rule", "overview"},
-		RetrievalDurationMs:     12,
-		LLMDurationMs:           34,
-		Rounds:                  1,
-		DurationMs:              56,
-		Status:                  "success",
+		TenantID:                   1,
+		UserID:                     7,
+		UserRole:                   1,
+		UserName:                   "Alice",
+		ConvType:                   "1",
+		QueryType:                  "rag",
+		ConversationEvent:          "task_follow_up",
+		ActiveTaskType:             "subscribe_attendance_push",
+		TaskStatusBefore:           "waiting_slots",
+		TaskStatusAfter:            "completed",
+		DomainResult:               "in_domain",
+		DomainHint:                 "unknown",
+		PlanKind:                   "clarify",
+		KnowledgeStrength:          "weak",
+		PlannerReason:              "weak_domain_match",
+		PlannerAction:              "continue_task",
+		PlannerConfidence:          0.82,
+		TaskID:                     "task-123",
+		TaskKeepOpen:               true,
+		TaskSwitch:                 false,
+		LastErrorCode:              "department_name_not_found",
+		ShadowPlannerAction:        "clarify",
+		ShadowPlannerMatched:       false,
+		RouteKind:                  "rag_query",
+		RouteConfidence:            0.91,
+		RouteReasonCode:            "rule_query",
+		RouteSource:                "semantic_router",
+		ClarifyCode:                "ambiguous_intent",
+		SoftNoticeCode:             "task_switched",
+		ExecutorName:               "rag_executor",
+		ToolPool:                   "knowledge_only",
+		RouterLatencyMs:            7,
+		ExecutorLatencyMs:          28,
+		ShadowRouteKind:            "tool_query",
+		ShadowRouteMatched:         false,
+		ProtocolMode:               "protocol_shadow",
+		ProtocolAct:                "read_query",
+		ProtocolDomain:             "attendance",
+		ProtocolOperation:          "attendance.query_status",
+		ProtocolValidationCode:     "allowed_read_query",
+		ProtocolBlockedReason:      "missing_scope",
+		ProtocolResolvedSlots:      `{"date":"2026-06-06","section":2}`,
+		ProtocolCandidateCount:     2,
+		RequestID:                  "req-v2-1",
+		ConversationID:             "conv-v2-1",
+		CompilerStatus:             "ok",
+		CompilerLatencyMs:          11,
+		IntentDraftJSON:            `{"operation":"attendance.query_status","raw":"手机号 13812345678"}`,
+		CatalogValidationCode:      "allowed_read_query",
+		WorkflowDecision:           "single_turn",
+		WorkflowInterruptReason:    "new_read_query",
+		ResolvedSlotsJSON:          `{"date":"2026-06-06","section":2}`,
+		EntityResolutionStatus:     "resolved",
+		PrePolicyResult:            "allow",
+		ResourcePolicyResult:       "allow",
+		BlockedReason:              "missing_scope",
+		WriteGuardResult:           "not_required",
+		IdempotencyKey:             "idem-1",
+		ExecutorStatus:             "success",
+		RendererName:               "response_renderer",
+		FailureLayer:               "",
+		LegacyCalled:               false,
+		ReplayCaseID:               "replay-1",
+		WorkflowIDBefore:           "wf-before",
+		WorkflowIDAfter:            "wf-after",
+		WorkflowTypeBefore:         "subscription.start",
+		WorkflowTypeAfter:          "subscription.start",
+		WorkflowStateBefore:        "collect_scope",
+		WorkflowStateAfter:         "ready",
+		WorkflowSnapshotBeforeJSON: `{"type":"subscription.start","state":"collect_scope","candidates":{"dept_ids":[{"id":"101","label":"信工25级","tenant_id":1}]}}`,
+		WorkflowSnapshotAfterJSON:  `{"type":"subscription.start","state":"ready"}`,
+		ResponseKind:               "clarify",
+		ExecutionAllowed:           false,
+		AnswerMode:                 "knowledge-only",
+		Question:                   "如果请假信息没能同步到位，会出现什么情况",
+		ToolsCalled:                []string{"get_current_time"},
+		ToolCallCount:              1,
+		Reply:                      "同步失败不会直接覆盖已生成快照。",
+		SourceRefs:                 []string{"请假同步说明#3"},
+		RetrievalHitCount:          1,
+		RetrievalCandidateCount:    3,
+		RetrievalTopRefs:           []string{"请假同步说明#3", "系统总览#1"},
+		RetrievalScores:            []int{18, 9},
+		FollowUpMatchedSlots:       []string{"dept_names", "scope"},
+		RetrievalFilteredReason:    "no_hits",
+		KnowledgeDocTypes:          []string{"rule", "overview"},
+		RetrievalDurationMs:        12,
+		LLMDurationMs:              34,
+		Rounds:                     1,
+		DurationMs:                 56,
+		Status:                     "success",
 	})
 
 	var row model.AgentCallLog
@@ -370,6 +408,9 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	}
 	if row.DomainResult != "in_domain" {
 		t.Fatalf("DomainResult = %q, want in_domain", row.DomainResult)
+	}
+	if row.UserRole != 1 {
+		t.Fatalf("UserRole = %d, want 1", row.UserRole)
 	}
 	if row.DomainHint != "unknown" {
 		t.Fatalf("DomainHint = %q, want unknown", row.DomainHint)
@@ -470,17 +511,72 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	if row.ProtocolCandidateCount != 2 {
 		t.Fatalf("ProtocolCandidateCount = %d, want 2", row.ProtocolCandidateCount)
 	}
+	if row.RequestID != "req-v2-1" {
+		t.Fatalf("RequestID = %q, want req-v2-1", row.RequestID)
+	}
+	if row.ConversationID != "conv-v2-1" {
+		t.Fatalf("ConversationID = %q, want conv-v2-1", row.ConversationID)
+	}
+	if row.CompilerStatus != "ok" || row.CompilerLatencyMs != 11 {
+		t.Fatalf("compiler fields = %q/%d, want ok/11", row.CompilerStatus, row.CompilerLatencyMs)
+	}
+	if strings.Contains(row.IntentDraftJSON, "13812345678") {
+		t.Fatalf("IntentDraftJSON was not sanitized: %q", row.IntentDraftJSON)
+	}
+	if row.CatalogValidationCode != "allowed_read_query" {
+		t.Fatalf("CatalogValidationCode = %q, want allowed_read_query", row.CatalogValidationCode)
+	}
+	if row.WorkflowDecision != "single_turn" || row.WorkflowInterruptReason != "new_read_query" {
+		t.Fatalf("workflow v2 fields = %q/%q, want single_turn/new_read_query", row.WorkflowDecision, row.WorkflowInterruptReason)
+	}
+	if row.ResolvedSlotsJSON != `{"date":"2026-06-06","section":2}` {
+		t.Fatalf("ResolvedSlotsJSON = %q, want compact resolved slot JSON", row.ResolvedSlotsJSON)
+	}
+	if row.EntityResolutionStatus != "resolved" {
+		t.Fatalf("EntityResolutionStatus = %q, want resolved", row.EntityResolutionStatus)
+	}
+	if row.PrePolicyResult != "allow" || row.ResourcePolicyResult != "allow" {
+		t.Fatalf("policy fields = %q/%q, want allow/allow", row.PrePolicyResult, row.ResourcePolicyResult)
+	}
+	if row.BlockedReason != "missing_scope" {
+		t.Fatalf("BlockedReason = %q, want missing_scope", row.BlockedReason)
+	}
+	if row.WriteGuardResult != "not_required" || row.IdempotencyKey != "idem-1" {
+		t.Fatalf("write guard fields = %q/%q, want not_required/idem-1", row.WriteGuardResult, row.IdempotencyKey)
+	}
+	if row.ExecutorStatus != "success" || row.RendererName != "response_renderer" {
+		t.Fatalf("executor/renderer fields = %q/%q, want success/response_renderer", row.ExecutorStatus, row.RendererName)
+	}
+	if row.FailureLayer != "" {
+		t.Fatalf("FailureLayer = %q, want empty success layer", row.FailureLayer)
+	}
+	if row.LegacyCalled {
+		t.Fatalf("LegacyCalled = true, want false")
+	}
+	if row.ReplayCaseID != "replay-1" {
+		t.Fatalf("ReplayCaseID = %q, want replay-1", row.ReplayCaseID)
+	}
 	if row.WorkflowIDBefore != "wf-before" {
 		t.Fatalf("WorkflowIDBefore = %q, want wf-before", row.WorkflowIDBefore)
 	}
 	if row.WorkflowIDAfter != "wf-after" {
 		t.Fatalf("WorkflowIDAfter = %q, want wf-after", row.WorkflowIDAfter)
 	}
+	if row.WorkflowTypeBefore != "subscription.start" || row.WorkflowTypeAfter != "subscription.start" {
+		t.Fatalf("workflow types = %q/%q, want subscription.start/subscription.start", row.WorkflowTypeBefore, row.WorkflowTypeAfter)
+	}
 	if row.WorkflowStateBefore != "collect_scope" {
 		t.Fatalf("WorkflowStateBefore = %q, want collect_scope", row.WorkflowStateBefore)
 	}
 	if row.WorkflowStateAfter != "ready" {
 		t.Fatalf("WorkflowStateAfter = %q, want ready", row.WorkflowStateAfter)
+	}
+	if !strings.Contains(row.WorkflowSnapshotBeforeJSON, `"type":"subscription.start"`) ||
+		!strings.Contains(row.WorkflowSnapshotBeforeJSON, `"dept_ids"`) {
+		t.Fatalf("WorkflowSnapshotBeforeJSON = %q, want replay type and candidates", row.WorkflowSnapshotBeforeJSON)
+	}
+	if !strings.Contains(row.WorkflowSnapshotAfterJSON, `"state":"ready"`) {
+		t.Fatalf("WorkflowSnapshotAfterJSON = %q, want ready state", row.WorkflowSnapshotAfterJSON)
 	}
 	if row.ResponseKind != "clarify" {
 		t.Fatalf("ResponseKind = %q, want clarify", row.ResponseKind)
@@ -520,6 +616,73 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	}
 }
 
+func TestCallLogAdapterBoundsAndSanitizesV2JSONFields(t *testing.T) {
+	db := newCallLogTestDB(t)
+	adapter := &callLogAdapter{db: db}
+
+	raw := `{"message":"` + strings.Repeat("x", 5000) + `","phone":"13812345678","email":"alice@example.com"}`
+	adapter.Write(context.Background(), agenttool.CallLog{
+		TenantID:          1,
+		UserID:            7,
+		ProtocolMode:      "protocol_live",
+		IntentDraftJSON:   raw,
+		ResolvedSlotsJSON: raw,
+		Status:            "success",
+	})
+
+	var row model.AgentCallLog
+	if err := db.First(&row).Error; err != nil {
+		t.Fatalf("query call log: %v", err)
+	}
+	for name, value := range map[string]string{
+		"IntentDraftJSON":   row.IntentDraftJSON,
+		"ResolvedSlotsJSON": row.ResolvedSlotsJSON,
+	} {
+		if len([]rune(value)) > 4000 {
+			t.Fatalf("%s length = %d, want <= 4000", name, len([]rune(value)))
+		}
+		if strings.Contains(value, "13812345678") || strings.Contains(value, "alice@example.com") {
+			t.Fatalf("%s was not sanitized: %q", name, value)
+		}
+	}
+}
+
+func TestCallLogAdapterBoundsAndSanitizesNamedLongTextFields(t *testing.T) {
+	db := newCallLogTestDB(t)
+	adapter := &callLogAdapter{db: db}
+
+	rawText := `token=secret-token 手机 13812345678 邮箱 alice@example.com 身份证 11010519491231002X ` + strings.Repeat("x", 5000)
+	adapter.Write(context.Background(), agenttool.CallLog{
+		TenantID:              1,
+		UserID:                7,
+		ProtocolMode:          "protocol_live",
+		ProtocolResolvedSlots: `{"raw":"` + rawText + `"}`,
+		Question:              rawText,
+		Reply:                 rawText,
+		Status:                "success",
+	})
+
+	var row model.AgentCallLog
+	if err := db.First(&row).Error; err != nil {
+		t.Fatalf("query call log: %v", err)
+	}
+	for name, value := range map[string]string{
+		"ProtocolResolvedSlots": row.ProtocolResolvedSlots,
+		"Question":              row.Question,
+		"Reply":                 row.Reply,
+	} {
+		if len([]rune(value)) > agentCallLogMaxJSONRunes {
+			t.Fatalf("%s length = %d, want <= %d", name, len([]rune(value)), agentCallLogMaxJSONRunes)
+		}
+		if strings.Contains(value, "13812345678") ||
+			strings.Contains(value, "alice@example.com") ||
+			strings.Contains(value, "11010519491231002X") ||
+			strings.Contains(value, "secret-token") {
+			t.Fatalf("%s was not sanitized: %q", name, value)
+		}
+	}
+}
+
 func TestCallLogAdapterBoundsProtocolBlockedReason(t *testing.T) {
 	db := newCallLogTestDB(t)
 	adapter := &callLogAdapter{db: db}
@@ -542,6 +705,58 @@ func TestCallLogAdapterBoundsProtocolBlockedReason(t *testing.T) {
 	}
 	if row.ProtocolBlockedReason == longReason {
 		t.Fatalf("ProtocolBlockedReason was not bounded")
+	}
+}
+
+func TestCallLogAdapterKeepsLargeWorkflowSnapshotJSONValid(t *testing.T) {
+	db := newCallLogTestDB(t)
+	adapter := &callLogAdapter{db: db}
+
+	var snapshot strings.Builder
+	snapshot.WriteString(`{"type":"subscription.start","state":"collect_departments","candidates":{"dept_ids":[`)
+	for i := 0; i < 120; i++ {
+		if i > 0 {
+			snapshot.WriteString(",")
+		}
+		snapshot.WriteString(`{"id":"`)
+		snapshot.WriteString(strconv.Itoa(1000 + i))
+		snapshot.WriteString(`","label":"信工25级 replay candidate `)
+		snapshot.WriteString(strconv.Itoa(i))
+		snapshot.WriteString(`","tenant_id":1}`)
+	}
+	snapshot.WriteString(`]}}`)
+
+	adapter.Write(context.Background(), agenttool.CallLog{
+		TenantID:                   1,
+		UserID:                     7,
+		WorkflowSnapshotBeforeJSON: snapshot.String(),
+		Status:                     "success",
+	})
+
+	var row model.AgentCallLog
+	if err := db.First(&row).Error; err != nil {
+		t.Fatalf("query call log: %v", err)
+	}
+	if !json.Valid([]byte(row.WorkflowSnapshotBeforeJSON)) {
+		t.Fatalf("WorkflowSnapshotBeforeJSON is invalid after persistence: length=%d", len([]rune(row.WorkflowSnapshotBeforeJSON)))
+	}
+	if !strings.Contains(row.WorkflowSnapshotBeforeJSON, `"dept_ids"`) {
+		t.Fatalf("WorkflowSnapshotBeforeJSON = %q, want persisted candidates", row.WorkflowSnapshotBeforeJSON)
+	}
+}
+
+func TestBoundedAgentCallLogWorkflowSnapshotJSONCapsMySQLTextBytes(t *testing.T) {
+	raw := `{"type":"subscription.start","state":"collect_departments","candidates":{"dept_ids":[{"id":"1","label":"` +
+		strings.Repeat("信", 25000) +
+		`","tenant_id":1}]}}`
+
+	got := boundedAgentCallLogWorkflowSnapshotJSON(raw)
+
+	if len([]byte(got)) > agentCallLogMaxWorkflowSnapshotJSONBytes {
+		t.Fatalf("workflow snapshot bytes = %d, want <= %d", len([]byte(got)), agentCallLogMaxWorkflowSnapshotJSONBytes)
+	}
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("workflow snapshot JSON is invalid after bounding")
 	}
 }
 

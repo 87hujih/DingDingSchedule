@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"schedule_server/internal/agent/tools"
 )
@@ -47,7 +49,7 @@ func TestIntentCompilerReturnsUnknownForInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestIntentCompilerReturnsUnknownForOperationOutsideCatalog(t *testing.T) {
+func TestIntentCompilerPreservesOperationOutsideCatalogForValidator(t *testing.T) {
 	t.Parallel()
 
 	client := &fakeIntentChatClient{
@@ -59,8 +61,8 @@ func TestIntentCompilerReturnsUnknownForOperationOutsideCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if draft.Act != ActUnknown || draft.Reason != "operation_not_allowed" {
-		t.Fatalf("draft = %+v, want ActUnknown with operation_not_allowed", draft)
+	if draft.Act != ActWriteRequest || draft.Domain != DomainManualSign || draft.Operation != "manual_sign.create" {
+		t.Fatalf("draft = %+v, want untrusted catalog-missing draft for validator", draft)
 	}
 }
 
@@ -98,7 +100,7 @@ func TestIntentCompilerStripsOperationFromUnknownDraft(t *testing.T) {
 	}
 }
 
-func TestIntentCompilerReturnsOperationNotAllowedForUnknownDraftWithDisallowedOperation(t *testing.T) {
+func TestIntentCompilerStripsOperationFromUnknownDraftWithoutCatalogValidation(t *testing.T) {
 	t.Parallel()
 
 	client := &fakeIntentChatClient{
@@ -110,8 +112,8 @@ func TestIntentCompilerReturnsOperationNotAllowedForUnknownDraftWithDisallowedOp
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if draft.Act != ActUnknown || draft.Reason != "operation_not_allowed" {
-		t.Fatalf("draft = %+v, want ActUnknown with operation_not_allowed", draft)
+	if draft.Act != ActUnknown || draft.Operation != "" || draft.Reason != "unknown_intent" {
+		t.Fatalf("draft = %+v, want unknown draft normalized without catalog validation", draft)
 	}
 }
 
@@ -163,6 +165,42 @@ func TestIntentCompilerReturnsUnknownForMissingSlots(t *testing.T) {
 	}
 	if draft.Act != ActUnknown || draft.Reason != "intent_parse_failed" {
 		t.Fatalf("draft = %+v, want parse failure for missing slots", draft)
+	}
+}
+
+func TestIntentCompilerReturnsUnknownForTrustedIDSlots(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "user id",
+			content: `{"act":"read_query","domain":"schedule","operation":"schedule.query_user_schedule","confidence":0.91,"slots":[{"field":"user_id","raw":"42"}],"reason":"用户查询他人课表"}`,
+		},
+		{
+			name:    "department ids",
+			content: `{"act":"write_request","domain":"subscription","operation":"subscription.start","confidence":0.91,"slots":[{"field":"dept_ids","raw":"101"}],"reason":"用户开启部门订阅"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &fakeIntentChatClient{content: tt.content}
+			compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
+
+			draft, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "测试"})
+			if err != nil {
+				t.Fatalf("Compile() error = %v", err)
+			}
+			if draft.Act != ActUnknown || draft.Reason != "intent_parse_failed" {
+				t.Fatalf("draft = %+v, want parse failure for trusted ID slot", draft)
+			}
+		})
 	}
 }
 
@@ -222,6 +260,27 @@ func TestIntentCompilerPromptIncludesCatalogAndUsesNoTools(t *testing.T) {
 	}
 }
 
+func TestPromptOperationEntriesAreDerivedFromOperationCatalog(t *testing.T) {
+	t.Parallel()
+
+	entries := promptOperationEntries()
+	if len(entries) != len(operationManifests()) {
+		t.Fatalf("promptOperationEntries() len = %d, want %d", len(entries), len(operationManifests()))
+	}
+	for _, entry := range entries {
+		manifest, ok := lookupOperation(entry.Name)
+		if !ok {
+			t.Fatalf("prompt operation %q has no manifest", entry.Name)
+		}
+		if entry.Domain != manifest.Domain {
+			t.Fatalf("%s Domain = %q, want %q", entry.Name, entry.Domain, manifest.Domain)
+		}
+		if !reflect.DeepEqual(entry.AllowedActs, manifest.AllowedActs) {
+			t.Fatalf("%s AllowedActs = %v, want %v", entry.Name, entry.AllowedActs, manifest.AllowedActs)
+		}
+	}
+}
+
 func TestIntentCompilerPromptIncludesActiveWorkflowContext(t *testing.T) {
 	t.Parallel()
 
@@ -269,6 +328,22 @@ func TestIntentCompilerPropagatesChatErrors(t *testing.T) {
 	}
 }
 
+func TestIntentCompilerUsesConfiguredTimeout(t *testing.T) {
+	t.Parallel()
+
+	client := blockingIntentChatClient{}
+	compiler := newLLMIntentCompiler(client, intentCompilerOptions{Timeout: 10 * time.Millisecond})
+
+	start := time.Now()
+	_, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询今天第二节考勤"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Compile() error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Compile() elapsed = %s, want configured timeout to bound the call", elapsed)
+	}
+}
+
 type fakeIntentChatClient struct {
 	content         string
 	err             error
@@ -287,4 +362,11 @@ func (c *fakeIntentChatClient) Chat(ctx context.Context, messages []tools.Messag
 		return tools.Message{}, c.err
 	}
 	return tools.Message{Role: "assistant", Content: c.content}, nil
+}
+
+type blockingIntentChatClient struct{}
+
+func (blockingIntentChatClient) Chat(ctx context.Context, _ []tools.Message, _ []tools.ToolDef) (tools.Message, error) {
+	<-ctx.Done()
+	return tools.Message{}, ctx.Err()
 }

@@ -1,6 +1,6 @@
 package agent
 
-// plan runs the planner using the configured planner service.
+// legacy-only: plan runs the legacy planner used outside protocol_live.
 func plan(input PlanInput) PlanDecision {
 	knowledgeStrength := classifyKnowledgeStrength(input.Retrieval)
 

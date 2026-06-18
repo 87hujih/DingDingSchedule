@@ -242,73 +242,98 @@ type RetrievalResult struct {
 
 // CallLog 一次对话的调用记录
 type CallLog struct {
-	TenantID                uint
-	UserID                  uint
-	UserName                string
-	ConvType                string // "1"=单聊, "2"=群聊
-	QueryType               string // tool / rag / mixed
-	ConversationEvent       string
-	ActiveTaskType          string
-	TaskStatusBefore        string
-	TaskStatusAfter         string
-	DomainResult            string
-	DomainHint              string
-	PlanKind                string
-	KnowledgeStrength       string
-	PlannerReason           string
-	PlannerAction           string
-	PlannerConfidence       float64
-	TaskID                  string
-	TaskKeepOpen            bool
-	TaskSwitch              bool
-	LastErrorCode           string
-	ShadowPlannerAction     string
-	ShadowPlannerMatched    bool
-	RouteKind               string
-	RouteConfidence         float64
-	RouteReasonCode         string
-	RouteSource             string
-	ClarifyCode             string
-	SoftNoticeCode          string
-	ExecutorName            string
-	ToolPool                string
-	RouterLatencyMs         int64
-	ExecutorLatencyMs       int64
-	ShadowRouteKind         string
-	ShadowRouteMatched      bool
-	ProtocolMode            string
-	ProtocolAct             string
-	ProtocolDomain          string
-	ProtocolOperation       string
-	ProtocolValidationCode  string
-	ProtocolBlockedReason   string
-	ProtocolResolvedSlots   string
-	ProtocolCandidateCount  int
-	WorkflowIDBefore        string
-	WorkflowIDAfter         string
-	WorkflowStateBefore     string
-	WorkflowStateAfter      string
-	ResponseKind            string
-	ExecutionAllowed        bool
-	AnswerMode              string
-	Question                string
-	ToolsCalled             []string // 调用的工具名列表
-	ToolCallCount           int
-	Reply                   string
-	SourceRefs              []string
-	RetrievalHitCount       int
-	RetrievalCandidateCount int
-	RetrievalTopRefs        []string
-	RetrievalScores         []int
-	FollowUpMatchedSlots    []string
-	RetrievalFilteredReason string
-	KnowledgeDocTypes       []string
-	RetrievalDurationMs     int64
-	LLMDurationMs           int64
-	Rounds                  int
-	DurationMs              int64
-	Status                  string // success / failed / timeout
-	ErrorMsg                string
+	TenantID                   uint
+	UserID                     uint
+	UserRole                   int
+	UserName                   string
+	ConvType                   string // "1"=单聊, "2"=群聊
+	QueryType                  string // tool / rag / mixed
+	ConversationEvent          string
+	ActiveTaskType             string
+	TaskStatusBefore           string
+	TaskStatusAfter            string
+	DomainResult               string
+	DomainHint                 string
+	PlanKind                   string
+	KnowledgeStrength          string
+	PlannerReason              string
+	PlannerAction              string
+	PlannerConfidence          float64
+	TaskID                     string
+	TaskKeepOpen               bool
+	TaskSwitch                 bool
+	LastErrorCode              string
+	ShadowPlannerAction        string
+	ShadowPlannerMatched       bool
+	RouteKind                  string
+	RouteConfidence            float64
+	RouteReasonCode            string
+	RouteSource                string
+	ClarifyCode                string
+	SoftNoticeCode             string
+	ExecutorName               string
+	ToolPool                   string
+	RouterLatencyMs            int64
+	ExecutorLatencyMs          int64
+	ShadowRouteKind            string
+	ShadowRouteMatched         bool
+	ProtocolMode               string
+	ProtocolAct                string
+	ProtocolDomain             string
+	ProtocolOperation          string
+	ProtocolValidationCode     string
+	ProtocolBlockedReason      string
+	ProtocolResolvedSlots      string
+	ProtocolCandidateCount     int
+	RequestID                  string
+	ConversationID             string
+	CompilerStatus             string
+	CompilerLatencyMs          int64
+	IntentDraftJSON            string
+	CatalogValidationCode      string
+	WorkflowDecision           string
+	WorkflowInterruptReason    string
+	ResolvedSlotsJSON          string
+	EntityResolutionStatus     string
+	PrePolicyResult            string
+	ResourcePolicyResult       string
+	BlockedReason              string
+	WriteGuardResult           string
+	IdempotencyKey             string
+	ExecutorStatus             string
+	RendererName               string
+	FailureLayer               string
+	LegacyCalled               bool
+	ReplayCaseID               string
+	WorkflowIDBefore           string
+	WorkflowIDAfter            string
+	WorkflowTypeBefore         string
+	WorkflowTypeAfter          string
+	WorkflowStateBefore        string
+	WorkflowStateAfter         string
+	WorkflowSnapshotBeforeJSON string
+	WorkflowSnapshotAfterJSON  string
+	ResponseKind               string
+	ExecutionAllowed           bool
+	AnswerMode                 string
+	Question                   string
+	ToolsCalled                []string // 调用的工具名列表
+	ToolCallCount              int
+	Reply                      string
+	SourceRefs                 []string
+	RetrievalHitCount          int
+	RetrievalCandidateCount    int
+	RetrievalTopRefs           []string
+	RetrievalScores            []int
+	FollowUpMatchedSlots       []string
+	RetrievalFilteredReason    string
+	KnowledgeDocTypes          []string
+	RetrievalDurationMs        int64
+	LLMDurationMs              int64
+	Rounds                     int
+	DurationMs                 int64
+	Status                     string // success / failed / timeout
+	ErrorMsg                   string
 }
 
 // CallLogPort 调用日志写入能力
@@ -405,6 +430,7 @@ type PeriodInfo struct {
 
 // DeptItem 部门信息
 type DeptItem struct {
+	TenantID uint   `json:"tenant_id"`
 	DeptID   int64  `json:"dept_id"`
 	Name     string `json:"name"`
 	ParentID int64  `json:"parent_id"`

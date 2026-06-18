@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,14 +49,15 @@ func BuildAgent(
 	attendance := &attendanceAdapter{srv: attendanceSrv, repo: repo.AttendanceRecordRepo}
 
 	return agent.NewAgent(agent.Deps{
-		LLMBaseURL:       cfg.BaseURL,
-		LLMAPIKey:        cfg.APIKey,
-		LLMModel:         cfg.Model,
-		RouterLLMBaseURL: cfg.RouterBaseURL,
-		RouterLLMAPIKey:  cfg.RouterAPIKey,
-		RouterLLMModel:   cfg.RouterModel,
-		RouteMode:        cfg.RouteMode,
-		ProtocolMode:     cfg.ProtocolMode,
+		LLMBaseURL:            cfg.BaseURL,
+		LLMAPIKey:             cfg.APIKey,
+		LLMModel:              cfg.Model,
+		RouterLLMBaseURL:      cfg.RouterBaseURL,
+		RouterLLMAPIKey:       cfg.RouterAPIKey,
+		RouterLLMModel:        cfg.RouterModel,
+		RouteMode:             cfg.RouteMode,
+		ProtocolMode:          cfg.ProtocolMode,
+		IntentCompilerTimeout: intentCompilerTimeoutFromConfig(cfg),
 
 		Schedule:                &scheduleAdapter{srv: scheduleSrv, schedulePeriodSrv: schedulePeriodSrv},
 		Attendance:              attendance,
@@ -75,6 +77,18 @@ func BuildAgent(
 
 		Logger: global.Log,
 	})
+}
+
+func intentCompilerTimeoutFromConfig(cfg config.LLM) time.Duration {
+	value := strings.TrimSpace(cfg.IntentCompilerTimeout)
+	if value == "" {
+		return 0
+	}
+	timeout, err := time.ParseDuration(value)
+	if err != nil {
+		return 0
+	}
+	return timeout
 }
 
 // ────────────── scheduleAdapter ──────────────
@@ -638,6 +652,7 @@ func (a *deptAdapter) ListDepts(ctx context.Context) ([]agent.DeptItem, error) {
 			continue
 		}
 		items = append(items, agent.DeptItem{
+			TenantID: d.TenantID,
 			DeptID:   d.DeptID,
 			Name:     d.Name,
 			ParentID: d.ParentID,
@@ -687,6 +702,20 @@ type callLogAdapter struct {
 	db *gorm.DB
 }
 
+const (
+	agentCallLogMaxCodeRunes                 = 64
+	agentCallLogMaxJSONRunes                 = 4000
+	agentCallLogMaxKeyRunes                  = 128
+	agentCallLogMaxWorkflowSnapshotJSONBytes = 60000
+)
+
+var (
+	agentCallLogPhonePattern  = regexp.MustCompile(`1[3-9]\d{9}`)
+	agentCallLogEmailPattern  = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+	agentCallLogSecretPattern = regexp.MustCompile(`(?i)(api[_-]?key|token|secret|password|passwd|pwd)["'\s:=]+[^"',\s}]+`)
+	agentCallLogIDCardPattern = regexp.MustCompile(`\d{17}[\dXx]`)
+)
+
 // Write 记录一次 Agent 调用日志，并显式跳过租户作用域插件。
 func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 	toolsCalled := ""
@@ -701,73 +730,98 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 	// 使用 WithSkipTenantScope 跳过租户插件，TenantID 已在结构体中显式设置
 	ctx := tenantctx.WithSkipTenantScope(context.Background())
 	if err := a.db.WithContext(ctx).Create(&model.AgentCallLog{
-		TenantID:                log.TenantID,
-		UserID:                  log.UserID,
-		UserName:                log.UserName,
-		ConvType:                log.ConvType,
-		QueryType:               log.QueryType,
-		ConversationEvent:       log.ConversationEvent,
-		ActiveTaskType:          log.ActiveTaskType,
-		TaskStatusBefore:        log.TaskStatusBefore,
-		TaskStatusAfter:         log.TaskStatusAfter,
-		DomainResult:            log.DomainResult,
-		DomainHint:              log.DomainHint,
-		PlanKind:                log.PlanKind,
-		KnowledgeStrength:       log.KnowledgeStrength,
-		PlannerReason:           log.PlannerReason,
-		PlannerAction:           log.PlannerAction,
-		PlannerConfidence:       log.PlannerConfidence,
-		TaskID:                  log.TaskID,
-		TaskKeepOpen:            log.TaskKeepOpen,
-		TaskSwitch:              log.TaskSwitch,
-		LastErrorCode:           log.LastErrorCode,
-		ShadowPlannerAction:     log.ShadowPlannerAction,
-		ShadowPlannerMatched:    log.ShadowPlannerMatched,
-		RouteKind:               log.RouteKind,
-		RouteConfidence:         log.RouteConfidence,
-		RouteReasonCode:         log.RouteReasonCode,
-		RouteSource:             log.RouteSource,
-		ClarifyCode:             log.ClarifyCode,
-		SoftNoticeCode:          log.SoftNoticeCode,
-		ExecutorName:            log.ExecutorName,
-		ToolPool:                log.ToolPool,
-		RouterLatencyMs:         log.RouterLatencyMs,
-		ExecutorLatencyMs:       log.ExecutorLatencyMs,
-		ShadowRouteKind:         log.ShadowRouteKind,
-		ShadowRouteMatched:      log.ShadowRouteMatched,
-		ProtocolMode:            log.ProtocolMode,
-		ProtocolAct:             log.ProtocolAct,
-		ProtocolDomain:          log.ProtocolDomain,
-		ProtocolOperation:       log.ProtocolOperation,
-		ProtocolValidationCode:  log.ProtocolValidationCode,
-		ProtocolBlockedReason:   boundedAgentCallLogCode(log.ProtocolBlockedReason, 64),
-		ProtocolResolvedSlots:   log.ProtocolResolvedSlots,
-		ProtocolCandidateCount:  log.ProtocolCandidateCount,
-		WorkflowIDBefore:        log.WorkflowIDBefore,
-		WorkflowIDAfter:         log.WorkflowIDAfter,
-		WorkflowStateBefore:     log.WorkflowStateBefore,
-		WorkflowStateAfter:      log.WorkflowStateAfter,
-		ResponseKind:            log.ResponseKind,
-		ExecutionAllowed:        log.ExecutionAllowed,
-		AnswerMode:              log.AnswerMode,
-		Question:                log.Question,
-		ToolsCalled:             toolsCalled,
-		ToolCallCount:           log.ToolCallCount,
-		Reply:                   log.Reply,
-		SourceRefs:              strings.Join(log.SourceRefs, ","),
-		RetrievalHitCount:       log.RetrievalHitCount,
-		RetrievalCandidateCount: log.RetrievalCandidateCount,
-		RetrievalTopRefs:        strings.Join(log.RetrievalTopRefs, ","),
-		RetrievalScores:         joinIntList(log.RetrievalScores),
-		FollowUpMatchedSlots:    strings.Join(log.FollowUpMatchedSlots, ","),
-		RetrievalFilteredReason: log.RetrievalFilteredReason,
-		KnowledgeDocTypes:       strings.Join(log.KnowledgeDocTypes, ","),
-		RetrievalDurationMs:     log.RetrievalDurationMs,
-		LLMDurationMs:           log.LLMDurationMs,
-		Rounds:                  log.Rounds,
-		DurationMs:              log.DurationMs,
-		Status:                  log.Status,
-		ErrorMsg:                log.ErrorMsg,
+		TenantID:                   log.TenantID,
+		UserID:                     log.UserID,
+		UserRole:                   log.UserRole,
+		UserName:                   log.UserName,
+		ConvType:                   log.ConvType,
+		QueryType:                  log.QueryType,
+		ConversationEvent:          log.ConversationEvent,
+		ActiveTaskType:             log.ActiveTaskType,
+		TaskStatusBefore:           log.TaskStatusBefore,
+		TaskStatusAfter:            log.TaskStatusAfter,
+		DomainResult:               log.DomainResult,
+		DomainHint:                 log.DomainHint,
+		PlanKind:                   log.PlanKind,
+		KnowledgeStrength:          log.KnowledgeStrength,
+		PlannerReason:              log.PlannerReason,
+		PlannerAction:              log.PlannerAction,
+		PlannerConfidence:          log.PlannerConfidence,
+		TaskID:                     log.TaskID,
+		TaskKeepOpen:               log.TaskKeepOpen,
+		TaskSwitch:                 log.TaskSwitch,
+		LastErrorCode:              log.LastErrorCode,
+		ShadowPlannerAction:        log.ShadowPlannerAction,
+		ShadowPlannerMatched:       log.ShadowPlannerMatched,
+		RouteKind:                  log.RouteKind,
+		RouteConfidence:            log.RouteConfidence,
+		RouteReasonCode:            log.RouteReasonCode,
+		RouteSource:                log.RouteSource,
+		ClarifyCode:                log.ClarifyCode,
+		SoftNoticeCode:             log.SoftNoticeCode,
+		ExecutorName:               log.ExecutorName,
+		ToolPool:                   log.ToolPool,
+		RouterLatencyMs:            log.RouterLatencyMs,
+		ExecutorLatencyMs:          log.ExecutorLatencyMs,
+		ShadowRouteKind:            log.ShadowRouteKind,
+		ShadowRouteMatched:         log.ShadowRouteMatched,
+		ProtocolMode:               log.ProtocolMode,
+		ProtocolAct:                log.ProtocolAct,
+		ProtocolDomain:             log.ProtocolDomain,
+		ProtocolOperation:          log.ProtocolOperation,
+		ProtocolValidationCode:     log.ProtocolValidationCode,
+		ProtocolBlockedReason:      boundedAgentCallLogCode(log.ProtocolBlockedReason, 64),
+		ProtocolResolvedSlots:      boundedAgentCallLogJSON(log.ProtocolResolvedSlots),
+		ProtocolCandidateCount:     log.ProtocolCandidateCount,
+		RequestID:                  boundedAgentCallLogCode(log.RequestID, agentCallLogMaxCodeRunes),
+		ConversationID:             boundedAgentCallLogCode(log.ConversationID, agentCallLogMaxKeyRunes),
+		CompilerStatus:             boundedAgentCallLogCode(log.CompilerStatus, 32),
+		CompilerLatencyMs:          log.CompilerLatencyMs,
+		IntentDraftJSON:            boundedAgentCallLogJSON(log.IntentDraftJSON),
+		CatalogValidationCode:      boundedAgentCallLogCode(log.CatalogValidationCode, agentCallLogMaxCodeRunes),
+		WorkflowDecision:           boundedAgentCallLogCode(log.WorkflowDecision, 32),
+		WorkflowInterruptReason:    boundedAgentCallLogCode(log.WorkflowInterruptReason, agentCallLogMaxCodeRunes),
+		ResolvedSlotsJSON:          boundedAgentCallLogJSON(log.ResolvedSlotsJSON),
+		EntityResolutionStatus:     boundedAgentCallLogCode(log.EntityResolutionStatus, 32),
+		PrePolicyResult:            boundedAgentCallLogCode(log.PrePolicyResult, 32),
+		ResourcePolicyResult:       boundedAgentCallLogCode(log.ResourcePolicyResult, 32),
+		BlockedReason:              boundedAgentCallLogCode(log.BlockedReason, agentCallLogMaxCodeRunes),
+		WriteGuardResult:           boundedAgentCallLogCode(log.WriteGuardResult, 32),
+		IdempotencyKey:             boundedAgentCallLogCode(log.IdempotencyKey, agentCallLogMaxKeyRunes),
+		ExecutorStatus:             boundedAgentCallLogCode(log.ExecutorStatus, 32),
+		RendererName:               boundedAgentCallLogCode(log.RendererName, agentCallLogMaxCodeRunes),
+		FailureLayer:               boundedAgentCallLogCode(log.FailureLayer, 32),
+		LegacyCalled:               log.LegacyCalled,
+		ReplayCaseID:               boundedAgentCallLogCode(log.ReplayCaseID, agentCallLogMaxCodeRunes),
+		WorkflowIDBefore:           log.WorkflowIDBefore,
+		WorkflowIDAfter:            log.WorkflowIDAfter,
+		WorkflowTypeBefore:         boundedAgentCallLogCode(log.WorkflowTypeBefore, agentCallLogMaxCodeRunes),
+		WorkflowTypeAfter:          boundedAgentCallLogCode(log.WorkflowTypeAfter, agentCallLogMaxCodeRunes),
+		WorkflowStateBefore:        log.WorkflowStateBefore,
+		WorkflowStateAfter:         log.WorkflowStateAfter,
+		WorkflowSnapshotBeforeJSON: boundedAgentCallLogWorkflowSnapshotJSON(log.WorkflowSnapshotBeforeJSON),
+		WorkflowSnapshotAfterJSON:  boundedAgentCallLogWorkflowSnapshotJSON(log.WorkflowSnapshotAfterJSON),
+		ResponseKind:               log.ResponseKind,
+		ExecutionAllowed:           log.ExecutionAllowed,
+		AnswerMode:                 log.AnswerMode,
+		Question:                   boundedAgentCallLogText(log.Question),
+		ToolsCalled:                toolsCalled,
+		ToolCallCount:              log.ToolCallCount,
+		Reply:                      boundedAgentCallLogText(log.Reply),
+		SourceRefs:                 strings.Join(log.SourceRefs, ","),
+		RetrievalHitCount:          log.RetrievalHitCount,
+		RetrievalCandidateCount:    log.RetrievalCandidateCount,
+		RetrievalTopRefs:           strings.Join(log.RetrievalTopRefs, ","),
+		RetrievalScores:            joinIntList(log.RetrievalScores),
+		FollowUpMatchedSlots:       strings.Join(log.FollowUpMatchedSlots, ","),
+		RetrievalFilteredReason:    log.RetrievalFilteredReason,
+		KnowledgeDocTypes:          strings.Join(log.KnowledgeDocTypes, ","),
+		RetrievalDurationMs:        log.RetrievalDurationMs,
+		LLMDurationMs:              log.LLMDurationMs,
+		Rounds:                     log.Rounds,
+		DurationMs:                 log.DurationMs,
+		Status:                     log.Status,
+		ErrorMsg:                   log.ErrorMsg,
 	}).Error; err != nil && global.Log != nil {
 		global.Log.Warnw("写入 Agent 调用日志失败",
 			"tenantID", log.TenantID,
@@ -792,6 +846,40 @@ func boundedAgentCallLogCode(value string, maxRunes int) string {
 		return value
 	}
 	return string(runes[:maxRunes])
+}
+
+func boundedAgentCallLogJSON(value string) string {
+	return boundedAgentCallLogCode(sanitizeAgentCallLogText(value), agentCallLogMaxJSONRunes)
+}
+
+func boundedAgentCallLogText(value string) string {
+	return boundedAgentCallLogCode(sanitizeAgentCallLogText(value), agentCallLogMaxJSONRunes)
+}
+
+func boundedAgentCallLogWorkflowSnapshotJSON(value string) string {
+	value = sanitizeAgentCallLogText(value)
+	if value == "" {
+		return ""
+	}
+	if len([]byte(value)) <= agentCallLogMaxWorkflowSnapshotJSONBytes {
+		return value
+	}
+	if json.Valid([]byte(value)) {
+		return `{"truncated":true}`
+	}
+	return `{"truncated":true}`
+}
+
+func sanitizeAgentCallLogText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = agentCallLogSecretPattern.ReplaceAllString(value, `${1}:[REDACTED]`)
+	value = agentCallLogPhonePattern.ReplaceAllString(value, "[REDACTED_PHONE]")
+	value = agentCallLogIDCardPattern.ReplaceAllString(value, "[REDACTED_ID]")
+	value = agentCallLogEmailPattern.ReplaceAllString(value, "[REDACTED_EMAIL]")
+	return value
 }
 
 func joinIntList(values []int) string {

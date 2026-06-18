@@ -18,7 +18,7 @@ type PlannerInput struct {
 	UserContext *tools.UserContext
 }
 
-// planConversation plans the next conversation step from the current question and task state.
+// legacy-only: planConversation plans the legacy task route outside protocol_live.
 func planConversation(input PlannerInput) PlannerDecision {
 	normalized := normalizeQuery(input.Message)
 	activeTask := activePlannerTask(input.ActiveTask)
