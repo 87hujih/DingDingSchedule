@@ -9,7 +9,7 @@ import (
 	"schedule_server/internal/agent/tools"
 )
 
-func (p protocolLivePipeline) attendanceRequest(ctx context.Context, message string, draft ProtocolDraft, tenantID uint) (OperationRequest, ResponseModel, bool) {
+func (p protocolLivePipeline) attendanceRequest(ctx context.Context, message string, draft ProtocolDraft, tenantID uint) (OperationRequest, ResponseModel, bool) { //nolint:gocyclo // Attendance request assembly keeps slot resolution order explicit.
 	resolveCtx := EntityResolveContext{TenantID: tenantID}
 	trusted := trustedEntities{UserRole: 0, TenantID: tenantID, TrustedParams: map[string]TrustedParam{}}
 	if raw := draftSlotRaw(draft, "query_shape"); raw != "" {

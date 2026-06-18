@@ -58,7 +58,7 @@ func (catalogValidator) Validate(draft ProtocolDraft, activeWorkflow *protocolWo
 }
 
 // Validate checks the untrusted intent draft against pre-resolution protocol policy.
-func (prePolicyGate) Validate(input PrePolicyGateInput) ProtocolValidationResult {
+func (prePolicyGate) Validate(input PrePolicyGateInput) ProtocolValidationResult { //nolint:gocyclo,funlen // The policy decision matrix is centralized for auditability.
 	draft := input.Draft
 	activeWorkflow := input.ActiveWorkflow
 	if draft.Act == ActUnknown {

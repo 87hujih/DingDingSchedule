@@ -1393,22 +1393,17 @@ func (a *Agent) applyProtocolLiveOutcomeForKey(ctx context.Context, workflowKey 
 	if a != nil && a.workflowStore != nil {
 		if loaded, err := a.workflowStore.Load(ctx, workflowKey); err == nil {
 			workflowBefore = loaded
+		} else if a.deps.Logger != nil {
+			a.deps.Logger.Warnw("读取 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", err)
 		}
 	}
 	if workflowBefore == nil && a != nil && a.sessions != nil {
 		_, workflowBefore = a.sessions.getWorkflowState(sessionKey)
 	}
 
-	if a != nil && a.workflowStore != nil {
-		if outcome.ClearWorkflow {
-			_ = a.workflowStore.Clear(ctx, workflowKey, string(outcome.WorkflowDecision))
-		}
-		if outcome.WorkflowAfter != nil {
-			next := cloneWorkflowSnapshot(outcome.WorkflowAfter)
-			next.TenantID = workflowKey.TenantID
-			next.ConversationID = workflowKey.ConversationID
-			next.ActorUserID = workflowKey.ActorUserID
-			_ = a.workflowStore.Save(ctx, next)
+	if a != nil {
+		if err := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, outcome); err != nil && a.deps.Logger != nil {
+			a.deps.Logger.Warnw("更新 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", err)
 		}
 	}
 	a.applyProtocolLiveOutcomeAfterStore(sessionKey, metrics, outcome, workflowBefore)

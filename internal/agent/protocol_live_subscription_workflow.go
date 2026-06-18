@@ -8,7 +8,7 @@ import (
 	"schedule_server/internal/agent/tools"
 )
 
-func (p protocolLivePipeline) handleSubscription(ctx context.Context, input protocolLiveInput, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot, outcome protocolLiveOutcome) protocolLiveOutcome {
+func (p protocolLivePipeline) handleSubscription(ctx context.Context, input protocolLiveInput, draft ProtocolDraft, activeWorkflow *WorkflowSnapshot, outcome protocolLiveOutcome) protocolLiveOutcome { //nolint:gocyclo,funlen // Subscription workflow orchestration is kept together so state transitions remain auditable.
 	startOperation := workflowPrimaryOperationName(WorkflowSubscriptionStart)
 	listDepartmentsOperation := workflowAuxiliaryOperationName(WorkflowSubscriptionStart, ExecutorBindingSubscriptionListDepartments)
 	if draft.Operation == listDepartmentsOperation {
@@ -328,8 +328,8 @@ func (p protocolLivePipeline) resolveSubscriptionDepartmentSelection(ctx context
 	if resolved.Status != ResolveResolved {
 		return trustedEntities{}, resolved, false
 	}
-	deptIDs, _ := resolved.Value.([]int64)
-	if len(deptIDs) == 0 {
+	deptIDs, ok := resolved.Value.([]int64)
+	if !ok || len(deptIDs) == 0 {
 		return trustedEntities{}, resolved, false
 	}
 	return trustedEntities{
@@ -370,8 +370,8 @@ func (p protocolLivePipeline) resolveInitialSubscriptionTrustedEntities(ctx cont
 	if resolved.Status != ResolveResolved {
 		return trusted, true
 	}
-	deptIDs, _ := resolved.Value.([]int64)
-	if len(deptIDs) == 0 {
+	deptIDs, ok := resolved.Value.([]int64)
+	if !ok || len(deptIDs) == 0 {
 		return trusted, true
 	}
 	trusted.DepartmentID = deptIDs[0]

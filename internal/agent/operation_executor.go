@@ -142,7 +142,7 @@ func (e operationExecutor) executeUserScheduleQuery(ctx context.Context, req Ope
 	return operationExecutionResult(ResponseModel{Kind: ResponseResult, Payload: ScheduleResultPayload{Week: week, Courses: courses}}, answerModeToolFirst)
 }
 
-func (e operationExecutor) executeSubscriptionStart(ctx context.Context, req OperationRequest) OperationExecutionResult {
+func (e operationExecutor) executeSubscriptionStart(ctx context.Context, req OperationRequest) OperationExecutionResult { //nolint:gocyclo // Subscription writes keep validation and idempotent execution together.
 	if e.deps.GroupSub == nil {
 		return operationExecutionResult(unavailableOperationResponse(), answerModeReject)
 	}

@@ -95,6 +95,15 @@ issues:
         - funlen
         - gocyclo
         - errcheck
+    # Agent protocol code intentionally repeats machine-readable operation,
+    # slot, and blocked-reason literals near the branches that emit or check
+    # them. Keep correctness linters on, but do not force these into constants.
+    - path: ^internal/agent/
+      linters:
+        - goconst
+    - path: ^internal/adminui/tables/agent_call_log\.go
+      linters:
+        - goconst
     # 允许在 main 函数中使用 fmt.Println 等（生产环境通常建议用 log 库）
     - path: main\.go
       text: "SA1019" # staticcheck 的某个特定规则 ID

@@ -335,8 +335,11 @@ func workflowKeyFromSessionKey(sessionKey string, workflow *WorkflowSnapshot) Wo
 	if len(parts) == 0 {
 		return WorkflowKey{}
 	}
-	tenant, _ := strconv.ParseUint(parts[0], 10, 64)
-	key := WorkflowKey{TenantID: uint(tenant)}
+	var tenantID uint
+	if tenant, err := strconv.ParseUint(parts[0], 10, 64); err == nil {
+		tenantID = uint(tenant)
+	}
+	key := WorkflowKey{TenantID: tenantID}
 	if key.TenantID == 0 {
 		key.TenantID = workflowActorIDFromToken(parts[0])
 	}

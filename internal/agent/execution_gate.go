@@ -114,7 +114,7 @@ func buildIdempotencyKey(manifest OperationManifest, input WriteGuardInput) stri
 	return fmt.Sprintf("%s:%s", manifest.Name, encoded[:16])
 }
 
-func idempotencyFieldValue(field string, input WriteGuardInput) (string, bool) {
+func idempotencyFieldValue(field string, input WriteGuardInput) (string, bool) { //nolint:gocyclo // Idempotency fields are enumerated explicitly to keep write keys reviewable.
 	switch field {
 	case "tenant_id":
 		if input.Request.TenantID != 0 {
@@ -261,7 +261,7 @@ func trustedHasRequiredParams(trusted trustedEntities, fields []string) bool {
 	return true
 }
 
-func trustedParamValue(trusted trustedEntities, field string) (TrustedParam, bool) {
+func trustedParamValue(trusted trustedEntities, field string) (TrustedParam, bool) { //nolint:gocyclo // Trusted protocol params are intentionally validated in one auditable switch.
 	if trusted.TrustedParams != nil {
 		if param, ok := trusted.TrustedParams[field]; ok {
 			if trusted.TenantID != 0 && param.TenantID != trusted.TenantID {
@@ -377,7 +377,10 @@ func subscriptionScopeValid(operation string, params map[string]TrustedParam) bo
 	if !ok {
 		return false
 	}
-	scope, _ := scopeParam.Value.(string)
+	scope, ok := scopeParam.Value.(string)
+	if !ok {
+		return false
+	}
 	switch scope {
 	case "all":
 		return true

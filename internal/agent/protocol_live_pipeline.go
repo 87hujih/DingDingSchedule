@@ -104,7 +104,7 @@ func (p protocolLivePipeline) executor() protocolOperationExecutor {
 	return newOperationExecutor(operationExecutorDeps{})
 }
 
-func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInput) (outcome protocolLiveOutcome) {
+func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInput) (outcome protocolLiveOutcome) { //nolint:funlen // Pipeline Handle is the top-level protocol orchestration boundary.
 	outcome.RequestID = newProtocolLiveRequestID(time.Now())
 	outcome.RendererName = "response_renderer"
 	defer finalizeProtocolLiveOutcome(&outcome)

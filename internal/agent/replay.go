@@ -263,12 +263,7 @@ func replayWorkflowCandidatesJSON(values map[string][]Candidate) map[string][]re
 	result := make(map[string][]replayWorkflowCandidate, len(values))
 	for field, candidates := range values {
 		for _, candidate := range candidates {
-			result[field] = append(result[field], replayWorkflowCandidate{
-				ID:       candidate.ID,
-				Label:    candidate.Label,
-				Value:    candidate.Value,
-				TenantID: candidate.TenantID,
-			})
+			result[field] = append(result[field], replayWorkflowCandidate(candidate))
 		}
 	}
 	if len(result) == 0 {
@@ -284,12 +279,7 @@ func replayWorkflowCandidatesFromJSON(values map[string][]replayWorkflowCandidat
 	result := make(map[string][]Candidate, len(values))
 	for field, candidates := range values {
 		for _, candidate := range candidates {
-			result[field] = append(result[field], Candidate{
-				ID:       candidate.ID,
-				Label:    candidate.Label,
-				Value:    candidate.Value,
-				TenantID: candidate.TenantID,
-			})
+			result[field] = append(result[field], Candidate(candidate))
 		}
 	}
 	if len(result) == 0 {

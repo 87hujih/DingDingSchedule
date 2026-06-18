@@ -617,7 +617,7 @@ func cloneSlotDefaults(defaults map[string]SlotDefault) map[string]SlotDefault {
 	return cloned
 }
 
-func lintOperationCatalog(entries []OperationManifest) []string {
+func lintOperationCatalog(entries []OperationManifest) []string { //nolint:gocyclo // Catalog lint keeps manifest invariants in one reviewable pass.
 	var errs []string
 	seen := make(map[string]struct{}, len(entries))
 	for i, manifest := range entries {

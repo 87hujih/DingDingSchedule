@@ -98,7 +98,10 @@ func (sm *sessionManager) getWorkflowState(key string) ([]tools.Message, *Workfl
 	s, ok := sm.sessions[key]
 	if !ok {
 		sm.mu.RUnlock()
-		workflow, _ := sm.workflowStore.Load(context.Background(), workflowKeyFromSessionKey(key, nil))
+		workflow, err := sm.workflowStore.Load(context.Background(), workflowKeyFromSessionKey(key, nil))
+		if err != nil {
+			return nil, nil
+		}
 		return nil, workflow
 	}
 
@@ -110,7 +113,10 @@ func (sm *sessionManager) getWorkflowState(key string) ([]tools.Message, *Workfl
 	}
 	sm.mu.RUnlock()
 
-	workflow, _ := sm.workflowStore.Load(context.Background(), workflowKey)
+	workflow, err := sm.workflowStore.Load(context.Background(), workflowKey)
+	if err != nil {
+		return msgs, nil
+	}
 	return msgs, workflow
 }
 
@@ -183,7 +189,9 @@ func (sm *sessionManager) setWorkflowState(key string, workflow *WorkflowSnapsho
 	next.TenantID = keyParts.TenantID
 	next.ConversationID = keyParts.ConversationID
 	next.ActorUserID = keyParts.ActorUserID
-	_ = sm.workflowStore.Save(context.Background(), next)
+	if err := sm.workflowStore.Save(context.Background(), next); err != nil {
+		return
+	}
 
 	sm.mu.Lock()
 	s, ok := sm.sessions[key]
@@ -254,7 +262,9 @@ func (sm *sessionManager) clearWorkflowState(key string) {
 	}
 	sm.mu.RUnlock()
 
-	_ = sm.workflowStore.Clear(context.Background(), workflowKey, "session_clear")
+	if err := sm.workflowStore.Clear(context.Background(), workflowKey, "session_clear"); err != nil {
+		return
+	}
 
 	sm.mu.Lock()
 	if s, ok := sm.sessions[key]; ok {
