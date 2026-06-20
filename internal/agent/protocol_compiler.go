@@ -22,26 +22,14 @@ func compileProtocolWithCompiler(ctx context.Context, input protocolInput, compi
 		return ProtocolDraft{Act: ActUnknown, Domain: DomainUnknown, Reason: "empty_message", ClarifyReason: "empty_message"}, nil
 	}
 
-	if draft, ok := compileWorkflowCancel(message, input.ActiveWorkflow); ok {
-		return draft, nil
-	}
 	if compiler == nil {
 		return unknownIntentDraft("intent_compiler_unavailable"), nil
 	}
-	draft, err := compiler.Compile(ctx, IntentCompileRequest{
-		Message:        message,
-		ActiveWorkflow: intentCompileWorkflowContext(input.ActiveWorkflow),
-	})
+	result, err := newOperationCompiler(compiler).Compile(ctx, input)
 	if err != nil {
 		return ProtocolDraft{}, err
 	}
-	if draft.Act == ActUnknown {
-		fallback := compileProtocol(input)
-		if fallback.Act != ActUnknown {
-			return fallback, nil
-		}
-	}
-	return draft, nil
+	return result.Draft, nil
 }
 
 func intentCompileWorkflowContext(workflow *protocolWorkflowContext) *IntentCompileWorkflowContext {

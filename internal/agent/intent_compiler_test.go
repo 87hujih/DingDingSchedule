@@ -255,6 +255,15 @@ func TestIntentCompilerPromptIncludesCatalogAndUsesNoTools(t *testing.T) {
 			t.Fatalf("system prompt does not contain catalog operation %q: %s", metadata.Name, systemPrompt)
 		}
 	}
+	for _, fragment := range []string{
+		"aliases=开启考勤订阅",
+		"取消考勤推送",
+		"当前都有哪些部门",
+	} {
+		if !strings.Contains(systemPrompt, fragment) {
+			t.Fatalf("system prompt does not contain catalog recognition fragment %q: %s", fragment, systemPrompt)
+		}
+	}
 	if strings.Contains(systemPrompt, "manual_sign.create") {
 		t.Fatalf("system prompt contains operation outside catalog: %s", systemPrompt)
 	}

@@ -136,6 +136,7 @@ type OperationManifest struct {
 	OptionalTrustedParams []ParamSpec
 	QueryShapes           []QueryShapeMetadata
 	Defaults              map[string]SlotDefault
+	Recognition           RecognitionSpec
 
 	Workflow    *WorkflowSpec
 	Dispatch    ProtocolLiveDispatchBinding
@@ -162,6 +163,7 @@ type OperationPromptEntry struct {
 	OptionalTrustedParams []string
 	QueryShapes           []QueryShapePromptEntry
 	Defaults              map[string]SlotDefault
+	Aliases               []string
 }
 
 type QueryShapePromptEntry struct {
@@ -222,6 +224,18 @@ var operationCatalogEntries = []OperationManifest{
 		MinRole:               1,
 		RequiredTrustedParams: params("conversation_id", "scope"),
 		OptionalTrustedParams: params("dept_ids"),
+		Recognition: RecognitionSpec{
+			Aliases: []string{
+				"开启考勤订阅",
+				"开启本群考勤订阅",
+				"打开本群考勤推送",
+				"开通考勤订阅",
+			},
+			SlotHints: []SlotHint{
+				{Field: "scope", Shape: "subscription_scope"},
+				{Field: "dept_ids", Shape: "department_name_or_candidate"},
+			},
+		},
 		Workflow: &WorkflowSpec{
 			Type:                  WorkflowSubscriptionStart,
 			Mode:                  WorkflowModeMultiTurn,
@@ -257,6 +271,15 @@ var operationCatalogEntries = []OperationManifest{
 		Scope:                 ConversationScopeGroup,
 		MinRole:               1,
 		RequiredTrustedParams: params("conversation_id"),
+		Recognition: RecognitionSpec{
+			Aliases: []string{
+				"取消考勤推送",
+				"取消本群考勤推送",
+				"取消考勤订阅",
+				"关闭考勤订阅",
+				"关闭本群考勤推送",
+			},
+		},
 		Workflow: &WorkflowSpec{
 			Type:                  WorkflowType("subscription.cancel"),
 			Mode:                  WorkflowModeSingleTurn,
@@ -282,14 +305,24 @@ var operationCatalogEntries = []OperationManifest{
 		Scope:                 ConversationScopeGroup,
 		MinRole:               0,
 		RequiredTrustedParams: params("conversation_id"),
-		Workflow:              singleTurnWorkflowSpec(),
-		Resolvers:             []ResolverSpec{{Param: "conversation_id", Name: "runtime_conversation"}},
-		Dispatch:              ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchRuntimeConversation},
-		Policies:              []PolicySpec{{Name: "group_conversation"}},
-		WriteGuard:            WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:              ExecutorBinding{Name: ExecutorBindingSubscriptionQueryStatus},
-		Renderer:              RendererBinding{Name: "response_renderer", Kind: ResponseResult},
-		Eval:                  EvalBinding{CaseIDs: []string{"catalog-subscription-query-status"}, ReplayTags: []string{"subscription"}},
+		Recognition: RecognitionSpec{
+			Aliases: []string{
+				"查本群订阅状态",
+				"当前群有没有订阅",
+				"有没有开启考勤订阅",
+				"查这个群有没有开启考勤订阅",
+				"订阅状态",
+				"有没有订阅",
+			},
+		},
+		Workflow:   singleTurnWorkflowSpec(),
+		Resolvers:  []ResolverSpec{{Param: "conversation_id", Name: "runtime_conversation"}},
+		Dispatch:   ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchRuntimeConversation},
+		Policies:   []PolicySpec{{Name: "group_conversation"}},
+		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingNotRequired},
+		Executor:   ExecutorBinding{Name: ExecutorBindingSubscriptionQueryStatus},
+		Renderer:   RendererBinding{Name: "response_renderer", Kind: ResponseResult},
+		Eval:       EvalBinding{CaseIDs: []string{"catalog-subscription-query-status"}, ReplayTags: []string{"subscription"}},
 	},
 	{
 		Name:        "subscription.list_departments",
@@ -298,6 +331,19 @@ var operationCatalogEntries = []OperationManifest{
 		Risk:        RiskRead,
 		Scope:       ConversationScopeBoth,
 		MinRole:     0,
+		Recognition: RecognitionSpec{
+			Aliases: []string{
+				"当前都有哪些部门",
+				"都有哪些部门",
+				"有哪些部门",
+				"部门列表",
+				"部门有哪些",
+				"哪些部门",
+			},
+			ContinueShapes: []ContinueShape{
+				{WorkflowType: WorkflowSubscriptionStart, States: []WorkflowState{WorkflowCollectScope, WorkflowCollectDepartments}, Source: "auxiliary_operation"},
+			},
+		},
 		Workflow: &WorkflowSpec{
 			Type:                WorkflowSubscriptionStart,
 			Mode:                WorkflowModeAuxiliary,
@@ -579,6 +625,7 @@ func promptOperationEntries() []OperationPromptEntry {
 			RequiredTrustedParams: paramNames(manifest.RequiredTrustedParams),
 			OptionalTrustedParams: paramNames(manifest.OptionalTrustedParams),
 			Defaults:              cloneSlotDefaults(manifest.Defaults),
+			Aliases:               append([]string(nil), manifest.Recognition.Aliases...),
 		}
 		if len(manifest.QueryShapes) > 0 {
 			entry.QueryShapes = make([]QueryShapePromptEntry, 0, len(manifest.QueryShapes))

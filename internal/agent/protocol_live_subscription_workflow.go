@@ -241,33 +241,22 @@ func persistWorkflowCandidatesFromEntityCandidates(workflow *WorkflowSnapshot, f
 }
 
 func workflowDepartmentCandidateSelection(workflow *WorkflowSnapshot, message string, tenantID uint) (trustedEntities, bool, bool) {
-	ordinal, ok := parseCandidateOrdinal(message)
-	if ok {
-		if workflow == nil || len(workflow.Candidates["dept_ids"]) < ordinal {
-			return trustedEntities{}, true, false
-		}
-		return trustedEntitiesFromDepartmentCandidate(workflow.Candidates["dept_ids"][ordinal-1], message, tenantID)
-	}
-
-	candidate, ok := matchWorkflowDepartmentCandidateLabel(workflow, message)
-	if !ok {
+	if workflow == nil {
 		return trustedEntities{}, false, false
 	}
-	return trustedEntitiesFromDepartmentCandidate(candidate, message, tenantID)
-}
-
-func matchWorkflowDepartmentCandidateLabel(workflow *WorkflowSnapshot, message string) (Candidate, bool) {
-	if workflow == nil {
-		return Candidate{}, false
+	selection := resolveCandidateSelection(CandidateSelectionInput{
+		Field:      "dept_ids",
+		Message:    message,
+		TenantID:   tenantID,
+		Candidates: workflow.Candidates["dept_ids"],
+	})
+	if !selection.Handled {
+		return trustedEntities{}, false, false
 	}
-	for _, variant := range entityNameVariants(message) {
-		for _, candidate := range workflow.Candidates["dept_ids"] {
-			if normalizeEntityName(candidate.Label) == variant {
-				return candidate, true
-			}
-		}
+	if !selection.OK {
+		return trustedEntities{}, true, false
 	}
-	return Candidate{}, false
+	return trustedEntitiesFromDepartmentCandidate(selection.Candidate, message, tenantID)
 }
 
 func trustedEntitiesFromDepartmentCandidate(candidate Candidate, message string, tenantID uint) (trustedEntities, bool, bool) {

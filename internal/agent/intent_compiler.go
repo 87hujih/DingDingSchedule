@@ -342,6 +342,10 @@ func buildIntentCompilerSystemPrompt() string {
 				b.WriteString(string(metadata.Defaults[field]))
 			}
 		}
+		if len(metadata.Aliases) > 0 {
+			b.WriteString("; aliases=")
+			b.WriteString(strings.Join(metadata.Aliases, ","))
+		}
 		b.WriteString("\n")
 	}
 	return b.String()

@@ -260,7 +260,7 @@ func workflowContinueTargetsActiveWorkflow(operation string, workflowType string
 	if operation == workflowType {
 		return true
 	}
-	return workflowType == "subscription.start" && operation == "subscription.list_departments"
+	return workflowAllowsAuxiliaryOperation(WorkflowType(workflowType), operation)
 }
 
 // workflowContinueShapeAllowed reports whether a continuation matches the active workflow slot shape.
@@ -268,16 +268,22 @@ func workflowContinueShapeAllowed(operation string, workflow *protocolWorkflowCo
 	if workflow == nil {
 		return false
 	}
-	switch {
-	case workflow.Type == "subscription.start" && operation == "subscription.start":
-		return hasMissingField(workflow.MissingFields, "scope") ||
-			hasMissingField(workflow.MissingFields, "dept_names") ||
-			hasMissingField(workflow.MissingFields, "dept_ids")
-	case workflow.Type == "subscription.start" && operation == "subscription.list_departments":
+	if workflowAllowsAuxiliaryOperation(WorkflowType(workflow.Type), operation) {
 		return true
-	default:
+	}
+	if operation != workflow.Type {
 		return false
 	}
+	manifest, ok := lookupOperation(workflow.Type)
+	if !ok || manifest.Workflow == nil {
+		return false
+	}
+	for _, param := range manifest.Workflow.RequiredTrustedParams {
+		if workflowHasMissingParam(workflow.MissingFields, param.Name) {
+			return true
+		}
+	}
+	return false
 }
 
 // policyExplicitNewRequest reports whether an act should interrupt any active workflow.
@@ -287,6 +293,40 @@ func policyExplicitNewRequest(act UserAct) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func workflowAllowsAuxiliaryOperation(workflowType WorkflowType, operation string) bool {
+	manifest, ok := lookupOperation(string(workflowType))
+	if !ok || manifest.Workflow == nil {
+		return false
+	}
+	for _, auxiliary := range manifest.Workflow.AuxiliaryOperations {
+		if auxiliary == operation {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowHasMissingParam(fields []string, param string) bool {
+	if hasMissingField(fields, param) {
+		return true
+	}
+	for _, alias := range workflowParamMissingAliases(param) {
+		if hasMissingField(fields, alias) {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowParamMissingAliases(param string) []string {
+	switch param {
+	case "dept_ids":
+		return []string{"dept_names"}
+	default:
+		return nil
 	}
 }
 
@@ -397,12 +437,16 @@ func denyResourcePolicy(reason string) ResourcePolicyGateResult {
 }
 
 func subscriptionOperationRequiresCurrentConversation(operation string) bool {
-	switch operation {
-	case "subscription.start", "subscription.cancel", "subscription.query_status":
-		return true
-	default:
+	manifest, ok := lookupOperation(operation)
+	if !ok || manifest.Domain != DomainSubscription {
 		return false
 	}
+	for _, param := range manifest.RequiredTrustedParams {
+		if param.Name == "conversation_id" {
+			return true
+		}
+	}
+	return false
 }
 
 func requestConversationMatchesUser(user *tools.UserContext, req OperationRequest) bool {

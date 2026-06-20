@@ -190,6 +190,51 @@ func TestOperationCatalogEveryManifestDeclaresProtocolLiveRuntimeBindings(t *tes
 	}
 }
 
+func TestOperationCatalogSubscriptionOperationsDeclareRecognition(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		operation string
+		aliases   []string
+	}{
+		{
+			operation: "subscription.start",
+			aliases:   []string{"开启考勤订阅", "打开本群考勤推送"},
+		},
+		{
+			operation: "subscription.cancel",
+			aliases:   []string{"取消考勤推送", "关闭考勤订阅"},
+		},
+		{
+			operation: "subscription.list_departments",
+			aliases:   []string{"当前都有哪些部门", "部门列表"},
+		},
+		{
+			operation: "subscription.query_status",
+			aliases:   []string{"查本群订阅状态", "当前群有没有订阅"},
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.operation, func(t *testing.T) {
+			t.Parallel()
+
+			manifest, ok := lookupOperation(tt.operation)
+			if !ok {
+				t.Fatalf("%s missing", tt.operation)
+			}
+			if len(manifest.Recognition.Aliases) == 0 {
+				t.Fatalf("%s Recognition.Aliases is empty", tt.operation)
+			}
+			for _, alias := range tt.aliases {
+				if !recognitionContainsAlias(manifest.Recognition, alias) {
+					t.Fatalf("%s Recognition.Aliases = %v, want alias %q", tt.operation, manifest.Recognition.Aliases, alias)
+				}
+			}
+		})
+	}
+}
+
 func TestOperationCatalogEvalCaseIDsExistInFixture(t *testing.T) {
 	t.Parallel()
 

@@ -2,6 +2,10 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -18,6 +22,25 @@ func TestPolicyGateRejectsExecutionForCapabilityQuestion(t *testing.T) {
 	}
 	if result.ValidationCode != "capability_non_executable" {
 		t.Fatalf("ValidationCode = %q, want capability_non_executable", result.ValidationCode)
+	}
+}
+
+func TestPolicyGateWorkflowContinueUsesCatalogBindings(t *testing.T) {
+	t.Parallel()
+
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	sourcePath := filepath.Join(filepath.Dir(testFile), "policy_gate.go")
+	source, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", sourcePath, err)
+	}
+	for _, token := range []string{`"subscription.start"`, `"subscription.list_departments"`} {
+		if strings.Contains(string(source), token) {
+			t.Fatalf("policy_gate.go still hard-codes %s; workflow continue policy must use OperationCatalog bindings", token)
+		}
 	}
 }
 
