@@ -35,7 +35,7 @@ func compileProtocolWithCompiler(ctx context.Context, input protocolInput, compi
 	if err != nil {
 		return ProtocolDraft{}, err
 	}
-	if draft.Act == ActUnknown && input.ActiveWorkflow != nil {
+	if draft.Act == ActUnknown {
 		fallback := compileProtocol(input)
 		if fallback.Act != ActUnknown {
 			return fallback, nil
@@ -98,6 +98,14 @@ func compileProtocol(input protocolInput) ProtocolDraft {
 			Act:       ActReadQuery,
 			Domain:    DomainSubscription,
 			Operation: "subscription.query_status",
+		}
+	}
+
+	if looksLikeSubscriptionDepartmentListQuestion(message) {
+		return ProtocolDraft{
+			Act:       ActReadQuery,
+			Domain:    DomainSubscription,
+			Operation: "subscription.list_departments",
 		}
 	}
 

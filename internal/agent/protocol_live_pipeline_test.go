@@ -400,6 +400,38 @@ func TestProtocolLivePipelineListsDepartmentsWithoutActiveWorkflow(t *testing.T)
 	}
 }
 
+func TestProtocolLivePipelineListsDepartmentsWhenCompilerReturnsUnknown(t *testing.T) {
+	t.Parallel()
+
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{{TenantID: 42, DeptID: 101, Name: "家族7期"}}}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:           ActUnknown,
+			Domain:        DomainUnknown,
+			ClarifyReason: "intent_parse_failed",
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{Dept: dept}),
+	})
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message: "当前都有哪些部门",
+		User:    executorUserContext(),
+	})
+
+	if outcome.Response.Kind != ResponseSelectOptions {
+		t.Fatalf("Response = %+v, want select options", outcome.Response)
+	}
+	if !strings.Contains(renderProtocolResponse(outcome.Response), "家族7期") {
+		t.Fatalf("reply = %q, want department option", renderProtocolResponse(outcome.Response))
+	}
+	if outcome.Draft.Act != ActReadQuery || outcome.Draft.Operation != "subscription.list_departments" {
+		t.Fatalf("Draft = %+v, want deterministic department list read query", outcome.Draft)
+	}
+	if outcome.CandidateCount != 1 {
+		t.Fatalf("CandidateCount = %d, want 1", outcome.CandidateCount)
+	}
+}
+
 func TestProtocolLivePipelineListsDepartmentsInDMWithoutGroupGate(t *testing.T) {
 	t.Parallel()
 

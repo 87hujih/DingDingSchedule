@@ -255,6 +255,39 @@ func TestProtocolCompilerFallsBackToDepartmentWorkflowContinueDuringScopeCollect
 	}
 }
 
+func TestProtocolCompilerFallsBackToDeterministicDepartmentListWhenInjectedCompilerReturnsUnknown(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeProtocolIntentCompiler{
+		draftsByMessage: map[string]IntentDraft{
+			"当前都有哪些部门": {
+				Act:           ActUnknown,
+				Domain:        DomainUnknown,
+				ClarifyReason: "intent_parse_failed",
+			},
+		},
+	}
+
+	draft, err := compileProtocolWithCompiler(context.Background(), protocolInput{
+		Message: "当前都有哪些部门",
+	}, fake)
+	if err != nil {
+		t.Fatalf("compileProtocolWithCompiler() error = %v", err)
+	}
+	if draft.Act != ActReadQuery {
+		t.Fatalf("Act = %q, want %q", draft.Act, ActReadQuery)
+	}
+	if draft.Domain != DomainSubscription {
+		t.Fatalf("Domain = %q, want %q", draft.Domain, DomainSubscription)
+	}
+	if draft.Operation != "subscription.list_departments" {
+		t.Fatalf("Operation = %q, want subscription.list_departments", draft.Operation)
+	}
+	if len(fake.requests) != 1 {
+		t.Fatalf("compiler requests = %d, want 1", len(fake.requests))
+	}
+}
+
 func TestProtocolCompilerClassifiesHelpMeCancelSubscriptionAsCancel(t *testing.T) {
 	t.Parallel()
 
@@ -393,8 +426,11 @@ func TestProtocolCompilerTreatsDepartmentHelpAsWorkflowMetaOnlyDuringSubscriptio
 	}
 
 	withoutWorkflow := compileProtocol(protocolInput{Message: message})
-	if withoutWorkflow.Act != ActUnknown {
-		t.Fatalf("Act without workflow = %q, want %q", withoutWorkflow.Act, ActUnknown)
+	if withoutWorkflow.Act != ActReadQuery {
+		t.Fatalf("Act without workflow = %q, want %q", withoutWorkflow.Act, ActReadQuery)
+	}
+	if withoutWorkflow.Operation != "subscription.list_departments" {
+		t.Fatalf("Operation without workflow = %q, want subscription.list_departments", withoutWorkflow.Operation)
 	}
 }
 
