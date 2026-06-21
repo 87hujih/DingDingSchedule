@@ -54,8 +54,9 @@ const (
 )
 
 type OperationStatusPayload struct {
-	Code   string
-	Status WriteStatus
+	Code        string
+	Status      WriteStatus
+	PushEnabled *bool
 }
 
 type KnowledgeAnswerPayload struct {
@@ -196,6 +197,14 @@ func renderNumberedOptions(labels []string) string {
 func renderOperationStatus(payload OperationStatusPayload) string {
 	switch payload.Code {
 	case "subscription_started":
+		if payload.PushEnabled != nil && !*payload.PushEnabled {
+			switch payload.Status {
+			case WriteStatusUpdated:
+				return "已更新此群考勤推送范围，但后台已暂停自动推送。请联系管理员在后台恢复。"
+			default:
+				return "此群已订阅考勤推送，但后台已暂停自动推送。请联系管理员在后台恢复。"
+			}
+		}
 		switch payload.Status {
 		case WriteStatusAlreadyExists:
 			return "此群已经开启考勤推送，无需重复开启。"
@@ -321,6 +330,9 @@ func buildUserDayAttendanceStatusReply(status *tools.UserDayAttendanceStatus) st
 func buildSubscriptionStatusReply(info *tools.GroupSubInfo) string {
 	if info == nil || !info.Subscribed {
 		return "当前群还没有订阅考勤推送。"
+	}
+	if !info.PushEnabled {
+		return "当前群已订阅考勤推送，但后台已暂停自动推送。请联系管理员在后台恢复。"
 	}
 
 	reply := "当前群已订阅考勤推送。"

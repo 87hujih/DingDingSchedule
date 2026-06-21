@@ -196,7 +196,7 @@ func TestLoadReplayCasesFromDBThenRunCaseReplaysProtocolLivePipeline(t *testing.
 		t.Fatalf("case count = %d, want 1: %+v", len(cases), cases)
 	}
 
-	groupSub := &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true}}
+	groupSub := &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true, PushEnabled: true}}
 	result := NewReplayRunner(ReplayRunnerOptions{GroupSub: groupSub}).RunCase(context.Background(), cases[0])
 
 	if result.Status != ReplayMatched {
@@ -241,7 +241,7 @@ func TestFailureLayerReportSummarizesWhereFailuresCluster(t *testing.T) {
 func TestReplayRunnerReplaysProtocolLiveCaseAndComparesStableFields(t *testing.T) {
 	t.Parallel()
 
-	groupSub := &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true}}
+	groupSub := &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true, PushEnabled: true}}
 	runner := NewReplayRunner(ReplayRunnerOptions{GroupSub: groupSub})
 	result := runner.RunCase(context.Background(), ReplayCase{
 		Question:         "查这个群有没有开启考勤订阅",
@@ -283,7 +283,7 @@ func TestReplayRunnerReportsStableProtocolFieldMismatches(t *testing.T) {
 	t.Parallel()
 
 	runner := NewReplayRunner(ReplayRunnerOptions{
-		GroupSub: &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true}},
+		GroupSub: &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true, PushEnabled: true}},
 	})
 	result := runner.RunCase(context.Background(), ReplayCase{
 		Question:         "查这个群有没有开启考勤订阅",
@@ -324,7 +324,7 @@ func TestReplayRunnerComparesWorkflowDecisionEvenWhenExpectedEmpty(t *testing.T)
 	t.Parallel()
 
 	runner := NewReplayRunner(ReplayRunnerOptions{
-		GroupSub: &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true}},
+		GroupSub: &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true, PushEnabled: true}},
 	})
 	result := runner.RunCase(context.Background(), ReplayCase{
 		Question:         "查这个群有没有开启考勤订阅",
@@ -429,7 +429,7 @@ func TestReplayRunnerDryRunWriteRerunsPipelineWithoutCallingWritePort(t *testing
 func TestReplayRunnerDryRunSubscriptionCancelDoesNotCallWritePort(t *testing.T) {
 	t.Parallel()
 
-	groupSub := &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true}}
+	groupSub := &executorFakeGroupSubPort{info: &tools.GroupSubInfo{Subscribed: true, PushEnabled: true}}
 	runner := NewReplayRunner(ReplayRunnerOptions{GroupSub: groupSub})
 	result := runner.RunCase(context.Background(), ReplayCase{
 		Question:         "关闭本群考勤订阅",

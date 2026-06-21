@@ -2345,7 +2345,7 @@ func TestSubscriptionWorkflowCancelsOnExplicitWriteRequestInProtocolLive(t *test
 	t.Parallel()
 
 	callLog := newTestCallLogPort()
-	groupSub := &testGroupSubPort{info: &agenttools.GroupSubInfo{Subscribed: true}}
+	groupSub := &testGroupSubPort{info: &agenttools.GroupSubInfo{Subscribed: true, PushEnabled: true}}
 	a := NewAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
@@ -2849,9 +2849,10 @@ func TestProtocolLiveSubscriptionStatusAllowsOrdinaryGroupUser(t *testing.T) {
 	callLog := newTestCallLogPort()
 	groupSub := &testGroupSubPort{
 		info: &agenttools.GroupSubInfo{
-			Subscribed: true,
-			GroupName:  "测试群",
-			DeptIDs:    []int64{101, 102},
+			Subscribed:  true,
+			GroupName:   "测试群",
+			DeptIDs:     []int64{101, 102},
+			PushEnabled: true,
 		},
 	}
 	a := NewAgent(Deps{
@@ -2927,7 +2928,7 @@ func TestProtocolLiveSubscriptionStatusInDMExplainsGroupOnly(t *testing.T) {
 
 	callLog := newTestCallLogPort()
 	groupSub := &testGroupSubPort{
-		info: &agenttools.GroupSubInfo{Subscribed: true},
+		info: &agenttools.GroupSubInfo{Subscribed: true, PushEnabled: true},
 	}
 	a := NewAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",

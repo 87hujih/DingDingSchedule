@@ -78,6 +78,44 @@ func TestAttendanceAdapterUsesRealtimeViewForCurrentSlot(t *testing.T) {
 	}
 }
 
+func TestGroupSubAdapterIncludesPushEnabledInSubscriptionInfo(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:group-sub-adapter-test?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	if err := db.Migrator().DropTable(&model.GroupAttendanceSubscription{}); err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+	if err := db.AutoMigrate(&model.GroupAttendanceSubscription{}); err != nil {
+		t.Fatalf("auto migrate: %v", err)
+	}
+	sub := model.GroupAttendanceSubscription{
+		TenantID:       1,
+		ConversationID: "conv-1",
+		GroupName:      "测试群",
+	}
+	if err := db.Create(&sub).Error; err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if err := db.Model(&model.GroupAttendanceSubscription{}).
+		Where("tenant_id = ? AND conversation_id = ?", 1, "conv-1").
+		Update("push_enabled", false).Error; err != nil {
+		t.Fatalf("disable push: %v", err)
+	}
+
+	adapter := &groupSubAdapter{repo: repository.NewGroupAttendanceSubscriptionRepository(db)}
+	info, err := adapter.GetSubscription(context.Background(), 1, "conv-1")
+	if err != nil {
+		t.Fatalf("GetSubscription() error = %v", err)
+	}
+	if !info.Subscribed {
+		t.Fatalf("Subscribed = false, want true")
+	}
+	if info.PushEnabled {
+		t.Fatalf("PushEnabled = true, want false")
+	}
+}
+
 func TestAttendanceAdapterUsesSnapshotForHistoryQueries(t *testing.T) {
 	service := &fakeAttendanceDetailService{
 		detailResp: &dto.AttendanceDetailResponse{

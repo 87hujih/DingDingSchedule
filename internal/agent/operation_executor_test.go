@@ -247,7 +247,7 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 	t.Parallel()
 
 	groupSub := &executorFakeGroupSubPort{
-		info: &tools.GroupSubInfo{Subscribed: true, DeptIDs: []int64{101}},
+		info: &tools.GroupSubInfo{Subscribed: true, DeptIDs: []int64{101}, PushEnabled: true},
 	}
 	dept := executorFakeDeptPort{
 		depts: []tools.DeptItem{{DeptID: 101, Name: "信工24级"}},
@@ -364,14 +364,14 @@ func TestOperationExecutorSubscriptionStartReturnsStableWriteStatuses(t *testing
 		},
 		{
 			name:               "already exists with same all scope",
-			existing:           &tools.GroupSubInfo{Subscribed: true},
+			existing:           &tools.GroupSubInfo{Subscribed: true, PushEnabled: true},
 			scope:              "all",
 			wantStatus:         WriteStatusAlreadyExists,
 			wantSubscribeCalls: 0,
 		},
 		{
 			name:               "updates changed department scope",
-			existing:           &tools.GroupSubInfo{Subscribed: true, DeptIDs: []int64{101}},
+			existing:           &tools.GroupSubInfo{Subscribed: true, DeptIDs: []int64{101}, PushEnabled: true},
 			scope:              "department",
 			deptIDs:            []int64{102, 103},
 			wantStatus:         WriteStatusUpdated,
@@ -414,6 +414,29 @@ func TestOperationExecutorSubscriptionStartReturnsStableWriteStatuses(t *testing
 	}
 }
 
+func TestOperationExecutorSubscriptionStartReportsBackendPausedPush(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{
+		info: &tools.GroupSubInfo{Subscribed: true, PushEnabled: false},
+	}
+	executor := newOperationExecutor(operationExecutorDeps{GroupSub: groupSub})
+	uctx := executorUserContext()
+
+	result := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{
+		Operation: "subscription.start",
+		TrustedParams: executorTrustedParams(map[string]any{
+			"conversation_id": uctx.ConversationID,
+			"scope":           "all",
+		}),
+	}, uctx))
+
+	reply := renderProtocolResponse(result.Response)
+	if reply != "此群已订阅考勤推送，但后台已暂停自动推送。请联系管理员在后台恢复。" {
+		t.Fatalf("reply = %q, want backend paused message", reply)
+	}
+}
+
 func TestOperationExecutorSubscriptionCancelReturnsStableWriteStatuses(t *testing.T) {
 	t.Parallel()
 
@@ -431,7 +454,7 @@ func TestOperationExecutorSubscriptionCancelReturnsStableWriteStatuses(t *testin
 		},
 		{
 			name:                 "active subscription is updated",
-			existing:             &tools.GroupSubInfo{Subscribed: true},
+			existing:             &tools.GroupSubInfo{Subscribed: true, PushEnabled: true},
 			wantStatus:           WriteStatusUpdated,
 			wantUnsubscribeCalls: 1,
 		},

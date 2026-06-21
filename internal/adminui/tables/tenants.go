@@ -13,13 +13,14 @@ import (
 
 // Generators go-admin table models 注册表
 var Generators = table.GeneratorList{
-	"tenants":           GetTenantTable,
-	"semesters":         GetSemesterTable,
-	"schedule_periods":  GetSchedulePeriodTable,
-	"schedule_settings": GetScheduleSettingTable,
-	"audit_logs":        GetAuditLogTable,
-	"system_logs":       GetSystemLogTable,
-	"agent_call_logs":   GetAgentCallLogTable,
+	"tenants":                        GetTenantTable,
+	"semesters":                      GetSemesterTable,
+	"schedule_periods":               GetSchedulePeriodTable,
+	"schedule_settings":              GetScheduleSettingTable,
+	"group_attendance_subscriptions": GetGroupAttendanceSubscriptionTable,
+	"audit_logs":                     GetAuditLogTable,
+	"system_logs":                    GetSystemLogTable,
+	"agent_call_logs":                GetAgentCallLogTable,
 }
 
 // GetTenantTable tenants 表的 CRUD 配置

@@ -65,6 +65,7 @@ func (testAdminUserPort) SearchByName(context.Context, string) ([]UserInfo, erro
 type testGroupSubPort struct {
 	subscribeCalls int
 	lastDeptIDs    []int64
+	info           *GroupSubInfo
 }
 
 func (p *testGroupSubPort) Subscribe(_ context.Context, _ uint, _ string, _ string, _ uint, deptIDs []int64) error {
@@ -78,6 +79,9 @@ func (p *testGroupSubPort) Unsubscribe(context.Context, uint, string) error {
 }
 
 func (p *testGroupSubPort) GetSubscription(context.Context, uint, string) (*GroupSubInfo, error) {
+	if p.info != nil {
+		return p.info, nil
+	}
 	return &GroupSubInfo{Subscribed: false}, nil
 }
 
@@ -146,6 +150,31 @@ func TestSubscribeAttendancePushAcceptsChineseNumeralDeptAlias(t *testing.T) {
 	}
 	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 301 {
 		t.Fatalf("Subscribe() dept ids = %v, want [301]", groupSub.lastDeptIDs)
+	}
+}
+
+func TestSubscribeAttendancePushReportsBackendPausedPush(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	groupSub := &testGroupSubPort{
+		info: &GroupSubInfo{Subscribed: true, PushEnabled: false},
+	}
+	RegisterAdminTools(registry, &testAttendancePort{}, testAdminUserPort{}, groupSub, testDeptPort{})
+
+	result, err := registry.Dispatch(context.Background(), &UserContext{
+		TenantID:          42,
+		UserID:            7,
+		UserRole:          1,
+		ConversationType:  "2",
+		ConversationID:    "conv-1",
+		ConversationTitle: "测试群",
+	}, "subscribe_attendance_push", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+	if !strings.Contains(result, "后台已暂停自动推送") {
+		t.Fatalf("Dispatch() result = %s, want backend paused message", result)
 	}
 }
 

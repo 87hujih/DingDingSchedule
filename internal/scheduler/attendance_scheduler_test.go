@@ -1,11 +1,14 @@
 package scheduler
 
 import (
+	"context"
 	"slices"
 	"testing"
 	"time"
 
 	"schedule_server/config"
+	"schedule_server/internal/dto"
+	"schedule_server/internal/model"
 
 	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
@@ -40,6 +43,20 @@ func TestAttendanceSchedulerKeepsPushFlowUnchanged(t *testing.T) {
 	}
 }
 
+func TestAttendanceSchedulerPushUsesPushEnabledSubscriptions(t *testing.T) {
+	repo := &pushEnabledOnlyGroupSubRepo{}
+	scheduler := &AttendanceScheduler{
+		groupSubRepo: repo,
+		logger:       zap.NewNop().Sugar(),
+	}
+
+	scheduler.pushToSubscribedGroups(context.Background(), &model.Tenant{ID: 1, CorpID: "corp"}, &dto.AttendanceDetailResponse{})
+
+	if !repo.listPushEnabledCalled {
+		t.Fatalf("ListPushEnabledByTenantID was not called")
+	}
+}
+
 func newAttendanceSchedulerTestSubject() *AttendanceScheduler {
 	return &AttendanceScheduler{
 		scheduleCfg: config.Schedule{
@@ -54,6 +71,31 @@ func newAttendanceSchedulerTestSubject() *AttendanceScheduler {
 		cron:                 cron.New(cron.WithSeconds(), cron.WithLocation(time.Local)),
 		logger:               zap.NewNop().Sugar(),
 	}
+}
+
+type pushEnabledOnlyGroupSubRepo struct {
+	listPushEnabledCalled bool
+}
+
+func (r *pushEnabledOnlyGroupSubRepo) Upsert(context.Context, *model.GroupAttendanceSubscription) error {
+	return nil
+}
+
+func (r *pushEnabledOnlyGroupSubRepo) SoftDelete(context.Context, uint, string) error {
+	return nil
+}
+
+func (r *pushEnabledOnlyGroupSubRepo) ListByTenantID(context.Context, uint) ([]model.GroupAttendanceSubscription, error) {
+	panic("ListByTenantID should not be used by push flow")
+}
+
+func (r *pushEnabledOnlyGroupSubRepo) ListPushEnabledByTenantID(context.Context, uint) ([]model.GroupAttendanceSubscription, error) {
+	r.listPushEnabledCalled = true
+	return nil, nil
+}
+
+func (r *pushEnabledOnlyGroupSubRepo) FindByConversationID(context.Context, uint, string) (*model.GroupAttendanceSubscription, error) {
+	return nil, nil
 }
 
 func attendanceSchedulerNextTimes(t *testing.T, scheduler *AttendanceScheduler, entryIDs []cron.EntryID, base time.Time) []string {

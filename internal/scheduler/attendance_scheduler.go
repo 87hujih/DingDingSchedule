@@ -555,7 +555,7 @@ func (s *AttendanceScheduler) finalizeAttendanceForTenant(tenantID uint, section
 
 // pushToSubscribedGroups 将考勤结果推送到该租户的订阅群
 func (s *AttendanceScheduler) pushToSubscribedGroups(ctx context.Context, tenant *model.Tenant, result *dto.AttendanceDetailResponse) {
-	subs, err := s.groupSubRepo.ListByTenantID(ctx, tenant.ID)
+	subs, err := s.groupSubRepo.ListPushEnabledByTenantID(ctx, tenant.ID)
 	if err != nil {
 		s.logger.Warnw("查询考勤推送订阅失败", "tenantId", tenant.ID, "err", err)
 		return

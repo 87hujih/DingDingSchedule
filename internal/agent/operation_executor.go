@@ -180,7 +180,7 @@ func (e operationExecutor) executeSubscriptionStart(ctx context.Context, req Ope
 		if sameSubscriptionDeptScope(current.DeptIDs, deptIDs) {
 			return operationExecutionResult(ResponseModel{
 				Kind:    ResponseResult,
-				Payload: OperationStatusPayload{Code: "subscription_started", Status: WriteStatusAlreadyExists},
+				Payload: OperationStatusPayload{Code: "subscription_started", Status: WriteStatusAlreadyExists, PushEnabled: boolPtr(current.PushEnabled)},
 			}, answerModeToolFirst)
 		}
 		status = WriteStatusUpdated
@@ -188,9 +188,21 @@ func (e operationExecutor) executeSubscriptionStart(ctx context.Context, req Ope
 	if err := e.deps.GroupSub.Subscribe(ctx, req.TenantID, conversationID, operationRequestConversationTitle(req), req.ActorUserID, deptIDs); err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
+	pushEnabled := true
+	if current != nil && current.Subscribed {
+		pushEnabled = current.PushEnabled
+	} else {
+		updated, err := e.deps.GroupSub.GetSubscription(ctx, req.TenantID, conversationID)
+		if err != nil {
+			return operationExecutionResult(operationErrorResponse(), answerModeReject)
+		}
+		if updated != nil && updated.Subscribed {
+			pushEnabled = updated.PushEnabled
+		}
+	}
 	return operationExecutionResult(ResponseModel{
 		Kind:    ResponseResult,
-		Payload: OperationStatusPayload{Code: "subscription_started", Status: status},
+		Payload: OperationStatusPayload{Code: "subscription_started", Status: status, PushEnabled: boolPtr(pushEnabled)},
 	}, answerModeToolFirst)
 }
 
@@ -250,6 +262,10 @@ func (e operationExecutor) executeSubscriptionStatus(ctx context.Context, req Op
 
 func subscriptionConversationMismatchResponse() ResponseModel {
 	return ResponseModel{Kind: ResponseRefuse, RefusalReason: "只能操作当前群聊的考勤订阅。请在对应群聊里再告诉我。"}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func sameSubscriptionDeptScope(left, right []int64) bool {

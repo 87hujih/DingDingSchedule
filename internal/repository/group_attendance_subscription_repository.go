@@ -15,6 +15,7 @@ type GroupAttendanceSubscriptionRepository interface {
 	Upsert(ctx context.Context, sub *model.GroupAttendanceSubscription) error
 	SoftDelete(ctx context.Context, tenantID uint, conversationID string) error
 	ListByTenantID(ctx context.Context, tenantID uint) ([]model.GroupAttendanceSubscription, error)
+	ListPushEnabledByTenantID(ctx context.Context, tenantID uint) ([]model.GroupAttendanceSubscription, error)
 	FindByConversationID(ctx context.Context, tenantID uint, conversationID string) (*model.GroupAttendanceSubscription, error)
 }
 
@@ -47,6 +48,14 @@ func (r *groupAttendanceSubscriptionRepository) SoftDelete(ctx context.Context, 
 func (r *groupAttendanceSubscriptionRepository) ListByTenantID(ctx context.Context, tenantID uint) ([]model.GroupAttendanceSubscription, error) {
 	var subs []model.GroupAttendanceSubscription
 	err := r.db.WithContext(ctx).Where("tenant_id = ?", tenantID).Find(&subs).Error
+	return subs, err
+}
+
+func (r *groupAttendanceSubscriptionRepository) ListPushEnabledByTenantID(ctx context.Context, tenantID uint) ([]model.GroupAttendanceSubscription, error) {
+	var subs []model.GroupAttendanceSubscription
+	err := r.db.WithContext(ctx).
+		Where("tenant_id = ? AND push_enabled = ?", tenantID, true).
+		Find(&subs).Error
 	return subs, err
 }
 

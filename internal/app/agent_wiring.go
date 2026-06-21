@@ -621,9 +621,10 @@ func (a *groupSubAdapter) GetSubscription(ctx context.Context, tenantID uint, co
 	}
 
 	info := &agenttool.GroupSubInfo{
-		Subscribed: true,
-		GroupName:  sub.GroupName,
-		CreatedAt:  sub.CreatedAt.Format("2006-01-02 15:04:05"),
+		Subscribed:  true,
+		GroupName:   sub.GroupName,
+		CreatedAt:   sub.CreatedAt.Format("2006-01-02 15:04:05"),
+		PushEnabled: sub.PushEnabled,
 	}
 	if sub.DeptIDsJSON != "" {
 		var deptIDs []int64

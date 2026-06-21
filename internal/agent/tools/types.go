@@ -101,10 +101,11 @@ type GroupSubPort interface {
 
 // GroupSubInfo 群订阅状态
 type GroupSubInfo struct {
-	Subscribed bool    `json:"subscribed"`
-	GroupName  string  `json:"group_name,omitempty"`
-	DeptIDs    []int64 `json:"dept_ids,omitempty"` // 空表示推送全部人员
-	CreatedAt  string  `json:"created_at,omitempty"`
+	Subscribed  bool    `json:"subscribed"`
+	GroupName   string  `json:"group_name,omitempty"`
+	DeptIDs     []int64 `json:"dept_ids,omitempty"` // 空表示推送全部人员
+	CreatedAt   string  `json:"created_at,omitempty"`
+	PushEnabled bool    `json:"push_enabled"`
 }
 
 // DeptPort 部门查询能力

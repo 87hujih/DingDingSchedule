@@ -110,7 +110,7 @@ func TestSubscriptionStatusTaskClosesAfterSuccess(t *testing.T) {
 			ConversationTitle: "测试群",
 		},
 		newSubscriptionRuntimeRegistry(&testClarifyGroupSubPort{
-			info: &agenttools.GroupSubInfo{Subscribed: true, DeptIDs: []int64{101}},
+			info: &agenttools.GroupSubInfo{Subscribed: true, DeptIDs: []int64{101}, PushEnabled: true},
 		}, testClarifyDeptPort{}),
 	)
 	if err != nil {
@@ -124,5 +124,37 @@ func TestSubscriptionStatusTaskClosesAfterSuccess(t *testing.T) {
 	}
 	if task.Status != "completed" {
 		t.Fatalf("Status = %q, want completed", task.Status)
+	}
+}
+
+func TestSubscriptionStatusTaskReportsBackendPausedPush(t *testing.T) {
+	t.Parallel()
+
+	handler := newSubscriptionStatusTaskHandler()
+	task := &TaskInstance{
+		Type:   "query_subscription_status",
+		Status: "ready",
+	}
+
+	result, _, err := handler.Execute(
+		context.Background(),
+		task,
+		&agenttools.UserContext{
+			TenantID:          42,
+			UserID:            7,
+			UserRole:          1,
+			ConversationType:  "2",
+			ConversationID:    "conv-1",
+			ConversationTitle: "测试群",
+		},
+		newSubscriptionRuntimeRegistry(&testClarifyGroupSubPort{
+			info: &agenttools.GroupSubInfo{Subscribed: true, PushEnabled: false},
+		}, testClarifyDeptPort{}),
+	)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.Reply != "当前群已订阅考勤推送，但后台已暂停自动推送。请联系管理员在后台恢复。" {
+		t.Fatalf("Reply = %q, want backend paused message", result.Reply)
 	}
 }

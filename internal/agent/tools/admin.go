@@ -156,6 +156,13 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 		if len(p.DeptNames) > 0 {
 			msg = fmt.Sprintf("已为此群开启考勤推送（仅限：%v）", p.DeptNames)
 		}
+		info, err := groupSub.GetSubscription(ctx, uctx.TenantID, uctx.ConversationID)
+		if err != nil {
+			return "", err
+		}
+		if info != nil && info.Subscribed && !info.PushEnabled {
+			msg = "此群已订阅考勤推送，但后台已暂停自动推送。请联系管理员在后台恢复。"
+		}
 		return marshalJSON(map[string]interface{}{
 			"success": true,
 			"message": msg,
