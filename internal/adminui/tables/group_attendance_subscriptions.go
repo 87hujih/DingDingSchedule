@@ -1,6 +1,12 @@
 package tables
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"schedule_server/global"
+
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/db"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/table"
@@ -37,10 +43,7 @@ func GetGroupAttendanceSubscriptionTable(ctx *context.Context) (subTable table.T
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
 	info.AddField("订阅部门", "dept_ids_json", db.Text).
 		FieldDisplay(func(m types.FieldModel) interface{} {
-			if m.Value == "" {
-				return "全部部门"
-			}
-			return m.Value
+			return formatGroupAttendanceSubscriptionDepartments(tenantIDFromFieldModel(m), m.Value)
 		})
 	info.AddField("是否推送", "push_enabled", db.Tinyint).
 		FieldDisplay(func(m types.FieldModel) interface{} {
@@ -69,6 +72,9 @@ func GetGroupAttendanceSubscriptionTable(ctx *context.Context) (subTable table.T
 	formList.AddField("会话ID", "conversation_id", db.Varchar, form.Text).
 		FieldDisplayButCanNotEditWhenUpdate().FieldDisableWhenCreate()
 	formList.AddField("订阅部门", "dept_ids_json", db.Text, form.TextArea).
+		FieldDisplay(func(m types.FieldModel) interface{} {
+			return formatGroupAttendanceSubscriptionDepartments(tenantIDFromFieldModel(m), m.Value)
+		}).
 		FieldDisplayButCanNotEditWhenUpdate().FieldDisableWhenCreate()
 	formList.AddField("开启人UID", "enabled_by_uid", db.Int, form.Default).
 		FieldDisplayButCanNotEditWhenUpdate().FieldDisableWhenCreate()
@@ -85,4 +91,65 @@ func GetGroupAttendanceSubscriptionTable(ctx *context.Context) (subTable table.T
 	formList.SetTable("group_attendance_subscriptions").SetTitle("群考勤推送订阅").SetDescription("仅允许切换自动推送开关")
 
 	return
+}
+
+func tenantIDFromFieldModel(m types.FieldModel) string {
+	for _, key := range []string{"tenant_id", "group_attendance_subscriptions.tenant_id"} {
+		if v, ok := m.Row[key]; ok {
+			return fmt.Sprint(v)
+		}
+	}
+	return ""
+}
+
+func formatGroupAttendanceSubscriptionDepartments(tenantID string, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" || raw == "[]" {
+		return "全部部门"
+	}
+
+	var deptIDs []int64
+	if err := json.Unmarshal([]byte(raw), &deptIDs); err != nil {
+		return raw
+	}
+	if len(deptIDs) == 0 {
+		return "全部部门"
+	}
+	if global.DB == nil || strings.TrimSpace(tenantID) == "" {
+		return formatUnknownDepartmentIDs(deptIDs)
+	}
+
+	var rows []struct {
+		DeptID int64
+		Name   string
+	}
+	if err := global.DB.Table("departments").
+		Select("dept_id, name").
+		Where("tenant_id = ? AND dept_id IN ?", tenantID, deptIDs).
+		Find(&rows).Error; err != nil {
+		return formatUnknownDepartmentIDs(deptIDs)
+	}
+
+	namesByID := make(map[int64]string, len(rows))
+	for _, row := range rows {
+		namesByID[row.DeptID] = row.Name
+	}
+
+	parts := make([]string, 0, len(deptIDs))
+	for _, deptID := range deptIDs {
+		if name := strings.TrimSpace(namesByID[deptID]); name != "" {
+			parts = append(parts, fmt.Sprintf("%s（%d）", name, deptID))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("未知部门（%d）", deptID))
+	}
+	return strings.Join(parts, "、")
+}
+
+func formatUnknownDepartmentIDs(deptIDs []int64) string {
+	parts := make([]string, 0, len(deptIDs))
+	for _, deptID := range deptIDs {
+		parts = append(parts, fmt.Sprintf("未知部门（%d）", deptID))
+	}
+	return strings.Join(parts, "、")
 }
