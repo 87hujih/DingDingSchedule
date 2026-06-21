@@ -9,6 +9,7 @@ import (
 
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/db"
+	form2 "github.com/GoAdminGroup/go-admin/plugins/admin/modules/form"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/table"
 	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/GoAdminGroup/go-admin/template/types/form"
@@ -63,6 +64,7 @@ func GetGroupAttendanceSubscriptionTable(ctx *context.Context) (subTable table.T
 	info.SetTable("group_attendance_subscriptions").SetTitle("群考勤推送订阅").SetDescription("管理群聊考勤自动推送开关")
 
 	formList := subTable.GetForm()
+	formList.SetPreProcessFn(preprocessGroupAttendanceSubscriptionFormValues)
 	formList.AddField("ID", "id", db.Int, form.Default).
 		FieldDisplayButCanNotEditWhenUpdate().FieldDisableWhenCreate()
 	formList.AddField("租户", "tenant_id", db.Int, form.Default).
@@ -91,6 +93,24 @@ func GetGroupAttendanceSubscriptionTable(ctx *context.Context) (subTable table.T
 	formList.SetTable("group_attendance_subscriptions").SetTitle("群考勤推送订阅").SetDescription("仅允许切换自动推送开关")
 
 	return
+}
+
+func preprocessGroupAttendanceSubscriptionFormValues(values form2.Values) form2.Values {
+	if !values.IsUpdatePost() && !values.IsSingleUpdatePost() {
+		return values
+	}
+	for _, key := range []string{
+		"tenant_id",
+		"group_name",
+		"conversation_id",
+		"dept_ids_json",
+		"enabled_by_uid",
+		"created_at",
+		"deleted_at",
+	} {
+		values.Delete(key)
+	}
+	return values
 }
 
 func tenantIDFromFieldModel(m types.FieldModel) string {

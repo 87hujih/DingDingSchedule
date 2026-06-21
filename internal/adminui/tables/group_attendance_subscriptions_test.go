@@ -8,6 +8,7 @@ import (
 	"schedule_server/global"
 	"schedule_server/internal/model"
 
+	form2 "github.com/GoAdminGroup/go-admin/plugins/admin/modules/form"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -80,5 +81,38 @@ func TestFormatGroupAttendanceSubscriptionDepartments(t *testing.T) {
 				t.Fatalf("formatGroupAttendanceSubscriptionDepartments(%q, %q) = %q, want %q", tt.tenantID, tt.raw, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPreprocessGroupAttendanceSubscriptionUpdateDropsReadonlyFields(t *testing.T) {
+	values := form2.Values{
+		form2.PostTypeKey: {"0"},
+		"id":              {"10"},
+		"tenant_id":       {"42"},
+		"group_name":      {"不应更新的群名"},
+		"conversation_id": {"cid"},
+		"dept_ids_json":   {"[101]"},
+		"enabled_by_uid":  {"7"},
+		"created_at":      {""},
+		"deleted_at":      {""},
+		"push_enabled":    {"0"},
+	}
+
+	got := preprocessGroupAttendanceSubscriptionFormValues(values)
+	if got.Get("push_enabled") != "0" {
+		t.Fatalf("push_enabled = %q, want 0", got.Get("push_enabled"))
+	}
+	for _, key := range []string{
+		"tenant_id",
+		"group_name",
+		"conversation_id",
+		"dept_ids_json",
+		"enabled_by_uid",
+		"created_at",
+		"deleted_at",
+	} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("readonly key %q still present in preprocessed values: %#v", key, got)
+		}
 	}
 }
