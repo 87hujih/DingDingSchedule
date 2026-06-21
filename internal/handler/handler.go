@@ -1,15 +1,36 @@
 package handler
 
-import "schedule_server/internal/service"
+import (
+	"schedule_server/internal/repository"
+	"schedule_server/internal/service"
+)
 
-// Handler API处理器集合
+// Handler API 处理器集合
 type Handler struct {
-	UserHdl *UserHandler
+	UserHdl             *UserHandler
+	DeptHdl             *DepartmentHandler
+	AuthHdl             *AuthHandler
+	ScheduleHdl         *ScheduleHandler
+	AttendanceHdl       *AttendanceHandler
+	SemesterHdl         *SemesterHandler
+	AttendanceRecordHdl *AttendanceRecordHandler
+	ScheduleSettingHdl  *ScheduleSettingHandler
+	AuditLogHdl         *AuditLogHandler
+	RestDayHdl          *RestDayHandler
 }
 
-// NewHandler 创建API处理器集合
-func NewHandler(srv *service.Service) *Handler {
+// NewHandler 创建 API 处理器集合
+func NewHandler(svc *service.Service, repo *repository.Repository) *Handler {
 	return &Handler{
-		UserHdl: NewUserHandler(srv),
+		UserHdl:             NewUserHandler(svc.UserSrv, repo.TenantRepo),
+		DeptHdl:             NewDepartmentHandler(svc.DeptSrv),
+		AuthHdl:             NewAuthHandler(svc.AuthSrv),
+		ScheduleHdl:         NewScheduleHandler(svc.ScheduleSrv),
+		AttendanceHdl:       NewAttendanceHandler(svc.AttendanceSrv, svc.SemesterSrv),
+		SemesterHdl:         NewSemesterHandler(svc.SemesterSrv),
+		AttendanceRecordHdl: NewAttendanceRecordHandler(svc.AttendanceRecordSrv, svc.SemesterSrv, svc.SchedulePeriodSrv),
+		ScheduleSettingHdl:  NewScheduleSettingHandler(svc.SchedulePeriodSrv),
+		AuditLogHdl:         NewAuditLogHandler(svc.AuditLogSrv),
+		RestDayHdl:          NewRestDayHandler(svc.RestDaySrv),
 	}
 }

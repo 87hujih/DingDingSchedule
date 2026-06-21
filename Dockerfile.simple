@@ -1,0 +1,39 @@
+# 简化版 Dockerfile - 使用预编译的二进制文件
+FROM alpine:latest
+
+# 安装运行时依赖
+RUN apk add --no-cache ca-certificates tzdata
+
+# 设置时区
+ENV TZ=Asia/Shanghai
+
+# 创建非 root 用户
+RUN addgroup -g 1000 appuser && \
+    adduser -D -u 1000 -G appuser appuser
+
+# 设置工作目录
+WORKDIR /app
+
+# 复制预编译的二进制文件
+COPY schedule_server_linux ./schedule_server
+
+# 复制配置文件
+COPY --chown=appuser:appuser configs ./configs
+
+# 创建日志和上传目录
+RUN mkdir -p logs uploads && \
+    chown -R appuser:appuser logs uploads && \
+    chmod +x schedule_server
+
+# 切换到非 root 用户
+USER appuser
+
+# 暴露端口
+EXPOSE 26665
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:26665/health || exit 1
+
+# 启动应用
+CMD ["./schedule_server"]

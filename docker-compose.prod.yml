@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  schedule-server:
+    image: ${IMAGE_REPO}:${IMAGE_TAG}
+    container_name: schedule-server
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-26665}:26665"
+    environment:
+      APP_ENV: "${APP_ENV:-prod}"
+      CONFIG_ENV: "${CONFIG_ENV:-prod}"
+      CONFIG_PATH: /app/configs
+      TZ: "${TZ:-Asia/Shanghai}"
+    volumes:
+      - "${CONFIG_DIR:-./configs}:/app/configs:ro"
+      - "${LOG_DIR:-./logs}:/app/logs"
+      - "${UPLOAD_DIR:-./uploads}:/app/uploads"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:26665/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - schedule-network
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus-alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    networks:
+      - schedule-network
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # 生产环境请设置 GRAFANA_ADMIN_PASSWORD 环境变量
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin123}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      TZ: "${TZ:-Asia/Shanghai}"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - schedule-network
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./deploy/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - schedule-network
+
+  webhook-dingtalk:
+    image: timonwong/prometheus-webhook-dingtalk:v2.1.0
+    container_name: webhook-dingtalk
+    restart: unless-stopped
+    ports:
+      - "8065:8065"
+    command:
+      - '--config.file=/etc/webhook-dingtalk/config.yml'
+    volumes:
+      - ./deploy/webhook-dingtalk.yml:/etc/webhook-dingtalk/config.yml:ro
+    networks:
+      - schedule-network
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  schedule-network:
+    driver: bridge

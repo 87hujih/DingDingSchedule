@@ -1,0 +1,52 @@
+package agent
+
+import "schedule_server/internal/agent/tools"
+
+// Port 接口类型别名，便于外部引用 agent.SchedulePort 等
+type (
+	SchedulePort                = tools.SchedulePort
+	AttendancePort              = tools.AttendancePort
+	AttendanceUserDayStatusPort = tools.AttendanceUserDayStatusPort
+	LeavePort                   = tools.LeavePort
+	UserPort                    = tools.UserPort
+	SemesterPort                = tools.SemesterPort
+	SchedulePeriodPort          = tools.SchedulePeriodPort
+	RestDayPort                 = tools.RestDayPort
+	GroupSubPort                = tools.GroupSubPort
+	DeptPort                    = tools.DeptPort
+	KnowledgePort               = tools.KnowledgePort
+	CallLogPort                 = tools.CallLogPort
+	AttendanceStatsPort         = tools.AttendanceStatsPort
+	UserCrossPort               = tools.UserCrossPort
+	TenantPort                  = tools.TenantPort
+)
+
+// 数据类型别名，便于外部引用 agent.CourseItem 等
+type (
+	CourseItem           = tools.CourseItem
+	AttendanceQuery      = tools.AttendanceQuery
+	AttendanceResult     = tools.AttendanceResult
+	AttendLeave          = tools.AttendLeave
+	FreeSlotResult       = tools.FreeSlotResult
+	RankItem             = tools.RankItem
+	LeaveItem            = tools.LeaveItem
+	UserInfo             = tools.UserInfo
+	KnowledgeHit         = tools.KnowledgeHit
+	RetrievalResult      = tools.RetrievalResult
+	PeriodInfo           = tools.PeriodInfo
+	DeptItem             = tools.DeptItem
+	AttendanceStatsQuery = tools.AttendanceStatsQuery
+	AttendanceStatItem   = tools.AttendanceStatItem
+	SlotCondition        = tools.SlotCondition
+	AbsentCondition      = tools.AbsentCondition
+	UserCrossQuery       = tools.UserCrossQuery
+)
+
+// LLM 通信类型别名
+type (
+	Message      = tools.Message
+	ToolCall     = tools.ToolCall
+	FunctionCall = tools.FunctionCall
+	ToolDef      = tools.ToolDef
+	FunctionDef  = tools.FunctionDef
+)

@@ -1,0 +1,71 @@
+package repository
+
+import (
+	"context"
+	"errors"
+
+	"schedule_server/internal/model"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+// GroupAttendanceSubscriptionRepository 群考勤推送订阅仓库
+type GroupAttendanceSubscriptionRepository interface {
+	Upsert(ctx context.Context, sub *model.GroupAttendanceSubscription) error
+	SoftDelete(ctx context.Context, tenantID uint, conversationID string) error
+	ListByTenantID(ctx context.Context, tenantID uint) ([]model.GroupAttendanceSubscription, error)
+	ListPushEnabledByTenantID(ctx context.Context, tenantID uint) ([]model.GroupAttendanceSubscription, error)
+	FindByConversationID(ctx context.Context, tenantID uint, conversationID string) (*model.GroupAttendanceSubscription, error)
+}
+
+type groupAttendanceSubscriptionRepository struct {
+	db *gorm.DB
+}
+
+func NewGroupAttendanceSubscriptionRepository(db *gorm.DB) GroupAttendanceSubscriptionRepository {
+	return &groupAttendanceSubscriptionRepository{db: db}
+}
+
+// Upsert is idempotent for subscription.start because the model declares a
+// unique tenant_id + conversation_id key and this write uses ON CONFLICT.
+func (r *groupAttendanceSubscriptionRepository) Upsert(ctx context.Context, sub *model.GroupAttendanceSubscription) error {
+	return r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "tenant_id"}, {Name: "conversation_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"group_name", "enabled_by_uid", "dept_ids_json", "deleted_at"}),
+		}).Create(sub).Error
+}
+
+// SoftDelete is idempotent for subscription.cancel; deleting an already
+// deleted or missing subscription is a no-op at the repository boundary.
+func (r *groupAttendanceSubscriptionRepository) SoftDelete(ctx context.Context, tenantID uint, conversationID string) error {
+	return r.db.WithContext(ctx).
+		Where("tenant_id = ? AND conversation_id = ?", tenantID, conversationID).
+		Delete(&model.GroupAttendanceSubscription{}).Error
+}
+
+func (r *groupAttendanceSubscriptionRepository) ListByTenantID(ctx context.Context, tenantID uint) ([]model.GroupAttendanceSubscription, error) {
+	var subs []model.GroupAttendanceSubscription
+	err := r.db.WithContext(ctx).Where("tenant_id = ?", tenantID).Find(&subs).Error
+	return subs, err
+}
+
+func (r *groupAttendanceSubscriptionRepository) ListPushEnabledByTenantID(ctx context.Context, tenantID uint) ([]model.GroupAttendanceSubscription, error) {
+	var subs []model.GroupAttendanceSubscription
+	err := r.db.WithContext(ctx).
+		Where("tenant_id = ? AND push_enabled = ?", tenantID, true).
+		Find(&subs).Error
+	return subs, err
+}
+
+func (r *groupAttendanceSubscriptionRepository) FindByConversationID(ctx context.Context, tenantID uint, conversationID string) (*model.GroupAttendanceSubscription, error) {
+	var sub model.GroupAttendanceSubscription
+	err := r.db.WithContext(ctx).
+		Where("tenant_id = ? AND conversation_id = ?", tenantID, conversationID).
+		First(&sub).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &sub, err
+}

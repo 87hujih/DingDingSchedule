@@ -1,0 +1,271 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "当前 QPS",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total[1m]))",
+          "legendFormat": "QPS"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 100 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "P95 延迟",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "P95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.2 },
+              { "color": "red", "value": 0.5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "错误率",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m]))",
+          "legendFormat": "Error Rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.02 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "连接池使用率",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        {
+          "expr": "db_connection_pool_in_use / (db_connection_pool_open > 0)",
+          "legendFormat": "Usage"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.6 },
+              { "color": "red", "value": 0.8 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "HTTP QPS 趋势（按状态码）",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total[5m])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "title": "HTTP 延迟分布（P50/P95/P99）",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "P50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "P95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "P99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "title": "各接口 QPS 排行",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total[5m])) by (path, method)",
+          "legendFormat": "{{method}} {{path}}",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "title": "状态码分布",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum(http_requests_total) by (status)",
+          "legendFormat": "{{status}}",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "title": "DB 查询 P95 耗时（按操作类型）",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(db_query_duration_seconds_bucket[5m])) by (le, operation))",
+          "legendFormat": "{{operation}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "title": "DB 连接池状态",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        {
+          "expr": "db_connection_pool_open",
+          "legendFormat": "Open"
+        },
+        {
+          "expr": "db_connection_pool_in_use",
+          "legendFormat": "InUse"
+        },
+        {
+          "expr": "db_connection_pool_idle",
+          "legendFormat": "Idle"
+        }
+      ]
+    },
+    {
+      "title": "Agent 调用量",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 28 },
+      "targets": [
+        {
+          "expr": "sum(rate(agent_calls_total[5m])) by (route)",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "title": "Agent LLM P95 延迟",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 28 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(agent_llm_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "LLM P95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "title": "Goroutine & 内存",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 28 },
+      "targets": [
+        {
+          "expr": "go_goroutines",
+          "legendFormat": "Goroutines"
+        },
+        {
+          "expr": "go_memstats_alloc_bytes / 1024 / 1024",
+          "legendFormat": "Alloc (MB)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "axisPlacement": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Alloc (MB)" },
+            "properties": [
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "unit", "value": "decmbytes" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Goroutines" },
+            "properties": [
+              { "id": "unit", "value": "short" }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["schedule-server", "prometheus"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "Asia/Shanghai",
+  "title": "Schedule Server Overview",
+  "uid": "schedule-server-overview",
+  "version": 1
+}

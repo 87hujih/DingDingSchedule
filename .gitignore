@@ -1,0 +1,92 @@
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Output
+bin/
+dist/
+ai_docs
+# Logs
+logs/
+*.log
+docs/
+# Temp files
+*.tmp
+*.swp
+.cache/
+.gocache/
+.codex-skills/
+.worktrees/
+tasks
+AGENTS.md
+findings.md
+progress.md
+task_plan.md
+
+# Local config (contains secrets)
+configs/local.yaml
+configs/dev.yaml
+configs/prod.yaml
+.env
+.claude/
+
+# Local deployment and security-sensitive files
+.env.example
+XSHELL_DEPLOY_COMPLETE_GUIDE.md
+one-click-deploy.sh
+setup-ssh-key.sh
+scripts/reset_admin_password/
+reset_password.sql
+agent-rag-plan.md
+agent-rag-change-summary.md
+Go后端开发实习生_马华恩_18860331316.pdf
+
+# Uploads
+uploads/
+
+# Docker volumes
+*.tar.gz
+
+# Go specific
+*.out
+coverage.txt
+coverage.html
+*.prof
+*.test
+vendor/
+
+# OS specific
+# macOS
+.DS_Store
+._*
+# Windows
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+# Linux
+*~
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Security sensitive
+*.key
+*.pem
+*.crt
+
+# Build artifacts
+deploy/dingtalk-webhook/dingtalk-webhook
+*.p12
+*.bak
+*.backup
+Go后端开发与Agent开发实习_马华恩_18860331316.pdf

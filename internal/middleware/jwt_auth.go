@@ -1,0 +1,148 @@
+package middleware
+
+import (
+	"errors"
+	"strings"
+	"time"
+
+	"schedule_server/config"
+	"schedule_server/internal/repository"
+	"schedule_server/internal/response"
+	"schedule_server/internal/tenantctx"
+	"schedule_server/pkg/jwt"
+
+	"github.com/gin-gonic/gin"
+)
+
+const (
+	// AuthorizationHeader 认证头
+	AuthorizationHeader = "Authorization"
+	// BearerPrefix Bearer Token前缀
+	BearerPrefix = "Bearer "
+)
+
+// ContextKey 上下文键
+const (
+	CtxKeyUserID     = "user_id"
+	CtxKeyDingUserID = "ding_user_id"
+	CtxKeyUserName   = "user_name"
+	CtxKeyUserRole   = "user_role"
+	CtxKeyTenantID   = "tenant_id"
+	CtxKeyCorpID     = "corp_id"
+)
+
+// 包级变量，存储已初始化的 JWT Manager
+var jwtMgr *jwt.Manager
+
+// Init 初始化中间件（应用启动时调用一次）
+func Init(jwtCfg config.JWT) {
+	expire, _ := time.ParseDuration(jwtCfg.Expire)
+	if expire <= 0 {
+		expire = 72 * time.Hour
+	}
+
+	jwtMgr = jwt.NewManager(jwt.Config{
+		Secret: jwtCfg.Secret,
+		Expire: expire,
+		Issuer: jwtCfg.Issuer,
+	})
+}
+
+// JWTAuth JWT认证中间件
+// userRepo 用于每次请求时从 DB 读取最新角色，确保角色变更立即生效
+func JWTAuth(userRepo repository.UserRepository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 1. 获取Authorization头
+		authHeader := c.GetHeader(AuthorizationHeader)
+		if authHeader == "" {
+			response.New(c).Code(response.CodeUnauthorized).Message("缺少认证信息").Abort()
+			return
+		}
+
+		// 2. 检查Bearer前缀
+		if !strings.HasPrefix(authHeader, BearerPrefix) {
+			response.New(c).Code(response.CodeUnauthorized).Message("认证格式错误").Abort()
+			return
+		}
+
+		// 3. 提取Token
+		tokenString := strings.TrimPrefix(authHeader, BearerPrefix)
+		if tokenString == "" {
+			response.New(c).Code(response.CodeUnauthorized).Message("Token为空").Abort()
+			return
+		}
+
+		// 4. 解析验证Token
+		claims, err := jwtMgr.ParseToken(tokenString)
+		if err != nil {
+			msg := "Token无效"
+			if errors.Is(err, jwt.ErrTokenExpired) {
+				msg = "Token已过期"
+			}
+			response.New(c).Code(response.CodeUnauthorized).Message(msg).Abort()
+			return
+		}
+
+		// 5. 将用户基础信息写入Context
+		c.Set(CtxKeyUserID, claims.UserID)
+		c.Set(CtxKeyDingUserID, claims.DingUserID)
+		c.Set(CtxKeyUserName, claims.Name)
+		if claims.TenantID == 0 {
+			response.New(c).Code(response.CodeUnauthorized).Message("Token缺少租户信息").Abort()
+			return
+		}
+		c.Set(CtxKeyTenantID, claims.TenantID)
+		if strings.TrimSpace(claims.CorpID) != "" {
+			c.Set(CtxKeyCorpID, claims.CorpID)
+		}
+
+		// 6. 将租户信息写入 request context（供 repository/service 使用）
+		c.Request = c.Request.WithContext(tenantctx.WithTenantID(c.Request.Context(), claims.TenantID))
+
+		// 7. 从 DB 读取最新角色，覆盖 Token 中的快照值
+		// 确保管理员修改用户角色后立即生效，无需用户重新登录
+		user, err := userRepo.FindByID(c.Request.Context(), claims.UserID)
+		if err != nil {
+			response.New(c).Code(response.CodeUnauthorized).Message("用户不存在或已被删除").Abort()
+			return
+		}
+		c.Set(CtxKeyUserRole, user.Role)
+
+		c.Next()
+	}
+}
+
+// RequireRole 要求指定角色及以上权限的中间件
+// minRole: 最小角色等级（0=普通用户, 1=管理员, 2=超级管理员）
+func RequireRole(minRole int) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		roleVal, exists := c.Get(CtxKeyUserRole)
+		if !exists {
+			response.New(c).Code(response.CodeUnauthorized).Message("未获取到用户角色").Abort()
+			return
+		}
+
+		role, ok := roleVal.(int)
+		if !ok {
+			response.New(c).Code(response.CodeUnauthorized).Message("用户角色类型错误").Abort()
+			return
+		}
+
+		if role < minRole {
+			response.New(c).Code(response.CodeForbidden).Message("权限不足").Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// RequireAdmin 要求管理员及以上权限
+func RequireAdmin() gin.HandlerFunc {
+	return RequireRole(1)
+}
+
+// RequireSuperAdmin 要求超级管理员权限
+func RequireSuperAdmin() gin.HandlerFunc {
+	return RequireRole(2)
+}
