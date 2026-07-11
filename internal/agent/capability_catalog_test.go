@@ -116,16 +116,15 @@ func TestCapabilitySnapshotUsesOnlyUserVisibleManifestCapabilities(t *testing.T)
 		if !ok {
 			t.Fatalf("snapshot operation %q has no manifest", entry.Operation)
 		}
-		if manifest.Capability == nil {
-			t.Fatalf("snapshot operation %q has no capability binding", entry.Operation)
-		}
 		if manifest.Availability != OperationAvailabilityActive &&
 			manifest.Availability != OperationAvailabilityAnswerOnly {
 			t.Fatalf("snapshot operation %q availability = %q, want user-visible", entry.Operation, manifest.Availability)
 		}
-		if entry.Availability != manifest.Availability ||
-			entry.DirectlyUsable != manifest.Capability.DirectlyUsable {
-			t.Fatalf("snapshot entry = %+v, want availability/direct usability from manifest %+v", entry, manifest)
+		if entry.Availability != manifest.Availability {
+			t.Fatalf("snapshot entry = %+v, want availability from manifest %+v", entry, manifest)
+		}
+		if manifest.Capability != nil && entry.DirectlyUsable != manifest.Capability.DirectlyUsable {
+			t.Fatalf("snapshot entry = %+v, want direct usability from capability binding %+v", entry, manifest.Capability)
 		}
 	}
 }
@@ -141,6 +140,16 @@ func TestCapabilitySnapshotKeepsRoleAndConversationRestrictions(t *testing.T) {
 	groupUser := capabilitySnapshot(capabilityContext{UserRole: 0, ConversationType: "2"})
 	if !containsSnapshotCapability(groupUser, "subscription.describe_capability") {
 		t.Fatalf("ordinary group snapshot should include subscription query: %+v", groupUser)
+	}
+	if containsSnapshotCapability(groupUser, "subscription.start") ||
+		containsSnapshotCapability(groupUser, "subscription.cancel") {
+		t.Fatalf("ordinary group snapshot should hide admin subscription execution: %+v", groupUser)
+	}
+
+	groupAdmin := capabilitySnapshot(capabilityContext{UserRole: 1, ConversationType: "2"})
+	if !containsSnapshotCapability(groupAdmin, "subscription.start") ||
+		!containsSnapshotCapability(groupAdmin, "subscription.cancel") {
+		t.Fatalf("admin group snapshot should include active subscription execution: %+v", groupAdmin)
 	}
 }
 

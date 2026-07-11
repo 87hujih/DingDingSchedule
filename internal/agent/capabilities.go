@@ -111,6 +111,9 @@ func buildHelpReply(uctx *tools.UserContext) string {
 	var b strings.Builder
 	b.WriteString("我可以帮助处理这些系统能力：\n")
 	for _, entry := range protocolCaps {
+		if entry.Title == "" {
+			continue
+		}
 		b.WriteString(fmt.Sprintf("- %s：%s\n", entry.Title, entry.Description))
 	}
 
@@ -122,7 +125,7 @@ func buildHelpReply(uctx *tools.UserContext) string {
 
 	wroteDirect := false
 	for _, entry := range protocolCaps {
-		if !entry.DirectlyUsable {
+		if !entry.DirectlyUsable || entry.Title == "" {
 			continue
 		}
 		b.WriteString(fmt.Sprintf("- %s：%s\n", entry.Title, entry.Description))

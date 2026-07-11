@@ -59,6 +59,29 @@ func TestBuildGreetingReplyRespectsConversationRestrictions(t *testing.T) {
 	}
 }
 
+func TestBuildGreetingReplyAdvertisesSubscriptionExecutionOnlyWhenSnapshotAllowsIt(t *testing.T) {
+	t.Parallel()
+
+	groupUserReply := buildGreetingReply(&tools.UserContext{
+		UserRole:         0,
+		ConversationType: "2",
+	})
+	if strings.Contains(groupUserReply, "开启或取消订阅") {
+		t.Fatalf("ordinary group greeting = %q, should not advertise admin execution operations", groupUserReply)
+	}
+	if !strings.Contains(groupUserReply, "查询考勤订阅") {
+		t.Fatalf("ordinary group greeting = %q, want allowed subscription query", groupUserReply)
+	}
+
+	groupAdminReply := buildGreetingReply(&tools.UserContext{
+		UserRole:         1,
+		ConversationType: "2",
+	})
+	if !strings.Contains(groupAdminReply, "开启或取消订阅") {
+		t.Fatalf("admin group greeting = %q, want active start/cancel operations", groupAdminReply)
+	}
+}
+
 func TestCapabilitiesFilterHidesAdminGroupFeaturesForNormalDMUser(t *testing.T) {
 	t.Parallel()
 

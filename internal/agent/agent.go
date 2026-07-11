@@ -517,7 +517,10 @@ func buildGreetingReply(uctx *tools.UserContext) string {
 		b.WriteString("。")
 	}
 	if operations["subscription.describe_capability"] {
-		b.WriteString("在群聊中还可以查询考勤订阅，管理员可以开启或取消订阅。")
+		b.WriteString("在群聊中还可以查询考勤订阅。")
+	}
+	if operations["subscription.start"] && operations["subscription.cancel"] {
+		b.WriteString("管理员可以开启或取消订阅。")
 	}
 	if operations["manual_sign.describe_capability"] {
 		b.WriteString("补签目前只提供能力说明，不在聊天中直接执行。")

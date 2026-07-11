@@ -28,22 +28,23 @@ func capabilitySnapshot(ctx capabilityContext) []CapabilitySnapshotEntry {
 	manifests := userVisibleOperationManifests()
 	entries := make([]CapabilitySnapshotEntry, 0, len(manifests))
 	for _, manifest := range manifests {
-		if manifest.Capability == nil {
-			continue
-		}
 		if ctx.UserRole < manifest.MinRole {
 			continue
 		}
 		if !matchesConversationScope(string(manifest.Scope), ctx.ConversationType) {
 			continue
 		}
-		entries = append(entries, CapabilitySnapshotEntry{
+		entry := CapabilitySnapshotEntry{
 			Operation:      manifest.Name,
-			Title:          manifest.Capability.Title,
-			Description:    manifest.Capability.Description,
 			Availability:   manifest.Availability,
-			DirectlyUsable: manifest.Capability.DirectlyUsable,
-		})
+			DirectlyUsable: manifest.Availability == OperationAvailabilityActive,
+		}
+		if manifest.Capability != nil {
+			entry.Title = manifest.Capability.Title
+			entry.Description = manifest.Capability.Description
+			entry.DirectlyUsable = manifest.Capability.DirectlyUsable
+		}
+		entries = append(entries, entry)
 	}
 	return entries
 }
