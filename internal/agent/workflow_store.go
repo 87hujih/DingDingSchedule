@@ -16,6 +16,7 @@ import (
 const defaultWorkflowTTL = 30 * time.Minute
 
 var errWorkflowKeyIncomplete = errors.New("workflow key requires tenant_id, conversation_id, and actor_user_id")
+var ErrWorkflowConflict = errors.New("workflow version conflict")
 
 type WorkflowKey struct {
 	TenantID       uint
@@ -24,15 +25,15 @@ type WorkflowKey struct {
 }
 
 type WorkflowStore interface {
-	Load(ctx context.Context, key WorkflowKey) (*WorkflowSnapshot, error)
-	Save(ctx context.Context, workflow *WorkflowSnapshot) error
-	Clear(ctx context.Context, key WorkflowKey, reason string) error
-	WithLock(ctx context.Context, key WorkflowKey, fn func(*WorkflowSnapshot) (*WorkflowSnapshot, error)) error
+	Load(ctx context.Context, key WorkflowKey) (*VersionedWorkflow, error)
+	Create(ctx context.Context, key WorkflowKey, next *WorkflowSnapshot) (*VersionedWorkflow, error)
+	CompareAndSwap(ctx context.Context, key WorkflowKey, expectedVersion uint64, next *WorkflowSnapshot) (*VersionedWorkflow, error)
+	DeleteIfVersion(ctx context.Context, key WorkflowKey, expectedVersion uint64, reason string) error
 }
 
 type memoryWorkflowStore struct {
 	mu        sync.Mutex
-	workflows map[WorkflowKey]*WorkflowSnapshot
+	workflows map[WorkflowKey]*VersionedWorkflow
 	locks     map[WorkflowKey]*workflowKeyLock
 	clock     func() time.Time
 }
@@ -47,13 +48,13 @@ func newMemoryWorkflowStore(clock func() time.Time) *memoryWorkflowStore {
 		clock = time.Now
 	}
 	return &memoryWorkflowStore{
-		workflows: make(map[WorkflowKey]*WorkflowSnapshot),
+		workflows: make(map[WorkflowKey]*VersionedWorkflow),
 		locks:     make(map[WorkflowKey]*workflowKeyLock),
 		clock:     clock,
 	}
 }
 
-func (s *memoryWorkflowStore) Load(ctx context.Context, key WorkflowKey) (*WorkflowSnapshot, error) {
+func (s *memoryWorkflowStore) Load(ctx context.Context, key WorkflowKey) (*VersionedWorkflow, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -64,100 +65,100 @@ func (s *memoryWorkflowStore) Load(ctx context.Context, key WorkflowKey) (*Workf
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	workflow := s.workflows[key]
-	if workflow == nil {
-		return nil, nil
-	}
-	if workflowExpired(workflow, s.now()) {
-		delete(s.workflows, key)
-		return nil, nil
-	}
-	return cloneWorkflowSnapshot(workflow), nil
-}
-
-func (s *memoryWorkflowStore) Save(ctx context.Context, workflow *WorkflowSnapshot) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if workflow == nil {
-		return nil
-	}
-	key, err := workflowKeyFromSnapshot(workflow)
-	if err != nil {
-		return err
-	}
-
-	unlock := s.lockWorkflowKey(key)
-	defer unlock()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.saveLocked(key, workflow)
-	return nil
-}
-
-func (s *memoryWorkflowStore) Clear(ctx context.Context, key WorkflowKey, _ string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := validateWorkflowKey(key); err != nil {
-		return err
-	}
-
-	unlock := s.lockWorkflowKey(key)
-	defer unlock()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.workflows, key)
-	return nil
-}
-
-func (s *memoryWorkflowStore) WithLock(ctx context.Context, key WorkflowKey, fn func(*WorkflowSnapshot) (*WorkflowSnapshot, error)) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := validateWorkflowKey(key); err != nil {
-		return err
-	}
-	if fn == nil {
-		return nil
-	}
-
-	unlock := s.lockWorkflowKey(key)
-	defer unlock()
-
-	s.mu.Lock()
 	current := s.workflows[key]
-	if current != nil && workflowExpired(current, s.now()) {
+	if current == nil {
+		return nil, nil
+	}
+	if workflowExpired(current.Snapshot, s.now()) {
 		delete(s.workflows, key)
-		current = nil
+		return nil, nil
 	}
-	current = cloneWorkflowSnapshot(current)
-	s.mu.Unlock()
+	return cloneVersionedWorkflow(current), nil
+}
 
-	next, err := fn(current)
-	if err != nil {
-		return err
+func (s *memoryWorkflowStore) Create(ctx context.Context, key WorkflowKey, next *WorkflowSnapshot) (*VersionedWorkflow, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
+	if err := validateWorkflowKey(key); err != nil {
+		return nil, err
+	}
+	if next == nil {
+		return nil, nil
+	}
+
+	unlock := s.lockWorkflowKey(key)
+	defer unlock()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if current := s.workflows[key]; current != nil && !workflowExpired(current.Snapshot, s.now()) {
+		return nil, ErrWorkflowConflict
+	}
+	delete(s.workflows, key)
+	created := s.prepareVersionedLocked(key, next, 1)
+	s.workflows[key] = created
+	return cloneVersionedWorkflow(created), nil
+}
+
+func (s *memoryWorkflowStore) CompareAndSwap(ctx context.Context, key WorkflowKey, expectedVersion uint64, next *WorkflowSnapshot) (*VersionedWorkflow, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := validateWorkflowKey(key); err != nil {
+		return nil, err
+	}
 	if next == nil {
+		return nil, nil
+	}
+
+	unlock := s.lockWorkflowKey(key)
+	defer unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.workflows[key]
+	if current == nil || workflowExpired(current.Snapshot, s.now()) || current.Version != expectedVersion {
+		if current != nil && workflowExpired(current.Snapshot, s.now()) {
+			delete(s.workflows, key)
+		}
+		return nil, ErrWorkflowConflict
+	}
+	updated := s.prepareVersionedLocked(key, next, expectedVersion+1)
+	s.workflows[key] = updated
+	return cloneVersionedWorkflow(updated), nil
+}
+
+func (s *memoryWorkflowStore) DeleteIfVersion(ctx context.Context, key WorkflowKey, expectedVersion uint64, _ string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateWorkflowKey(key); err != nil {
+		return err
+	}
+
+	unlock := s.lockWorkflowKey(key)
+	defer unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.workflows[key]
+	if current == nil {
+		return nil
+	}
+	if workflowExpired(current.Snapshot, s.now()) {
 		delete(s.workflows, key)
 		return nil
 	}
-	next.TenantID = key.TenantID
-	next.ConversationID = key.ConversationID
-	next.ActorUserID = key.ActorUserID
-	s.saveLocked(key, next)
+	if current.Version != expectedVersion {
+		return ErrWorkflowConflict
+	}
+	delete(s.workflows, key)
 	return nil
 }
 
 func (s *memoryWorkflowStore) lockWorkflowKey(key WorkflowKey) func() {
 	s.mu.Lock()
-	if s.locks == nil {
-		s.locks = make(map[WorkflowKey]*workflowKeyLock)
-	}
 	lock := s.locks[key]
 	if lock == nil {
 		lock = &workflowKeyLock{}
@@ -178,15 +179,15 @@ func (s *memoryWorkflowStore) lockWorkflowKey(key WorkflowKey) func() {
 	}
 }
 
-func (s *memoryWorkflowStore) saveLocked(key WorkflowKey, workflow *WorkflowSnapshot) {
+func (s *memoryWorkflowStore) prepareVersionedLocked(key WorkflowKey, workflow *WorkflowSnapshot, version uint64) *VersionedWorkflow {
 	now := s.now()
 	next := cloneWorkflowSnapshot(workflow)
 	next.TenantID = key.TenantID
 	next.ConversationID = key.ConversationID
 	next.ActorUserID = key.ActorUserID
 	if next.CreatedAt.IsZero() {
-		if existing := s.workflows[key]; existing != nil && !existing.CreatedAt.IsZero() {
-			next.CreatedAt = existing.CreatedAt
+		if existing := s.workflows[key]; existing != nil && existing.Snapshot != nil && !existing.Snapshot.CreatedAt.IsZero() {
+			next.CreatedAt = existing.Snapshot.CreatedAt
 		} else {
 			next.CreatedAt = now
 		}
@@ -195,13 +196,16 @@ func (s *memoryWorkflowStore) saveLocked(key WorkflowKey, workflow *WorkflowSnap
 	if next.ExpiresAt.IsZero() {
 		next.ExpiresAt = now.Add(defaultWorkflowTTL)
 	}
-	if existing := s.workflows[key]; existing != nil {
-		next.Version = existing.Version + 1
-	} else {
-		next.Version = 1
-	}
+	next.Version = int64(version)
 	syncWorkflowSnapshotFields(next)
-	s.workflows[key] = next
+	return &VersionedWorkflow{Snapshot: next, Version: version}
+}
+
+func cloneVersionedWorkflow(workflow *VersionedWorkflow) *VersionedWorkflow {
+	if workflow == nil {
+		return nil
+	}
+	return &VersionedWorkflow{Snapshot: cloneWorkflowSnapshot(workflow.Snapshot), Version: workflow.Version}
 }
 
 func (s *memoryWorkflowStore) now() time.Time {

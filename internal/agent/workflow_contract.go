@@ -79,6 +79,11 @@ type WorkflowResult struct {
 	Workflow *WorkflowSnapshot
 }
 
+type VersionedWorkflow struct {
+	Snapshot *WorkflowSnapshot
+	Version  uint64
+}
+
 // cloneWorkflowSnapshot clones workflow snapshot.
 func cloneWorkflowSnapshot(workflow *WorkflowSnapshot) *WorkflowSnapshot {
 	if workflow == nil {

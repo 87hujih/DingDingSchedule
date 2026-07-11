@@ -219,11 +219,17 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		var workflowBefore *WorkflowSnapshot
 		var outcome protocolLiveOutcome
 
-		activeWorkflow, workflowErr := a.workflowStore.Load(ctx, workflowKey)
+		versionedWorkflow, workflowErr := a.workflowStore.Load(ctx, workflowKey)
 		if workflowErr != nil {
 			a.deps.Logger.Warnw("读取 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", workflowErr)
 			outcome = workflowStoreFailureOutcome()
 		} else {
+			var activeWorkflow *WorkflowSnapshot
+			var expectedVersion uint64
+			if versionedWorkflow != nil {
+				activeWorkflow = versionedWorkflow.Snapshot
+				expectedVersion = versionedWorkflow.Version
+			}
 			workflowBefore = cloneWorkflowSnapshot(activeWorkflow)
 			if activeWorkflow != nil {
 				metrics.Wf.IDBefore = activeWorkflow.ID
@@ -233,7 +239,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 				User:           uctx,
 				ActiveWorkflow: activeWorkflow,
 			})
-			if persistErr := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, outcome); persistErr != nil {
+			if persistErr := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, expectedVersion, outcome); persistErr != nil {
 				a.deps.Logger.Warnw("更新 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", persistErr)
 				outcome = workflowStoreFailureOutcome()
 			}
@@ -1432,9 +1438,11 @@ func (a *Agent) applyProtocolLiveOutcome(sessionKey string, metrics *callMetrics
 
 func (a *Agent) applyProtocolLiveOutcomeForKey(ctx context.Context, workflowKey WorkflowKey, sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome) {
 	var workflowBefore *WorkflowSnapshot
+	var expectedVersion uint64
 	if a != nil && a.workflowStore != nil {
-		if loaded, err := a.workflowStore.Load(ctx, workflowKey); err == nil {
-			workflowBefore = loaded
+		if loaded, err := a.workflowStore.Load(ctx, workflowKey); err == nil && loaded != nil {
+			workflowBefore = loaded.Snapshot
+			expectedVersion = loaded.Version
 		} else if a.deps.Logger != nil {
 			a.deps.Logger.Warnw("读取 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", err)
 		}
@@ -1444,19 +1452,19 @@ func (a *Agent) applyProtocolLiveOutcomeForKey(ctx context.Context, workflowKey 
 	}
 
 	if a != nil {
-		if err := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, outcome); err != nil && a.deps.Logger != nil {
+		if err := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, expectedVersion, outcome); err != nil && a.deps.Logger != nil {
 			a.deps.Logger.Warnw("更新 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", err)
 		}
 	}
 	a.applyProtocolLiveOutcomeAfterStore(sessionKey, metrics, outcome, workflowBefore)
 }
 
-func (a *Agent) persistProtocolLiveWorkflowOutcome(ctx context.Context, workflowKey WorkflowKey, outcome protocolLiveOutcome) error {
+func (a *Agent) persistProtocolLiveWorkflowOutcome(ctx context.Context, workflowKey WorkflowKey, expectedVersion uint64, outcome protocolLiveOutcome) error {
 	if a == nil || a.workflowStore == nil {
 		return nil
 	}
 	if outcome.ClearWorkflow {
-		return a.workflowStore.Clear(ctx, workflowKey, string(outcome.WorkflowDecision))
+		return a.workflowStore.DeleteIfVersion(ctx, workflowKey, expectedVersion, string(outcome.WorkflowDecision))
 	}
 	if outcome.WorkflowAfter == nil {
 		return nil
@@ -1465,7 +1473,12 @@ func (a *Agent) persistProtocolLiveWorkflowOutcome(ctx context.Context, workflow
 	next.TenantID = workflowKey.TenantID
 	next.ConversationID = workflowKey.ConversationID
 	next.ActorUserID = workflowKey.ActorUserID
-	return a.workflowStore.Save(ctx, next)
+	if expectedVersion == 0 {
+		_, err := a.workflowStore.Create(ctx, workflowKey, next)
+		return err
+	}
+	_, err := a.workflowStore.CompareAndSwap(ctx, workflowKey, expectedVersion, next)
+	return err
 }
 
 func (a *Agent) applyProtocolLiveOutcomeAfterStore(sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome, workflowBefore *WorkflowSnapshot) {
