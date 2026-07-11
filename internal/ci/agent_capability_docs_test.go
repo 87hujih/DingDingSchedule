@@ -58,6 +58,64 @@ func isNegativeCapabilityStatement(line string) bool {
 	)
 }
 
+func splitCapabilityClauses(line string) []string {
+	for _, transition := range []string{
+		"，当前", ",当前",
+		"，但", ",但", "；但", ";但",
+		"，聊天可", ",聊天可",
+		"，可以", ",可以",
+		"，支持", ",支持",
+		"，可直接", ",可直接",
+	} {
+		line = strings.ReplaceAll(line, transition, "；"+strings.TrimLeft(transition, "，,；;"))
+	}
+	return strings.FieldsFunc(line, func(r rune) bool {
+		return strings.ContainsRune("；;。", r)
+	})
+}
+
+func capabilitySubject(line string) string {
+	if separator := strings.IndexAny(line, "：:"); separator >= 0 {
+		subject := line[:separator]
+		if containsAny(subject, "请假", "统计分析", "交叉分析", "人工补签", "手动补签", "管理员补签") {
+			return subject
+		}
+	}
+	for _, manualSign := range []string{"人工补签", "手动补签", "管理员补签"} {
+		if strings.Contains(line, manualSign) {
+			return manualSign
+		}
+	}
+	return ""
+}
+
+func advertisesUnavailableCapability(line string) bool {
+	subject := capabilitySubject(line)
+	for _, clause := range splitCapabilityClauses(line) {
+		statement := strings.TrimSpace(subject + " " + clause)
+		if isNegativeCapabilityStatement(statement) {
+			continue
+		}
+		if (strings.Contains(statement, "请假") && strings.Contains(statement, "查询")) ||
+			containsAny(statement, "统计分析", "交叉分析") ||
+			containsAny(statement, "人工补签", "手动补签", "管理员补签") {
+			return true
+		}
+	}
+	return false
+}
+
+func deniesAllPrivateSubscriptionOperations(clause string) bool {
+	if !strings.Contains(clause, "私聊") ||
+		!containsAny(clause, "不执行", "不支持", "不能", "不可", "不会") {
+		return false
+	}
+	if containsAny(clause, "取消订阅", "退订", "状态查询") {
+		return false
+	}
+	return containsAny(clause, "订阅操作", "群订阅操作", "上述操作", "这些操作", "全部操作", "所有操作")
+}
+
 func hasConditionalGroupSubscriptionBoundary(active string) bool {
 	for _, line := range strings.Split(active, "\n") {
 		var hasGroupPermission, hasPrivateDenial bool
@@ -65,16 +123,13 @@ func hasConditionalGroupSubscriptionBoundary(active string) bool {
 			return strings.ContainsRune("；;。，,", r)
 		})
 		for _, clause := range clauses {
-			if !strings.Contains(clause, "订阅") {
-				continue
-			}
 			if strings.Contains(clause, "群聊") &&
+				strings.Contains(clause, "订阅") &&
 				containsAny(clause, "支持", "允许", "可订阅") &&
 				!isNegativeCapabilityStatement(clause) {
 				hasGroupPermission = true
 			}
-			if strings.Contains(clause, "私聊") &&
-				containsAny(clause, "不执行", "不支持", "不能", "不可", "不会") {
+			if deniesAllPrivateSubscriptionOperations(clause) {
 				hasPrivateDenial = true
 			}
 		}
@@ -117,12 +172,10 @@ func readmeAgentCapabilityProblems(document string) []string {
 
 	for _, rawLine := range strings.Split(active, "\n") {
 		line := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(rawLine), "-*"))
-		if line == "" || isNegativeCapabilityStatement(line) {
+		if line == "" {
 			continue
 		}
-		if (strings.Contains(line, "请假") && strings.Contains(line, "查询")) ||
-			containsAny(line, "统计分析", "交叉分析") ||
-			containsAny(line, "人工补签", "手动补签", "管理员补签") {
+		if advertisesUnavailableCapability(line) {
 			problems = append(problems, "active Agent capability section advertises unavailable execution")
 		}
 	}
@@ -197,6 +250,38 @@ func TestReadmeAgentCapabilityContractExamples(t *testing.T) {
 		{
 			name:      "rejects active analytics",
 			document:  marked(validActive + "\n- 当前可以执行统计分析和交叉分析。"),
+			wantValid: false,
+		},
+		{
+			name: "rejects analytics hidden behind negative leave clause",
+			document: marked(validActive + "\n" +
+				"- 请假查询尚未开放，但当前支持统计分析。"),
+			wantValid: false,
+		},
+		{
+			name: "rejects leave query hidden behind negative analytics clause",
+			document: marked(validActive + "\n" +
+				"- 统计分析尚未开放，但可以查询个人请假。"),
+			wantValid: false,
+		},
+		{
+			name: "rejects direct manual sign hidden behind explanation clause",
+			document: marked(strings.Replace(
+				validActive,
+				"人工补签：仅解释操作路径，聊天不会发起补签操作。",
+				"人工补签仅提供规则说明，聊天可直接发起补签操作。",
+				1,
+			)),
+			wantValid: false,
+		},
+		{
+			name: "rejects private denial limited to unsubscribe",
+			document: marked(strings.Replace(
+				validActive,
+				"群考勤订阅：群聊中允许订阅，私聊不执行订阅操作。",
+				"群考勤订阅：群聊中允许订阅、取消订阅和查询状态；私聊不支持取消订阅。",
+				1,
+			)),
 			wantValid: false,
 		},
 		{
