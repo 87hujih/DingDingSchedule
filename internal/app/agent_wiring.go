@@ -74,6 +74,7 @@ func BuildAgent(
 		AttendanceStats:         attendanceSrv,
 		UserCross:               attendanceSrv,
 		Tenant:                  &tenantAdapter{repo: repo.TenantRepo},
+		WorkflowStore:           newAgentWorkflowStore(repo.AgentWorkflowRepo, nil),
 
 		Logger: global.Log,
 	})

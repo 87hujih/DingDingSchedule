@@ -211,6 +211,69 @@ func TestMemoryWorkflowStoreDeleteIfVersionRejectsStaleVersion(t *testing.T) {
 	}
 }
 
+func TestMemoryWorkflowStoreCreateConflictsUntilExpiredThenRecreatesAtVersionOne(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
+	store := newMemoryWorkflowStore(func() time.Time { return now })
+	key := WorkflowKey{TenantID: 42, ConversationID: "conv-a", ActorUserID: 7}
+	snapshot := &WorkflowSnapshot{
+		ID:        "wf-original",
+		Type:      WorkflowSubscriptionStart,
+		State:     WorkflowCollectScope,
+		ExpiresAt: now.Add(time.Minute),
+	}
+	if _, err := store.Create(context.Background(), key, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(context.Background(), key, snapshot); !errors.Is(err, ErrWorkflowConflict) {
+		t.Fatalf("Create(existing) error = %v, want conflict", err)
+	}
+
+	now = now.Add(2 * time.Minute)
+	recreated, err := store.Create(context.Background(), key, &WorkflowSnapshot{
+		ID:        "wf-recreated",
+		Type:      WorkflowSubscriptionStart,
+		State:     WorkflowCollectDepartments,
+		ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Create(expired replacement) error = %v", err)
+	}
+	if recreated.Version != 1 || recreated.Snapshot.Version != 1 || recreated.Snapshot.ID != "wf-recreated" {
+		t.Fatalf("recreated = %+v", recreated)
+	}
+}
+
+func TestMemoryWorkflowStoreReturnedVersionsAndSnapshotsAreIsolated(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
+	store := newMemoryWorkflowStore(func() time.Time { return now })
+	key := WorkflowKey{TenantID: 42, ConversationID: "conv-a", ActorUserID: 7}
+	created, err := store.Create(context.Background(), key, &WorkflowSnapshot{
+		ID:            "wf-1",
+		Type:          WorkflowSubscriptionStart,
+		State:         WorkflowCollectDepartments,
+		MissingFields: []string{"dept_ids"},
+		ExpiresAt:     now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Version = 99
+	created.Snapshot.Version = 99
+	created.Snapshot.MissingFields[0] = "mutated"
+
+	loaded, err := store.Load(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Version != 1 || loaded.Snapshot.Version != 1 || loaded.Snapshot.MissingFields[0] != "dept_ids" {
+		t.Fatalf("stored workflow leaked returned mutation: %+v", loaded)
+	}
+}
+
 func TestWorkflowArbiterDecisions(t *testing.T) {
 	t.Parallel()
 
