@@ -10,6 +10,12 @@ import (
 const (
 	agentCapabilitiesStart = "<!-- agent-capabilities:start -->"
 	agentCapabilitiesEnd   = "<!-- agent-capabilities:end -->"
+
+	expectedAgentCapabilities = `- 课表查询：仅回答个人课表和指定时间段空闲人员等查询。
+- 考勤查询：仅回答当前节次、指定节次、考勤文本和周排行等查询。
+- 规则查询：仅回答作息、休息日及考勤规则说明。
+- 群考勤推送订阅：仅在群聊中支持订阅、取消订阅和状态查询；私聊不执行群订阅操作。
+- 人工补签：仅提供规则与操作路径说明，聊天不会发起补签操作。`
 )
 
 func extractMarkedSection(document, startMarker, endMarker string) (string, string) {
@@ -34,110 +40,15 @@ func extractMarkedSection(document, startMarker, endMarker string) (string, stri
 	return section, ""
 }
 
-func containsAny(text string, fragments ...string) bool {
-	for _, fragment := range fragments {
-		if strings.Contains(text, fragment) {
-			return true
+func normalizeCapabilitySection(section string) string {
+	lines := strings.Split(strings.ReplaceAll(section, "\r\n", "\n"), "\n")
+	normalized := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			normalized = append(normalized, trimmed)
 		}
 	}
-	return false
-}
-
-func isNegativeCapabilityStatement(line string) bool {
-	return containsAny(
-		line,
-		"尚未开放",
-		"不能",
-		"不支持",
-		"不执行",
-		"不可",
-		"不会",
-		"仅提供",
-		"仅解释",
-		"仅说明",
-	)
-}
-
-func splitCapabilityClauses(line string) []string {
-	for _, transition := range []string{
-		"，当前", ",当前",
-		"，但", ",但", "；但", ";但",
-		"，聊天可", ",聊天可",
-		"，可以", ",可以",
-		"，支持", ",支持",
-		"，可直接", ",可直接",
-	} {
-		line = strings.ReplaceAll(line, transition, "；"+strings.TrimLeft(transition, "，,；;"))
-	}
-	return strings.FieldsFunc(line, func(r rune) bool {
-		return strings.ContainsRune("；;。", r)
-	})
-}
-
-func capabilitySubject(line string) string {
-	if separator := strings.IndexAny(line, "：:"); separator >= 0 {
-		subject := line[:separator]
-		if containsAny(subject, "请假", "统计分析", "交叉分析", "人工补签", "手动补签", "管理员补签") {
-			return subject
-		}
-	}
-	for _, manualSign := range []string{"人工补签", "手动补签", "管理员补签"} {
-		if strings.Contains(line, manualSign) {
-			return manualSign
-		}
-	}
-	return ""
-}
-
-func advertisesUnavailableCapability(line string) bool {
-	subject := capabilitySubject(line)
-	for _, clause := range splitCapabilityClauses(line) {
-		statement := strings.TrimSpace(subject + " " + clause)
-		if isNegativeCapabilityStatement(statement) {
-			continue
-		}
-		if (strings.Contains(statement, "请假") && strings.Contains(statement, "查询")) ||
-			containsAny(statement, "统计分析", "交叉分析") ||
-			containsAny(statement, "人工补签", "手动补签", "管理员补签") {
-			return true
-		}
-	}
-	return false
-}
-
-func deniesAllPrivateSubscriptionOperations(clause string) bool {
-	if !strings.Contains(clause, "私聊") ||
-		!containsAny(clause, "不执行", "不支持", "不能", "不可", "不会") {
-		return false
-	}
-	if containsAny(clause, "取消订阅", "退订", "状态查询") {
-		return false
-	}
-	return containsAny(clause, "订阅操作", "群订阅操作", "上述操作", "这些操作", "全部操作", "所有操作")
-}
-
-func hasConditionalGroupSubscriptionBoundary(active string) bool {
-	for _, line := range strings.Split(active, "\n") {
-		var hasGroupPermission, hasPrivateDenial bool
-		clauses := strings.FieldsFunc(line, func(r rune) bool {
-			return strings.ContainsRune("；;。，,", r)
-		})
-		for _, clause := range clauses {
-			if strings.Contains(clause, "群聊") &&
-				strings.Contains(clause, "订阅") &&
-				containsAny(clause, "支持", "允许", "可订阅") &&
-				!isNegativeCapabilityStatement(clause) {
-				hasGroupPermission = true
-			}
-			if deniesAllPrivateSubscriptionOperations(clause) {
-				hasPrivateDenial = true
-			}
-		}
-		if hasGroupPermission && hasPrivateDenial {
-			return true
-		}
-	}
-	return false
+	return strings.Join(normalized, "\n")
 }
 
 func readmeAgentCapabilityProblems(document string) []string {
@@ -150,36 +61,10 @@ func readmeAgentCapabilityProblems(document string) []string {
 		return []string{markerProblem}
 	}
 
-	var problems []string
-	requiredBoundaries := []string{
-		"课表查询",
-		"考勤查询",
-		"规则查询",
-		"仅回答",
+	if normalizeCapabilitySection(active) != normalizeCapabilitySection(expectedAgentCapabilities) {
+		return []string{"README active Agent capability section drifted from the reviewed snapshot"}
 	}
-	for _, boundary := range requiredBoundaries {
-		if !strings.Contains(active, boundary) {
-			problems = append(problems, "active Agent capability section missing boundary "+boundary)
-		}
-	}
-
-	if !hasConditionalGroupSubscriptionBoundary(active) {
-		problems = append(
-			problems,
-			"active Agent capability section must allow subscription in group chat and deny it in private chat",
-		)
-	}
-
-	for _, rawLine := range strings.Split(active, "\n") {
-		line := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(rawLine), "-*"))
-		if line == "" {
-			continue
-		}
-		if advertisesUnavailableCapability(line) {
-			problems = append(problems, "active Agent capability section advertises unavailable execution")
-		}
-	}
-	return problems
+	return nil
 }
 
 func TestReadmeAgentCapabilities(t *testing.T) {
@@ -194,123 +79,49 @@ func TestReadmeAgentCapabilities(t *testing.T) {
 	}
 }
 
-func TestReadmeAgentCapabilityContractExamples(t *testing.T) {
-	validActive := strings.Join([]string{
-		"- 课表查询：仅回答个人课表。",
-		"- 考勤查询：仅回答当前考勤。",
-		"- 规则查询：仅回答考勤规则。",
-		"- 群考勤订阅：群聊中允许订阅，私聊不执行订阅操作。",
-		"- 人工补签：仅解释操作路径，聊天不会发起补签操作。",
-	}, "\n")
-	marked := func(active string) string {
-		return agentCapabilitiesStart + "\n" + active + "\n" + agentCapabilitiesEnd
-	}
-
+func TestAgentCapabilityMarkers(t *testing.T) {
+	valid := agentCapabilitiesStart + "\nactive\n" + agentCapabilitiesEnd
 	tests := []struct {
 		name      string
 		document  string
 		wantValid bool
 	}{
-		{
-			name:      "accepts current boundaries and explanation-only manual sign",
-			document:  marked(validActive),
-			wantValid: true,
-		},
-		{
-			name: "accepts negative leave and analytics disclaimer",
-			document: marked(validActive + "\n" +
-				"- 请假查询、统计分析和交叉分析尚未开放，当前不能执行。"),
-			wantValid: true,
-		},
-		{
-			name: "rejects direct manual sign with capability phrase after subject",
-			document: marked(strings.Replace(
-				validActive,
-				"人工补签：仅解释操作路径，聊天不会发起补签操作。",
-				"人工补签：聊天可直接发起补签操作。",
-				1,
-			)),
-			wantValid: false,
-		},
-		{
-			name: "rejects unrelated group and subscription tokens",
-			document: marked(strings.Replace(
-				validActive,
-				"群考勤订阅：群聊中允许订阅，私聊不执行订阅操作。",
-				"群聊中仅回答规则；私聊支持订阅。",
-				1,
-			)),
-			wantValid: false,
-		},
-		{
-			name:      "rejects active leave query",
-			document:  marked(validActive + "\n- 当前支持个人请假查询。"),
-			wantValid: false,
-		},
-		{
-			name:      "rejects active analytics",
-			document:  marked(validActive + "\n- 当前可以执行统计分析和交叉分析。"),
-			wantValid: false,
-		},
-		{
-			name: "rejects analytics hidden behind negative leave clause",
-			document: marked(validActive + "\n" +
-				"- 请假查询尚未开放，但当前支持统计分析。"),
-			wantValid: false,
-		},
-		{
-			name: "rejects leave query hidden behind negative analytics clause",
-			document: marked(validActive + "\n" +
-				"- 统计分析尚未开放，但可以查询个人请假。"),
-			wantValid: false,
-		},
-		{
-			name: "rejects direct manual sign hidden behind explanation clause",
-			document: marked(strings.Replace(
-				validActive,
-				"人工补签：仅解释操作路径，聊天不会发起补签操作。",
-				"人工补签仅提供规则说明，聊天可直接发起补签操作。",
-				1,
-			)),
-			wantValid: false,
-		},
-		{
-			name: "rejects private denial limited to unsubscribe",
-			document: marked(strings.Replace(
-				validActive,
-				"群考勤订阅：群聊中允许订阅，私聊不执行订阅操作。",
-				"群考勤订阅：群聊中允许订阅、取消订阅和查询状态；私聊不支持取消订阅。",
-				1,
-			)),
-			wantValid: false,
-		},
-		{
-			name:      "rejects duplicate start marker",
-			document:  agentCapabilitiesStart + "\n" + marked(validActive),
-			wantValid: false,
-		},
-		{
-			name:      "rejects duplicate end marker",
-			document:  marked(validActive) + "\n" + agentCapabilitiesEnd,
-			wantValid: false,
-		},
-		{
-			name: "rejects reversed markers",
-			document: agentCapabilitiesEnd + "\n" + validActive + "\n" +
-				agentCapabilitiesStart,
-			wantValid: false,
-		},
+		{name: "valid", document: valid, wantValid: true},
+		{name: "missing start", document: "active\n" + agentCapabilitiesEnd},
+		{name: "missing end", document: agentCapabilitiesStart + "\nactive"},
+		{name: "duplicate start", document: agentCapabilitiesStart + "\n" + valid},
+		{name: "duplicate end", document: valid + "\n" + agentCapabilitiesEnd},
+		{name: "reversed", document: agentCapabilitiesEnd + "\nactive\n" + agentCapabilitiesStart},
+		{name: "empty", document: agentCapabilitiesStart + "\n\n" + agentCapabilitiesEnd},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			problems := readmeAgentCapabilityProblems(tt.document)
-			if tt.wantValid && len(problems) != 0 {
-				t.Fatalf("expected valid document, got problems: %v", problems)
+			_, problem := extractMarkedSection(
+				tt.document,
+				agentCapabilitiesStart,
+				agentCapabilitiesEnd,
+			)
+			if tt.wantValid && problem != "" {
+				t.Fatalf("expected valid markers, got %q", problem)
 			}
-			if !tt.wantValid && len(problems) == 0 {
-				t.Fatal("expected contract violation, got none")
+			if !tt.wantValid && problem == "" {
+				t.Fatal("expected marker contract violation, got none")
 			}
 		})
+	}
+}
+
+func TestReadmeAgentCapabilitySnapshotRejectsDrift(t *testing.T) {
+	drifted := strings.Replace(
+		expectedAgentCapabilities,
+		"私聊不执行群订阅操作",
+		"私聊支持订阅操作",
+		1,
+	)
+	document := agentCapabilitiesStart + "\n" + drifted + "\n" + agentCapabilitiesEnd
+
+	if problems := readmeAgentCapabilityProblems(document); len(problems) == 0 {
+		t.Fatal("expected snapshot drift to require review")
 	}
 }
