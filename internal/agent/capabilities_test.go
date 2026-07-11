@@ -26,6 +26,39 @@ func TestBuildHelpReplyIncludesSystemOverviewAndCurrentAvailability(t *testing.T
 	}
 }
 
+func TestBuildGreetingReplyUsesAvailableCatalogCapabilitiesOnly(t *testing.T) {
+	t.Parallel()
+
+	reply := buildGreetingReply(&tools.UserContext{
+		UserRole:         1,
+		ConversationType: "2",
+	})
+
+	for _, unavailable := range []string{"请假", "统计", "分析", "周排行", "周排名"} {
+		if strings.Contains(reply, unavailable) {
+			t.Fatalf("reply = %q, should not advertise unavailable %q capability", reply, unavailable)
+		}
+	}
+	if !strings.Contains(reply, "课表") || !strings.Contains(reply, "考勤") || !strings.Contains(reply, "订阅") {
+		t.Fatalf("reply = %q, want available schedule, attendance and group subscription capabilities", reply)
+	}
+	if !strings.Contains(reply, "不在聊天中直接执行") {
+		t.Fatalf("reply = %q, want explicit manual sign answer-only limitation", reply)
+	}
+}
+
+func TestBuildGreetingReplyRespectsConversationRestrictions(t *testing.T) {
+	t.Parallel()
+
+	reply := buildGreetingReply(&tools.UserContext{
+		UserRole:         1,
+		ConversationType: "1",
+	})
+	if strings.Contains(reply, "订阅") {
+		t.Fatalf("DM greeting = %q, should not advertise group-only subscription", reply)
+	}
+}
+
 func TestCapabilitiesFilterHidesAdminGroupFeaturesForNormalDMUser(t *testing.T) {
 	t.Parallel()
 

@@ -7,6 +7,14 @@ type capabilityContext struct {
 	ConversationType string
 }
 
+type CapabilitySnapshotEntry struct {
+	Operation      string
+	Title          string
+	Description    string
+	Availability   OperationAvailability
+	DirectlyUsable bool
+}
+
 type CapabilityEntry struct {
 	OperationScope    string
 	Title             string
@@ -14,6 +22,30 @@ type CapabilityEntry struct {
 	MinRole           int
 	ConversationScope string
 	AnswerOnly        bool
+}
+
+func capabilitySnapshot(ctx capabilityContext) []CapabilitySnapshotEntry {
+	manifests := userVisibleOperationManifests()
+	entries := make([]CapabilitySnapshotEntry, 0, len(manifests))
+	for _, manifest := range manifests {
+		if manifest.Capability == nil {
+			continue
+		}
+		if ctx.UserRole < manifest.MinRole {
+			continue
+		}
+		if !matchesConversationScope(string(manifest.Scope), ctx.ConversationType) {
+			continue
+		}
+		entries = append(entries, CapabilitySnapshotEntry{
+			Operation:      manifest.Name,
+			Title:          manifest.Capability.Title,
+			Description:    manifest.Capability.Description,
+			Availability:   manifest.Availability,
+			DirectlyUsable: manifest.Capability.DirectlyUsable,
+		})
+	}
+	return entries
 }
 
 func capabilityCatalogEntries() []CapabilityEntry {

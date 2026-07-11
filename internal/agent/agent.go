@@ -482,10 +482,47 @@ func (a *Agent) chatLegacy(
 
 // buildGreetingReply builds greeting reply.
 func buildGreetingReply(uctx *tools.UserContext) string {
-	if uctx != nil && uctx.UserRole >= 1 {
-		return "你好，我是课表助手。你可以直接让我查课表、考勤、请假；如果需要，也可以继续处理补签、统计和群订阅。"
+	role := 0
+	convType := "1"
+	if uctx != nil {
+		role = uctx.UserRole
+		convType = uctx.ConversationType
 	}
-	return "你好，我是课表助手。你可以直接让我查课表、考勤或请假相关信息。"
+
+	snapshot := capabilitySnapshot(capabilityContext{
+		UserRole:         role,
+		ConversationType: convType,
+	})
+	operations := make(map[string]bool, len(snapshot))
+	for _, entry := range snapshot {
+		operations[entry.Operation] = true
+	}
+
+	var capabilities []string
+	if operations["schedule.describe_capability"] {
+		capabilities = append(capabilities, "课表")
+	}
+	if operations["attendance.describe_capability"] {
+		capabilities = append(capabilities, "考勤状态")
+	}
+	if operations["system.describe_capability"] {
+		capabilities = append(capabilities, "规则")
+	}
+
+	var b strings.Builder
+	b.WriteString("你好，我是课表与考勤助手。")
+	if len(capabilities) > 0 {
+		b.WriteString("你可以让我查询")
+		b.WriteString(strings.Join(capabilities, "、"))
+		b.WriteString("。")
+	}
+	if operations["subscription.describe_capability"] {
+		b.WriteString("在群聊中还可以查询考勤订阅，管理员可以开启或取消订阅。")
+	}
+	if operations["manual_sign.describe_capability"] {
+		b.WriteString("补签目前只提供能力说明，不在聊天中直接执行。")
+	}
+	return b.String()
 }
 
 // respondForTaskState handles replies while a legacy active task is still open.
