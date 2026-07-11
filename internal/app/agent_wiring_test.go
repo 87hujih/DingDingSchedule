@@ -116,6 +116,35 @@ func TestGroupSubAdapterIncludesPushEnabledInSubscriptionInfo(t *testing.T) {
 	}
 }
 
+func TestGroupSubAdapterExecutesAndReplaysSubscriptionWrite(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:group-sub-ledger-adapter?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.GroupAttendanceSubscription{}, &model.AgentOperationExecution{}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &groupSubAdapter{repo: repository.NewGroupAttendanceSubscriptionRepository(db)}
+	first, err := adapter.ExecuteSubscriptionStart(context.Background(), "business-key", 1, "conv-1", "group", 10, []int64{102, 101})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := adapter.ExecuteSubscriptionStart(context.Background(), "business-key", 1, "conv-1", "changed", 99, []int64{999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.WriteEffect != model.AgentWriteEffectCreated || second.WriteEffect != first.WriteEffect {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+	var sub model.GroupAttendanceSubscription
+	if err := db.Where("tenant_id = ? AND conversation_id = ?", 1, "conv-1").First(&sub).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sub.GroupName != "group" || sub.DeptIDsJSON != "[101,102]" {
+		t.Fatalf("subscription mutated on replay: %+v", sub)
+	}
+}
+
 func TestAttendanceAdapterUsesSnapshotForHistoryQueries(t *testing.T) {
 	service := &fakeAttendanceDetailService{
 		detailResp: &dto.AttendanceDetailResponse{

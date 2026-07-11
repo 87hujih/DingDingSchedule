@@ -264,7 +264,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch: ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchSubscriptionWorkflow},
 		Policies: []PolicySpec{{Name: "admin_role"}, {Name: "group_conversation"}, {Name: "subscription_scope"}},
 		Idempotency: IdempotencySpec{
-			KeyFields: []string{"tenant_id", "conversation_id", "actor_user_id", "operation", "scope", "dept_ids", "workflow_id"},
+			KeyFields: []string{"tenant_id", "conversation_id", "operation", "scope", "dept_ids"},
 			Guarantee: IdempotencyGuaranteeRepositoryUniqueUpsert,
 		},
 		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingDefault},
@@ -303,7 +303,7 @@ var operationCatalogEntries = []OperationManifest{
 		Dispatch:  ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchRuntimeConversation},
 		Policies:  []PolicySpec{{Name: "admin_role"}, {Name: "group_conversation"}},
 		Idempotency: IdempotencySpec{
-			KeyFields: []string{"tenant_id", "conversation_id", "actor_user_id", "operation"},
+			KeyFields: []string{"tenant_id", "conversation_id", "operation"},
 			Guarantee: IdempotencyGuaranteeRepositorySoftDelete,
 		},
 		WriteGuard: WriteGuardBinding{Name: WriteGuardBindingDefault},

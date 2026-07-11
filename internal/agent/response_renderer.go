@@ -51,6 +51,7 @@ const (
 	WriteStatusAlreadyExists WriteStatus = "already_exists"
 	WriteStatusUpdated       WriteStatus = "updated"
 	WriteStatusNoOp          WriteStatus = "no_op"
+	WriteStatusCancelled     WriteStatus = "cancelled"
 )
 
 type OperationStatusPayload struct {

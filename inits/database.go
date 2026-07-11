@@ -65,6 +65,7 @@ func AutoMigrate() {
 		&model.AgentKnowledgeDocument{},
 		&model.AgentKnowledgeChunk{},
 		&model.AgentWorkflow{},
+		&model.AgentOperationExecution{},
 	); err != nil {
 		global.Log.Fatalf("数据库迁移失败: %v", err)
 	}
