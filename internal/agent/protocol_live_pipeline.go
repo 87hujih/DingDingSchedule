@@ -20,6 +20,7 @@ type protocolLivePipelineDeps struct {
 	Semester       SemesterPort
 	SchedulePeriod SchedulePeriodPort
 	Clock          func() time.Time
+	WorkflowStore  WorkflowStore
 }
 
 type protocolOperationExecutor interface {
@@ -65,9 +66,14 @@ type protocolLiveOutcome struct {
 	WorkflowInterruptReason string
 	WorkflowAfter           *WorkflowSnapshot
 	ClearWorkflow           bool
+	WorkflowStoreApplied    bool
+	WorkflowExecutionBase   *WorkflowSnapshot
 }
 
 func newProtocolLivePipeline(deps protocolLivePipelineDeps) protocolLivePipeline {
+	if deps.WorkflowStore == nil {
+		deps.WorkflowStore = newMemoryWorkflowStore(deps.Clock)
+	}
 	return protocolLivePipeline{deps: deps}
 }
 
@@ -112,6 +118,7 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 	defer finalizeProtocolLiveOutcome(&outcome)
 
 	receivedWorkflow := input.ActiveWorkflow
+	outcome.WorkflowExecutionBase = cloneWorkflowSnapshot(receivedWorkflow)
 	activeWorkflow := receivedWorkflow
 	if workflowExpired(activeWorkflow, p.now()) {
 		activeWorkflow = nil

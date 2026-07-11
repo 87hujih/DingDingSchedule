@@ -96,6 +96,82 @@ func TestAgentWorkflowStoreCreateConflictExpiredRecreateAndCAS(t *testing.T) {
 	}
 }
 
+func TestAgentWorkflowStoreExecutionLeaseFencingAndTakeover(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	store := newAgentWorkflowStore(openAgentWorkflowStoreTestDB(t), func() time.Time { return now })
+	key := agent.WorkflowKey{TenantID: 42, ConversationID: "cid", ActorUserID: 7}
+	created, err := store.Create(context.Background(), key, &agent.WorkflowSnapshot{
+		ID:    "wf",
+		Type:  agent.WorkflowSubscriptionStart,
+		State: agent.WorkflowReady,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := store.ReserveExecution(context.Background(), key, created.Version, created.Snapshot, agent.WorkflowExecutionLease{
+		ExecutionToken: "first",
+		LeaseExpiresAt: now.Add(2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReserveExecution(context.Background(), key, reserved.Version, reserved.Snapshot, agent.WorkflowExecutionLease{
+		ExecutionToken: "second",
+		LeaseExpiresAt: now.Add(2 * time.Minute),
+	}); !errors.Is(err, agent.ErrWorkflowConflict) {
+		t.Fatalf("active lease reserve error = %v, want conflict", err)
+	}
+
+	now = now.Add(2*time.Minute + time.Second)
+	taken, err := store.ReserveExecution(context.Background(), key, reserved.Version, reserved.Snapshot, agent.WorkflowExecutionLease{
+		ExecutionToken: "second",
+		LeaseExpiresAt: now.Add(2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinalizeExecution(context.Background(), key, taken.Version, "first", nil); !errors.Is(err, agent.ErrWorkflowConflict) {
+		t.Fatalf("stale token finalize error = %v, want conflict", err)
+	}
+	if err := store.FinalizeExecution(context.Background(), key, taken.Version, "second", nil); err != nil {
+		t.Fatalf("current token finalize: %v", err)
+	}
+}
+
+func TestAgentWorkflowStoreReservationExtendsWorkflowTTLThroughActiveLease(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	store := newAgentWorkflowStore(openAgentWorkflowStoreTestDB(t), func() time.Time { return now })
+	key := agent.WorkflowKey{TenantID: 42, ConversationID: "cid-short-ttl", ActorUserID: 7}
+	created, err := store.Create(context.Background(), key, &agent.WorkflowSnapshot{
+		ID: "wf", Type: agent.WorkflowSubscriptionStart, State: agent.WorkflowReady, ExpiresAt: now.Add(30 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reserved, err := store.ReserveExecution(context.Background(), key, created.Version, created.Snapshot, agent.WorkflowExecutionLease{
+		ExecutionToken: "first", LeaseExpiresAt: now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseExpiresAt := now.Add(agent.WorkflowExecutionLeaseDuration)
+	if reserved.Snapshot.ExecutionLease == nil || !reserved.Snapshot.ExecutionLease.LeaseExpiresAt.Equal(leaseExpiresAt) {
+		t.Fatalf("lease = %+v, want store-clock deadline %v", reserved.Snapshot.ExecutionLease, leaseExpiresAt)
+	}
+	if reserved.Snapshot.ExpiresAt.Before(leaseExpiresAt) {
+		t.Fatalf("workflow expires at %v before active lease %v", reserved.Snapshot.ExpiresAt, leaseExpiresAt)
+	}
+
+	now = now.Add(time.Minute)
+	if loaded, err := store.Load(context.Background(), key); err != nil || loaded == nil {
+		t.Fatalf("Load during active lease = %+v, %v; want workflow", loaded, err)
+	}
+	if _, err := store.ReserveExecution(context.Background(), key, reserved.Version, reserved.Snapshot, agent.WorkflowExecutionLease{ExecutionToken: "second"}); !errors.Is(err, agent.ErrWorkflowConflict) {
+		t.Fatalf("reserve during active lease error = %v, want conflict", err)
+	}
+}
+
 func workflowStoreSnapshot(key agent.WorkflowKey, expiresAt time.Time) *agent.WorkflowSnapshot {
 	return &agent.WorkflowSnapshot{
 		ID:             "wf-1",

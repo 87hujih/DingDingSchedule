@@ -29,6 +29,8 @@ type WorkflowStore interface {
 	Create(ctx context.Context, key WorkflowKey, next *WorkflowSnapshot) (*VersionedWorkflow, error)
 	CompareAndSwap(ctx context.Context, key WorkflowKey, expectedVersion uint64, next *WorkflowSnapshot) (*VersionedWorkflow, error)
 	DeleteIfVersion(ctx context.Context, key WorkflowKey, expectedVersion uint64, reason string) error
+	ReserveExecution(ctx context.Context, key WorkflowKey, expectedVersion uint64, base *WorkflowSnapshot, lease WorkflowExecutionLease) (*VersionedWorkflow, error)
+	FinalizeExecution(ctx context.Context, key WorkflowKey, expectedVersion uint64, executionToken string, next *WorkflowSnapshot) error
 }
 
 type memoryWorkflowStore struct {
@@ -155,6 +157,96 @@ func (s *memoryWorkflowStore) DeleteIfVersion(ctx context.Context, key WorkflowK
 	}
 	delete(s.workflows, key)
 	return nil
+}
+
+func (s *memoryWorkflowStore) ReserveExecution(ctx context.Context, key WorkflowKey, expectedVersion uint64, base *WorkflowSnapshot, lease WorkflowExecutionLease) (*VersionedWorkflow, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := validateWorkflowKey(key); err != nil {
+		return nil, err
+	}
+	if base == nil {
+		return nil, ErrWorkflowConflict
+	}
+
+	unlock := s.lockWorkflowKey(key)
+	defer unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	lease.StartedAt = now
+	lease.LeaseExpiresAt = now.Add(WorkflowExecutionLeaseDuration)
+	current := s.workflows[key]
+	if expectedVersion == 0 {
+		if current != nil && !workflowExpired(current.Snapshot, now) {
+			return nil, ErrWorkflowConflict
+		}
+		delete(s.workflows, key)
+	} else if current == nil || workflowExpired(current.Snapshot, now) || current.Version != expectedVersion {
+		if current != nil && workflowExpired(current.Snapshot, now) {
+			delete(s.workflows, key)
+		}
+		return nil, ErrWorkflowConflict
+	} else if executionLeaseActive(current.Snapshot.ExecutionLease, now) {
+		return nil, ErrWorkflowConflict
+	}
+
+	next := cloneWorkflowSnapshot(base)
+	next.State = WorkflowExecuting
+	next.ExecutionLease = cloneWorkflowExecutionLease(&lease)
+	if next.ExpiresAt.Before(lease.LeaseExpiresAt) {
+		next.ExpiresAt = lease.LeaseExpiresAt
+	}
+	version := uint64(1)
+	if current != nil {
+		version = current.Version + 1
+	}
+	reserved := s.prepareVersionedLocked(key, next, version)
+	s.workflows[key] = reserved
+	return cloneVersionedWorkflow(reserved), nil
+}
+
+func (s *memoryWorkflowStore) FinalizeExecution(ctx context.Context, key WorkflowKey, expectedVersion uint64, executionToken string, next *WorkflowSnapshot) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateWorkflowKey(key); err != nil {
+		return err
+	}
+
+	unlock := s.lockWorkflowKey(key)
+	defer unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.workflows[key]
+	if current == nil || current.Version != expectedVersion || current.Snapshot == nil ||
+		current.Snapshot.State != WorkflowExecuting || current.Snapshot.ExecutionLease == nil ||
+		current.Snapshot.ExecutionLease.ExecutionToken != executionToken {
+		return ErrWorkflowConflict
+	}
+	if next == nil {
+		delete(s.workflows, key)
+		return nil
+	}
+	finalized := cloneWorkflowSnapshot(next)
+	finalized.ExecutionLease = nil
+	s.workflows[key] = s.prepareVersionedLocked(key, finalized, expectedVersion+1)
+	return nil
+}
+
+func executionLeaseActive(lease *WorkflowExecutionLease, now time.Time) bool {
+	return lease != nil && lease.LeaseExpiresAt.After(now)
+}
+
+func cloneWorkflowExecutionLease(lease *WorkflowExecutionLease) *WorkflowExecutionLease {
+	if lease == nil {
+		return nil
+	}
+	cloned := *lease
+	return &cloned
 }
 
 func (s *memoryWorkflowStore) lockWorkflowKey(key WorkflowKey) func() {

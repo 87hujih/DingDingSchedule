@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -20,6 +21,57 @@ type AgentWorkflowRepository interface {
 	Create(ctx context.Context, workflow *model.AgentWorkflow, now time.Time) error
 	CompareAndSwap(ctx context.Context, key agent.WorkflowKey, expected uint64, next *model.AgentWorkflow, now time.Time) error
 	DeleteIfVersion(ctx context.Context, key agent.WorkflowKey, expected uint64) error
+	FinalizeExecution(ctx context.Context, key agent.WorkflowKey, expected uint64, executionToken string, next *model.AgentWorkflow) error
+}
+
+func (r *agentWorkflowRepository) FinalizeExecution(ctx context.Context, key agent.WorkflowKey, expected uint64, executionToken string, next *model.AgentWorkflow) error {
+	return r.scoped(ctx).Transaction(func(tx *gorm.DB) error {
+		var current model.AgentWorkflow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("tenant_id = ? AND conversation_id = ? AND actor_user_id = ? AND version = ?",
+				key.TenantID, key.ConversationID, key.ActorUserID, expected).
+			First(&current).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return agent.ErrWorkflowConflict
+			}
+			return err
+		}
+		var snapshot agent.WorkflowSnapshot
+		if err := json.Unmarshal([]byte(current.SnapshotJSON), &snapshot); err != nil {
+			return err
+		}
+		if snapshot.State != agent.WorkflowExecuting || snapshot.ExecutionLease == nil ||
+			snapshot.ExecutionLease.ExecutionToken != executionToken {
+			return agent.ErrWorkflowConflict
+		}
+		if next == nil {
+			result := tx.Delete(&current)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return agent.ErrWorkflowConflict
+			}
+			return nil
+		}
+		result := tx.Model(&model.AgentWorkflow{}).
+			Where("id = ? AND version = ?", current.ID, expected).
+			Updates(map[string]any{
+				"workflow_id":   next.WorkflowID,
+				"workflow_type": next.WorkflowType,
+				"version":       expected + 1,
+				"snapshot_json": next.SnapshotJSON,
+				"state":         next.State,
+				"expires_at":    next.ExpiresAt,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return agent.ErrWorkflowConflict
+		}
+		return nil
+	})
 }
 
 type agentWorkflowRepository struct {

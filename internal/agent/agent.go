@@ -1429,6 +1429,7 @@ func (a *Agent) protocolLivePipeline() protocolLivePipeline {
 		Dept:           a.deps.Dept,
 		Semester:       a.deps.Semester,
 		SchedulePeriod: a.deps.SchedulePeriod,
+		WorkflowStore:  a.workflowStore,
 	})
 }
 
@@ -1461,6 +1462,9 @@ func (a *Agent) applyProtocolLiveOutcomeForKey(ctx context.Context, workflowKey 
 
 func (a *Agent) persistProtocolLiveWorkflowOutcome(ctx context.Context, workflowKey WorkflowKey, expectedVersion uint64, outcome protocolLiveOutcome) error {
 	if a == nil || a.workflowStore == nil {
+		return nil
+	}
+	if outcome.WorkflowStoreApplied {
 		return nil
 	}
 	if outcome.ClearWorkflow {

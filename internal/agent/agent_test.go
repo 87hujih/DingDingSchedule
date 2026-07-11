@@ -591,6 +591,14 @@ func (s *recordingWorkflowStore) DeleteIfVersion(ctx context.Context, key Workfl
 	return s.inner.DeleteIfVersion(ctx, key, expectedVersion, reason)
 }
 
+func (s *recordingWorkflowStore) ReserveExecution(ctx context.Context, key WorkflowKey, expectedVersion uint64, base *WorkflowSnapshot, lease WorkflowExecutionLease) (*VersionedWorkflow, error) {
+	return s.inner.ReserveExecution(ctx, key, expectedVersion, base, lease)
+}
+
+func (s *recordingWorkflowStore) FinalizeExecution(ctx context.Context, key WorkflowKey, expectedVersion uint64, executionToken string, next *WorkflowSnapshot) error {
+	return s.inner.FinalizeExecution(ctx, key, expectedVersion, executionToken, next)
+}
+
 type failingWorkflowStore struct{}
 
 func (failingWorkflowStore) Load(context.Context, WorkflowKey) (*VersionedWorkflow, error) {
@@ -606,6 +614,14 @@ func (failingWorkflowStore) CompareAndSwap(context.Context, WorkflowKey, uint64,
 }
 
 func (failingWorkflowStore) DeleteIfVersion(context.Context, WorkflowKey, uint64, string) error {
+	return errors.New("workflow store unavailable")
+}
+
+func (failingWorkflowStore) ReserveExecution(context.Context, WorkflowKey, uint64, *WorkflowSnapshot, WorkflowExecutionLease) (*VersionedWorkflow, error) {
+	return nil, errors.New("workflow store unavailable")
+}
+
+func (failingWorkflowStore) FinalizeExecution(context.Context, WorkflowKey, uint64, string, *WorkflowSnapshot) error {
 	return errors.New("workflow store unavailable")
 }
 

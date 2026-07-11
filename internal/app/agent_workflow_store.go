@@ -83,6 +83,52 @@ func (s *agentWorkflowStore) DeleteIfVersion(ctx context.Context, key agent.Work
 	return s.repo.DeleteIfVersion(ctx, key, expected)
 }
 
+func (s *agentWorkflowStore) ReserveExecution(ctx context.Context, key agent.WorkflowKey, expected uint64, base *agent.WorkflowSnapshot, lease agent.WorkflowExecutionLease) (*agent.VersionedWorkflow, error) {
+	if base == nil {
+		return nil, agent.ErrWorkflowConflict
+	}
+	now := s.clock()
+	lease.StartedAt = now
+	lease.LeaseExpiresAt = now.Add(agent.WorkflowExecutionLeaseDuration)
+	if expected > 0 {
+		current, err := s.Load(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		if current == nil || current.Version != expected {
+			return nil, agent.ErrWorkflowConflict
+		}
+		if current.Snapshot.State == agent.WorkflowExecuting && current.Snapshot.ExecutionLease != nil &&
+			current.Snapshot.ExecutionLease.LeaseExpiresAt.After(now) {
+			return nil, agent.ErrWorkflowConflict
+		}
+	}
+	next := *base
+	next.State = agent.WorkflowExecuting
+	next.ExecutionLease = &lease
+	if next.ExpiresAt.Before(lease.LeaseExpiresAt) {
+		next.ExpiresAt = lease.LeaseExpiresAt
+	}
+	if expected == 0 {
+		return s.Create(ctx, key, &next)
+	}
+	return s.CompareAndSwap(ctx, key, expected, &next)
+}
+
+func (s *agentWorkflowStore) FinalizeExecution(ctx context.Context, key agent.WorkflowKey, expected uint64, executionToken string, next *agent.WorkflowSnapshot) error {
+	var row *model.AgentWorkflow
+	if next != nil {
+		prepared := prepareAgentWorkflowSnapshot(key, next, expected+1, s.clock(), next.CreatedAt)
+		prepared.ExecutionLease = nil
+		var err error
+		row, err = encodeAgentWorkflow(prepared, expected+1)
+		if err != nil {
+			return err
+		}
+	}
+	return s.repo.FinalizeExecution(ctx, key, expected, executionToken, row)
+}
+
 func prepareAgentWorkflowSnapshot(key agent.WorkflowKey, source *agent.WorkflowSnapshot, version uint64, now, createdAt time.Time) *agent.WorkflowSnapshot {
 	next := *source
 	next.TenantID = key.TenantID

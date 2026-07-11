@@ -2,6 +2,8 @@ package agent
 
 import "time"
 
+const WorkflowExecutionLeaseDuration = 2 * time.Minute
+
 type WorkflowType string
 type WorkflowState string
 type WorkflowDecision string
@@ -18,6 +20,8 @@ const (
 	WorkflowCollectDate        WorkflowState = "collect_date"
 	WorkflowCollectSection     WorkflowState = "collect_section"
 	WorkflowReady              WorkflowState = "ready"
+	WorkflowExecuting          WorkflowState = "executing"
+	WorkflowRecoveryRequired   WorkflowState = "recovery_required"
 	WorkflowCompleted          WorkflowState = "completed"
 	WorkflowCancelled          WorkflowState = "cancelled"
 	WorkflowInterruptedState   WorkflowState = "interrupted"
@@ -69,9 +73,19 @@ type WorkflowSnapshot struct {
 	UpdatedAt       time.Time
 	ExpiresAt       time.Time
 	Version         int64
+	ExecutionLease  *WorkflowExecutionLease
 
 	MissingSlots []string
 	Trusted      trustedEntities
+}
+
+type WorkflowExecutionLease struct {
+	ExecutionToken string
+	Operation      string
+	BusinessKey    string
+	RequestID      string
+	StartedAt      time.Time
+	LeaseExpiresAt time.Time
 }
 
 type WorkflowResult struct {
@@ -91,6 +105,10 @@ func cloneWorkflowSnapshot(workflow *WorkflowSnapshot) *WorkflowSnapshot {
 	}
 
 	cloned := *workflow
+	if workflow.ExecutionLease != nil {
+		lease := *workflow.ExecutionLease
+		cloned.ExecutionLease = &lease
+	}
 	cloned.MissingFields = cloneStringSlice(workflowMissingFields(workflow))
 	if len(workflow.MissingSlots) > 0 {
 		cloned.MissingSlots = append([]string(nil), workflow.MissingSlots...)
