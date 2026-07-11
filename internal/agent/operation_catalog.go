@@ -389,7 +389,7 @@ var operationCatalogEntries = []OperationManifest{
 		Eval:         EvalBinding{CaseIDs: []string{"protocol-help-overview"}, ReplayTags: []string{"capability"}},
 		Capability: &CapabilityBinding{
 			Title:          "功能说明",
-			Description:    "说明我当前可以处理的考勤、订阅、规则和课表能力。",
+			Description:    "根据当前会话和权限说明可用能力。",
 			AnswerOnly:     true,
 			DirectlyUsable: true,
 		},

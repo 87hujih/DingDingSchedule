@@ -117,25 +117,49 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 		activeWorkflow = nil
 	}
 	workflowCtx := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
-	compileStart := time.Now()
-	compileResult, err := compileProtocolResultWithCompiler(ctx, protocolInput{
-		Message:        input.Message,
-		ActiveWorkflow: workflowCtx,
-	}, p.deps.Compiler)
-	outcome.CompilerLatencyMs = elapsedMs(compileStart)
-	outcome.CompilerSource = string(compileResult.Source)
-	outcome.CompilerStatus = compileResult.LLMStatus
-	outcome.CompilerFallbackReason = compileResult.FallbackReason
-	draft := compileResult.Draft
-	if err != nil {
-		reason := "intent_parse_failed"
-		if errors.Is(err, context.DeadlineExceeded) {
-			reason = "intent_timeout"
-			outcome.CompilerStatus = "timeout"
-		} else {
-			outcome.CompilerStatus = "error"
+	systemIntent := interpretSystemIntent(input.Message)
+	if systemIntent == SystemIntentGreeting {
+		outcome.CompilerSource = "system_intent"
+		outcome.CompilerStatus = "skipped"
+		outcome.IntentDraftJSON = compactIntentDraft(unknownIntentDraft("system_greeting"))
+		outcome.CatalogValidationCode = "system_intent_greeting"
+		outcome.PrePolicyResult = "allow"
+		setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseAnswer, Answer: buildGreetingReply(input.User)}, answerModeToolFirst)
+		return outcome
+	}
+
+	var draft ProtocolDraft
+	if systemIntent == SystemIntentHelp {
+		draft = ProtocolDraft{
+			Act:        ActHelp,
+			Domain:     DomainSystem,
+			Operation:  "system.describe_capability",
+			Confidence: 1,
+			Reason:     "system_intent_help",
 		}
-		draft = unknownIntentDraft(reason)
+		outcome.CompilerSource = "system_intent"
+		outcome.CompilerStatus = "skipped"
+	} else {
+		compileStart := time.Now()
+		compileResult, err := compileProtocolResultWithCompiler(ctx, protocolInput{
+			Message:        input.Message,
+			ActiveWorkflow: workflowCtx,
+		}, p.deps.Compiler)
+		outcome.CompilerLatencyMs = elapsedMs(compileStart)
+		outcome.CompilerSource = string(compileResult.Source)
+		outcome.CompilerStatus = compileResult.LLMStatus
+		outcome.CompilerFallbackReason = compileResult.FallbackReason
+		draft = compileResult.Draft
+		if err != nil {
+			reason := "intent_parse_failed"
+			if errors.Is(err, context.DeadlineExceeded) {
+				reason = "intent_timeout"
+				outcome.CompilerStatus = "timeout"
+			} else {
+				outcome.CompilerStatus = "error"
+			}
+			draft = unknownIntentDraft(reason)
+		}
 	}
 	outcome.IntentDraftJSON = compactIntentDraft(draft)
 
