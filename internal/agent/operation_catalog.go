@@ -38,6 +38,16 @@ const (
 	WorkflowModeAuxiliary  WorkflowMode = "auxiliary"
 )
 
+type OperationAvailability string
+
+const (
+	OperationAvailabilityActive     OperationAvailability = "active"
+	OperationAvailabilityAnswerOnly OperationAvailability = "answer_only"
+	OperationAvailabilityPlanned    OperationAvailability = "planned"
+	OperationAvailabilityLegacyOnly OperationAvailability = "legacy_only"
+	OperationAvailabilityDisabled   OperationAvailability = "disabled"
+)
+
 type ProtocolLiveDispatchBinding struct {
 	Name string
 }
@@ -123,9 +133,10 @@ type CapabilityBinding struct {
 }
 
 type OperationManifest struct {
-	Name        string
-	AllowedActs []UserAct
-	Domain      BusinessDomain
+	Name         string
+	AllowedActs  []UserAct
+	Domain       BusinessDomain
+	Availability OperationAvailability
 
 	IsWrite bool
 	Risk    RiskLevel
@@ -182,6 +193,7 @@ var operationCatalogEntries = []OperationManifest{
 		Name:                  "attendance.query_status",
 		AllowedActs:           []UserAct{ActReadQuery},
 		Domain:                DomainAttendance,
+		Availability:          OperationAvailabilityActive,
 		Risk:                  RiskRead,
 		Scope:                 ConversationScopeBoth,
 		MinRole:               0,
@@ -218,6 +230,7 @@ var operationCatalogEntries = []OperationManifest{
 		Name:                  "subscription.start",
 		AllowedActs:           []UserAct{ActWriteRequest},
 		Domain:                DomainSubscription,
+		Availability:          OperationAvailabilityActive,
 		IsWrite:               true,
 		Risk:                  RiskWriteLow,
 		Scope:                 ConversationScopeGroup,
@@ -266,6 +279,7 @@ var operationCatalogEntries = []OperationManifest{
 		Name:                  "subscription.cancel",
 		AllowedActs:           []UserAct{ActWriteRequest},
 		Domain:                DomainSubscription,
+		Availability:          OperationAvailabilityActive,
 		IsWrite:               true,
 		Risk:                  RiskWriteLow,
 		Scope:                 ConversationScopeGroup,
@@ -301,6 +315,7 @@ var operationCatalogEntries = []OperationManifest{
 		Name:                  "subscription.query_status",
 		AllowedActs:           []UserAct{ActReadQuery},
 		Domain:                DomainSubscription,
+		Availability:          OperationAvailabilityActive,
 		Risk:                  RiskRead,
 		Scope:                 ConversationScopeGroup,
 		MinRole:               0,
@@ -325,12 +340,13 @@ var operationCatalogEntries = []OperationManifest{
 		Eval:       EvalBinding{CaseIDs: []string{"catalog-subscription-query-status"}, ReplayTags: []string{"subscription"}},
 	},
 	{
-		Name:        "subscription.list_departments",
-		AllowedActs: []UserAct{ActReadQuery, ActWorkflowContinue},
-		Domain:      DomainSubscription,
-		Risk:        RiskRead,
-		Scope:       ConversationScopeBoth,
-		MinRole:     0,
+		Name:         "subscription.list_departments",
+		AllowedActs:  []UserAct{ActReadQuery, ActWorkflowContinue},
+		Domain:       DomainSubscription,
+		Availability: OperationAvailabilityActive,
+		Risk:         RiskRead,
+		Scope:        ConversationScopeBoth,
+		MinRole:      0,
 		Recognition: RecognitionSpec{
 			Aliases: []string{
 				"当前都有哪些部门",
@@ -357,19 +373,20 @@ var operationCatalogEntries = []OperationManifest{
 		Eval:       EvalBinding{CaseIDs: []string{"protocol-subscription-list-departments-workflow-meta"}, ReplayTags: []string{"subscription", "workflow"}},
 	},
 	{
-		Name:        "system.describe_capability",
-		AllowedActs: []UserAct{ActHelp},
-		Domain:      DomainSystem,
-		Risk:        RiskRead,
-		Scope:       ConversationScopeBoth,
-		MinRole:     0,
-		Workflow:    singleTurnWorkflowSpec(),
-		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
-		Policies:    []PolicySpec{{Name: "conversation_scope"}},
-		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:    ExecutorBinding{Name: ExecutorBindingSystemDescribeCapability},
-		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
-		Eval:        EvalBinding{CaseIDs: []string{"protocol-help-overview"}, ReplayTags: []string{"capability"}},
+		Name:         "system.describe_capability",
+		AllowedActs:  []UserAct{ActHelp},
+		Domain:       DomainSystem,
+		Availability: OperationAvailabilityAnswerOnly,
+		Risk:         RiskRead,
+		Scope:        ConversationScopeBoth,
+		MinRole:      0,
+		Workflow:     singleTurnWorkflowSpec(),
+		Dispatch:     ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
+		Policies:     []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard:   WriteGuardBinding{Name: WriteGuardBindingNotRequired},
+		Executor:     ExecutorBinding{Name: ExecutorBindingSystemDescribeCapability},
+		Renderer:     RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
+		Eval:         EvalBinding{CaseIDs: []string{"protocol-help-overview"}, ReplayTags: []string{"capability"}},
 		Capability: &CapabilityBinding{
 			Title:          "功能说明",
 			Description:    "说明我当前可以处理的考勤、订阅、规则和课表能力。",
@@ -378,19 +395,20 @@ var operationCatalogEntries = []OperationManifest{
 		},
 	},
 	{
-		Name:        "attendance.describe_capability",
-		AllowedActs: []UserAct{ActCapabilityQuestion},
-		Domain:      DomainAttendance,
-		Risk:        RiskRead,
-		Scope:       ConversationScopeBoth,
-		MinRole:     0,
-		Workflow:    singleTurnWorkflowSpec(),
-		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
-		Policies:    []PolicySpec{{Name: "conversation_scope"}},
-		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:    ExecutorBinding{Name: ExecutorBindingAttendanceDescribeCapability},
-		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
-		Eval:        EvalBinding{CaseIDs: []string{"catalog-attendance-describe-capability"}, ReplayTags: []string{"capability", "attendance"}},
+		Name:         "attendance.describe_capability",
+		AllowedActs:  []UserAct{ActCapabilityQuestion},
+		Domain:       DomainAttendance,
+		Availability: OperationAvailabilityAnswerOnly,
+		Risk:         RiskRead,
+		Scope:        ConversationScopeBoth,
+		MinRole:      0,
+		Workflow:     singleTurnWorkflowSpec(),
+		Dispatch:     ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
+		Policies:     []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard:   WriteGuardBinding{Name: WriteGuardBindingNotRequired},
+		Executor:     ExecutorBinding{Name: ExecutorBindingAttendanceDescribeCapability},
+		Renderer:     RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
+		Eval:         EvalBinding{CaseIDs: []string{"catalog-attendance-describe-capability"}, ReplayTags: []string{"capability", "attendance"}},
 		Capability: &CapabilityBinding{
 			Title:          "考勤查询",
 			Description:    "查询指定日期和节次的考勤状态。",
@@ -399,19 +417,20 @@ var operationCatalogEntries = []OperationManifest{
 		},
 	},
 	{
-		Name:        "schedule.describe_capability",
-		AllowedActs: []UserAct{ActCapabilityQuestion},
-		Domain:      DomainSchedule,
-		Risk:        RiskRead,
-		Scope:       ConversationScopeBoth,
-		MinRole:     0,
-		Workflow:    singleTurnWorkflowSpec(),
-		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
-		Policies:    []PolicySpec{{Name: "conversation_scope"}},
-		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:    ExecutorBinding{Name: ExecutorBindingScheduleDescribeCapability},
-		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
-		Eval:        EvalBinding{CaseIDs: []string{"catalog-schedule-describe-capability"}, ReplayTags: []string{"capability", "schedule"}},
+		Name:         "schedule.describe_capability",
+		AllowedActs:  []UserAct{ActCapabilityQuestion},
+		Domain:       DomainSchedule,
+		Availability: OperationAvailabilityAnswerOnly,
+		Risk:         RiskRead,
+		Scope:        ConversationScopeBoth,
+		MinRole:      0,
+		Workflow:     singleTurnWorkflowSpec(),
+		Dispatch:     ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
+		Policies:     []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard:   WriteGuardBinding{Name: WriteGuardBindingNotRequired},
+		Executor:     ExecutorBinding{Name: ExecutorBindingScheduleDescribeCapability},
+		Renderer:     RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
+		Eval:         EvalBinding{CaseIDs: []string{"catalog-schedule-describe-capability"}, ReplayTags: []string{"capability", "schedule"}},
 		Capability: &CapabilityBinding{
 			Title:          "课表查询",
 			Description:    "查询自己的课表，也可以查询指定姓名用户的课表。",
@@ -420,19 +439,20 @@ var operationCatalogEntries = []OperationManifest{
 		},
 	},
 	{
-		Name:        "subscription.describe_capability",
-		AllowedActs: []UserAct{ActCapabilityQuestion},
-		Domain:      DomainSubscription,
-		Risk:        RiskRead,
-		Scope:       ConversationScopeGroup,
-		MinRole:     0,
-		Workflow:    singleTurnWorkflowSpec(),
-		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
-		Policies:    []PolicySpec{{Name: "group_conversation"}},
-		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:    ExecutorBinding{Name: ExecutorBindingSubscriptionDescribeCapability},
-		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
-		Eval:        EvalBinding{CaseIDs: []string{"catalog-subscription-describe-capability"}, ReplayTags: []string{"capability", "subscription"}},
+		Name:         "subscription.describe_capability",
+		AllowedActs:  []UserAct{ActCapabilityQuestion},
+		Domain:       DomainSubscription,
+		Availability: OperationAvailabilityAnswerOnly,
+		Risk:         RiskRead,
+		Scope:        ConversationScopeGroup,
+		MinRole:      0,
+		Workflow:     singleTurnWorkflowSpec(),
+		Dispatch:     ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
+		Policies:     []PolicySpec{{Name: "group_conversation"}},
+		WriteGuard:   WriteGuardBinding{Name: WriteGuardBindingNotRequired},
+		Executor:     ExecutorBinding{Name: ExecutorBindingSubscriptionDescribeCapability},
+		Renderer:     RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
+		Eval:         EvalBinding{CaseIDs: []string{"catalog-subscription-describe-capability"}, ReplayTags: []string{"capability", "subscription"}},
 		Capability: &CapabilityBinding{
 			Title:          "群考勤订阅",
 			Description:    "在群聊里可以查询当前群考勤推送订阅状态；管理员还可以开启、取消或按部门管理订阅。",
@@ -441,18 +461,19 @@ var operationCatalogEntries = []OperationManifest{
 		},
 	},
 	{
-		Name:        "manual_sign.describe_capability",
-		AllowedActs: []UserAct{ActCapabilityQuestion},
-		Domain:      DomainManualSign,
-		Risk:        RiskRead,
-		Scope:       ConversationScopeBoth,
-		MinRole:     0,
-		Workflow:    singleTurnWorkflowSpec(),
-		Dispatch:    ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
-		Policies:    []PolicySpec{{Name: "conversation_scope"}},
-		WriteGuard:  WriteGuardBinding{Name: WriteGuardBindingNotRequired},
-		Executor:    ExecutorBinding{Name: ExecutorBindingManualSignDescribeCapability},
-		Renderer:    RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
+		Name:         "manual_sign.describe_capability",
+		AllowedActs:  []UserAct{ActCapabilityQuestion},
+		Domain:       DomainManualSign,
+		Availability: OperationAvailabilityAnswerOnly,
+		Risk:         RiskRead,
+		Scope:        ConversationScopeBoth,
+		MinRole:      0,
+		Workflow:     singleTurnWorkflowSpec(),
+		Dispatch:     ProtocolLiveDispatchBinding{Name: ProtocolLiveDispatchCapability},
+		Policies:     []PolicySpec{{Name: "conversation_scope"}},
+		WriteGuard:   WriteGuardBinding{Name: WriteGuardBindingNotRequired},
+		Executor:     ExecutorBinding{Name: ExecutorBindingManualSignDescribeCapability},
+		Renderer:     RendererBinding{Name: "response_renderer", Kind: ResponseAnswer},
 		Eval: EvalBinding{
 			CaseIDs:    []string{"protocol-manual-sign-capability", "protocol-workflow-interrupted-by-capability"},
 			ReplayTags: []string{"capability", "manual_sign"},
@@ -468,6 +489,7 @@ var operationCatalogEntries = []OperationManifest{
 		Name:                  "attendance.rule_explain",
 		AllowedActs:           []UserAct{ActRuleQuestion},
 		Domain:                DomainAttendance,
+		Availability:          OperationAvailabilityActive,
 		Risk:                  RiskRead,
 		Scope:                 ConversationScopeBoth,
 		MinRole:               0,
@@ -485,6 +507,7 @@ var operationCatalogEntries = []OperationManifest{
 		Name:                  "schedule.rule_explain",
 		AllowedActs:           []UserAct{ActRuleQuestion},
 		Domain:                DomainSchedule,
+		Availability:          OperationAvailabilityActive,
 		Risk:                  RiskRead,
 		Scope:                 ConversationScopeBoth,
 		MinRole:               0,
@@ -502,6 +525,7 @@ var operationCatalogEntries = []OperationManifest{
 		Name:                  "subscription.rule_explain",
 		AllowedActs:           []UserAct{ActRuleQuestion},
 		Domain:                DomainSubscription,
+		Availability:          OperationAvailabilityActive,
 		Risk:                  RiskRead,
 		Scope:                 ConversationScopeBoth,
 		MinRole:               0,
@@ -519,6 +543,7 @@ var operationCatalogEntries = []OperationManifest{
 		Name:                  "schedule.query_my_schedule",
 		AllowedActs:           []UserAct{ActReadQuery},
 		Domain:                DomainSchedule,
+		Availability:          OperationAvailabilityActive,
 		Risk:                  RiskRead,
 		Scope:                 ConversationScopeBoth,
 		MinRole:               0,
@@ -539,6 +564,7 @@ var operationCatalogEntries = []OperationManifest{
 		Name:                  "schedule.query_user_schedule",
 		AllowedActs:           []UserAct{ActReadQuery},
 		Domain:                DomainSchedule,
+		Availability:          OperationAvailabilityActive,
 		Risk:                  RiskRead,
 		Scope:                 ConversationScopeBoth,
 		MinRole:               0,
@@ -584,6 +610,40 @@ func operationManifests() []OperationManifest {
 	manifests := make([]OperationManifest, len(operationCatalogEntries))
 	copy(manifests, operationCatalogEntries)
 	return manifests
+}
+
+func userVisibleOperationManifests() []OperationManifest {
+	manifests := make([]OperationManifest, 0, len(operationCatalogEntries))
+	for _, manifest := range operationCatalogEntries {
+		if manifest.Availability == OperationAvailabilityActive ||
+			manifest.Availability == OperationAvailabilityAnswerOnly {
+			manifests = append(manifests, manifest)
+		}
+	}
+	return manifests
+}
+
+func executableOperationManifests() []OperationManifest {
+	manifests := make([]OperationManifest, 0, len(operationCatalogEntries))
+	for _, manifest := range operationCatalogEntries {
+		if manifest.Availability == OperationAvailabilityActive {
+			manifests = append(manifests, manifest)
+		}
+	}
+	return manifests
+}
+
+func validOperationAvailability(availability OperationAvailability) bool {
+	switch availability {
+	case OperationAvailabilityActive,
+		OperationAvailabilityAnswerOnly,
+		OperationAvailabilityPlanned,
+		OperationAvailabilityLegacyOnly,
+		OperationAvailabilityDisabled:
+		return true
+	default:
+		return false
+	}
 }
 
 // operationNames returns the catalog operation names in whitelist order.
@@ -680,6 +740,12 @@ func lintOperationCatalog(entries []OperationManifest) []string { //nolint:gocyc
 		seen[manifest.Name] = struct{}{}
 		if manifest.Domain == "" || manifest.Domain == DomainUnknown {
 			errs = append(errs, prefix+": domain is required")
+		}
+		if !validOperationAvailability(manifest.Availability) {
+			errs = append(errs, manifest.Name+": invalid availability")
+		}
+		if manifest.Availability == OperationAvailabilityAnswerOnly && manifest.Capability == nil {
+			errs = append(errs, manifest.Name+": answer_only requires capability binding")
 		}
 		if len(manifest.AllowedActs) == 0 {
 			errs = append(errs, prefix+": allowed acts are required")
