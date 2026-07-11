@@ -76,14 +76,6 @@ func (c operationCompiler) Compile(ctx context.Context, input protocolInput) (Op
 			if errors.Is(err, context.DeadlineExceeded) {
 				status = "timeout"
 			}
-			if fallback := compileProtocol(input); fallback.Act != ActUnknown {
-				candidates = append(candidates, OperationCandidate{
-					Draft:      fallback,
-					Source:     deterministicFallbackSource(fallback),
-					Confidence: fallback.Confidence,
-					Evidence:   "deterministic_fallback",
-				})
-			}
 			reason := "llm_" + status
 			if decision, ok := safeDeterministicFallback(arbiterInput.Message, input.ActiveWorkflow, candidates); ok {
 				return OperationCompileResult{
@@ -168,29 +160,29 @@ func safeDeterministicFallback(message string, workflow *protocolWorkflowContext
 		return OperationArbiterDecision{}, false
 	}
 	manifest, ok := lookupOperation(candidate.Draft.Operation)
-	if !ok || !actAllowed(candidate.Draft.Act, manifest.AllowedActs) {
+	if !ok {
 		return OperationArbiterDecision{}, false
 	}
 	switch candidate.Source {
 	case OperationCandidateSourceWorkflowCtrl:
+		if candidate.Draft.Act != ActWorkflowCancel || workflow == nil || candidate.Draft.Operation != workflow.Type {
+			return OperationArbiterDecision{}, false
+		}
 	case OperationCandidateSourceWorkflowSlot:
+		if candidate.Draft.Act != ActWorkflowContinue || workflow == nil || candidate.Draft.Operation != workflow.Type {
+			return OperationArbiterDecision{}, false
+		}
 		if _, exact := parseCandidateOrdinal(message); !exact {
 			return OperationArbiterDecision{}, false
 		}
 	case OperationCandidateSourceCatalogAlias:
+		if !actAllowed(candidate.Draft.Act, manifest.AllowedActs) {
+			return OperationArbiterDecision{}, false
+		}
 		if candidate.Confidence != 1 {
 			return OperationArbiterDecision{}, false
 		}
 		if manifest.IsWrite && manifest.Risk != RiskWriteLow {
-			return OperationArbiterDecision{}, false
-		}
-	case OperationCandidateSourceLegacy:
-		if manifest.IsWrite {
-			return OperationArbiterDecision{}, false
-		}
-		switch candidate.Draft.Act {
-		case ActReadQuery, ActCapabilityQuestion, ActRuleQuestion, ActHelp:
-		default:
 			return OperationArbiterDecision{}, false
 		}
 	default:
@@ -214,9 +206,6 @@ func equivalentFallbackCandidate(candidates []OperationCandidate) (OperationCand
 			candidate.Draft.Act != selected.Draft.Act ||
 			candidate.Draft.Domain != selected.Draft.Domain {
 			return OperationCandidate{}, false
-		}
-		if candidate.Source == OperationCandidateSourceLegacy {
-			selected = candidate
 		}
 	}
 	return selected, true

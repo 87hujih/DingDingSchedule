@@ -288,7 +288,9 @@ type CallLog struct {
 	ProtocolCandidateCount     int
 	RequestID                  string
 	ConversationID             string
+	CompilerSource             string
 	CompilerStatus             string
+	CompilerFallbackReason     string
 	CompilerLatencyMs          int64
 	IntentDraftJSON            string
 	CatalogValidationCode      string

@@ -532,6 +532,36 @@ func TestProtocolLiveWorkflowStoreFailureRecordsV2Fields(t *testing.T) {
 	}
 }
 
+func TestWriteCallLogCarriesCompilerFallbackMetadataWithoutRawError(t *testing.T) {
+	t.Parallel()
+
+	callLog := newTestCallLogPort()
+	a := &Agent{
+		deps:      Deps{CallLog: callLog},
+		logWriter: newCallLogWriter(callLog, zap.NewNop().Sugar()),
+	}
+	defer a.logWriter.Stop()
+
+	a.writeCallLog(context.Background(), executorUserContext(), "当前都有哪些部门", "部门列表", nil, 0, time.Now(), "success", "", callMetrics{
+		Proto: protocolMetrics{
+			CompilerSource:         string(CompilerSourceFallback),
+			CompilerStatus:         "timeout",
+			CompilerFallbackReason: "llm_timeout",
+		},
+	})
+
+	log, ok := callLog.Wait(time.Second)
+	if !ok {
+		t.Fatal("expected call log")
+	}
+	if log.CompilerSource != "fallback" || log.CompilerStatus != "timeout" || log.CompilerFallbackReason != "llm_timeout" {
+		t.Fatalf("compiler metadata = %q/%q/%q", log.CompilerSource, log.CompilerStatus, log.CompilerFallbackReason)
+	}
+	if log.ErrorMsg != "" {
+		t.Fatalf("ErrorMsg = %q, successful fallback must not persist raw compiler error", log.ErrorMsg)
+	}
+}
+
 type fixedIntentCompiler struct {
 	draft ProtocolDraft
 }

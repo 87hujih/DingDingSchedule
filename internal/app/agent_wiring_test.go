@@ -393,6 +393,8 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 		RequestID:                  "req-v2-1",
 		ConversationID:             "conv-v2-1",
 		CompilerStatus:             "ok",
+		CompilerSource:             "fallback",
+		CompilerFallbackReason:     "llm_timeout",
 		CompilerLatencyMs:          11,
 		IntentDraftJSON:            `{"operation":"attendance.query_status","raw":"手机号 13812345678"}`,
 		CatalogValidationCode:      "allowed_read_query",
@@ -557,6 +559,9 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	}
 	if row.CompilerStatus != "ok" || row.CompilerLatencyMs != 11 {
 		t.Fatalf("compiler fields = %q/%d, want ok/11", row.CompilerStatus, row.CompilerLatencyMs)
+	}
+	if row.CompilerSource != "fallback" || row.CompilerFallbackReason != "llm_timeout" {
+		t.Fatalf("compiler fallback fields = %q/%q, want fallback/llm_timeout", row.CompilerSource, row.CompilerFallbackReason)
 	}
 	if strings.Contains(row.IntentDraftJSON, "13812345678") {
 		t.Fatalf("IntentDraftJSON was not sanitized: %q", row.IntentDraftJSON)

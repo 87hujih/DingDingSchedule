@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -224,6 +225,94 @@ func TestOperationCompilerInferredWriteFailsClosedOnLLMTimeout(t *testing.T) {
 	}
 	if result.Source != CompilerSourceFallback || result.LLMStatus != "timeout" || result.FallbackReason != "llm_timeout" {
 		t.Fatalf("result metadata = %+v, want closed timeout fallback", result)
+	}
+}
+
+func TestOperationCompilerFuzzyReadFailsClosedOnLLMTimeout(t *testing.T) {
+	t.Parallel()
+
+	compiler := newOperationCompiler(&recordingIntentCompiler{err: context.DeadlineExceeded})
+	result, err := compiler.Compile(context.Background(), protocolInput{Message: "查询今天第二节考勤状态"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if result.Draft.Act != ActUnknown || result.Draft.Operation != "" {
+		t.Fatalf("Draft = %+v, want fuzzy read to fail closed", result.Draft)
+	}
+	for _, candidate := range result.Candidates {
+		if candidate.Source == OperationCandidateSourceLegacy {
+			t.Fatalf("Candidates = %+v, must not add legacy fallback after LLM error", result.Candidates)
+		}
+	}
+}
+
+func TestOperationCompilerNonTimeoutErrorUsesLowCardinalityFallbackMetadata(t *testing.T) {
+	t.Parallel()
+
+	const rawError = "provider secret response"
+	compiler := newOperationCompiler(&recordingIntentCompiler{err: errors.New(rawError)})
+	result, err := compiler.Compile(context.Background(), protocolInput{Message: "帮我弄一下群推送"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if result.LLMStatus != "error" || result.FallbackReason != "llm_error" {
+		t.Fatalf("LLMStatus=%q FallbackReason=%q, want error/llm_error", result.LLMStatus, result.FallbackReason)
+	}
+	if result.Draft.Reason == rawError || result.FallbackReason == rawError {
+		t.Fatalf("raw provider error leaked into result: %+v", result)
+	}
+}
+
+func TestSafeDeterministicFallbackAllowsExactLowRiskWrite(t *testing.T) {
+	t.Parallel()
+
+	candidate := OperationCandidate{
+		Draft:  ProtocolDraft{Act: ActWriteRequest, Domain: DomainSubscription, Operation: "subscription.cancel"},
+		Source: OperationCandidateSourceCatalogAlias, Confidence: 1,
+	}
+	decision, ok := safeDeterministicFallback("取消考勤推送", nil, []OperationCandidate{candidate})
+	if !ok || decision.Draft.Operation != "subscription.cancel" {
+		t.Fatalf("decision=%+v ok=%v, want exact low-risk write", decision, ok)
+	}
+}
+
+func TestSafeDeterministicFallbackAllowsExactWorkflowControlAndSelection(t *testing.T) {
+	t.Parallel()
+
+	workflow := &protocolWorkflowContext{Type: "subscription.start", MissingFields: []string{"dept_ids"}}
+	control := OperationCandidate{
+		Draft:  ProtocolDraft{Act: ActWorkflowCancel, Domain: DomainSubscription, Operation: "subscription.start"},
+		Source: OperationCandidateSourceWorkflowCtrl, Confidence: 1,
+	}
+	if decision, ok := safeDeterministicFallback("取消", workflow, []OperationCandidate{control}); !ok || decision.Kind != OperationArbiterDecisionWorkflowCancel {
+		t.Fatalf("workflow control decision=%+v ok=%v", decision, ok)
+	}
+
+	selection := OperationCandidate{
+		Draft:  ProtocolDraft{Act: ActWorkflowContinue, Domain: DomainSubscription, Operation: "subscription.start"},
+		Source: OperationCandidateSourceWorkflowSlot, Confidence: 1,
+	}
+	if decision, ok := safeDeterministicFallback("第一个", workflow, []OperationCandidate{selection}); !ok || decision.Kind != OperationArbiterDecisionWorkflowContinue {
+		t.Fatalf("workflow selection decision=%+v ok=%v", decision, ok)
+	}
+}
+
+func TestSafeDeterministicFallbackRejectsFuzzyAndAmbiguousCandidates(t *testing.T) {
+	t.Parallel()
+
+	fuzzy := OperationCandidate{
+		Draft:  ProtocolDraft{Act: ActReadQuery, Domain: DomainSubscription, Operation: "subscription.list_departments"},
+		Source: OperationCandidateSourceCatalogAlias, Confidence: 0.8,
+	}
+	if _, ok := safeDeterministicFallback("大概有哪些部门", nil, []OperationCandidate{fuzzy}); ok {
+		t.Fatal("fuzzy catalog candidate unexpectedly accepted")
+	}
+	ambiguous := []OperationCandidate{
+		fuzzy,
+		{Draft: ProtocolDraft{Act: ActReadQuery, Domain: DomainAttendance, Operation: "attendance.query_status"}, Source: OperationCandidateSourceCatalogAlias, Confidence: 1},
+	}
+	if _, ok := safeDeterministicFallback("查询状态", nil, ambiguous); ok {
+		t.Fatal("ambiguous candidates unexpectedly accepted")
 	}
 }
 
