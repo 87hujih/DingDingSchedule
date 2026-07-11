@@ -329,6 +329,14 @@ func TestBuildAgentUsesConfiguredProtocolMode(t *testing.T) {
 	if got := field.String(); got != string(agentpkg.ProtocolModeLive) {
 		t.Fatalf("protocolMode = %q, want %q", got, agentpkg.ProtocolModeLive)
 	}
+
+	workflowStore := reflect.ValueOf(a).Elem().FieldByName("workflowStore")
+	if !workflowStore.IsValid() || workflowStore.IsNil() {
+		t.Fatalf("workflowStore = nil, want memory fallback")
+	}
+	if got := workflowStore.Elem().Type().String(); got != "*agent.memoryWorkflowStore" {
+		t.Fatalf("workflowStore type = %q, want memory workflow store", got)
+	}
 }
 
 func TestIntentCompilerTimeoutFromConfig(t *testing.T) {

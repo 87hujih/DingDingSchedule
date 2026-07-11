@@ -10,9 +10,33 @@ import (
 	"schedule_server/internal/model"
 	"schedule_server/internal/tenantctx"
 
+	mysqlDriver "github.com/go-sql-driver/mysql"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestAgentWorkflowConflictErrorMapsKnownDuplicateKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "gorm duplicate", err: gorm.ErrDuplicatedKey, want: agent.ErrWorkflowConflict},
+		{name: "mysql 1062", err: &mysqlDriver.MySQLError{Number: 1062, Message: "duplicate"}, want: agent.ErrWorkflowConflict},
+		{name: "other mysql", err: &mysqlDriver.MySQLError{Number: 1205, Message: "lock wait"}, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := agentWorkflowConflictError(tt.err)
+			if tt.want != nil && !errors.Is(got, tt.want) {
+				t.Fatalf("agentWorkflowConflictError() = %v, want %v", got, tt.want)
+			}
+			if tt.want == nil && !errors.Is(got, tt.err) {
+				t.Fatalf("agentWorkflowConflictError() = %v, want original %v", got, tt.err)
+			}
+		})
+	}
+}
 
 func TestAgentWorkflowRepositoryCreateLoadAndTenantIsolation(t *testing.T) {
 	db := openAgentWorkflowRepoTestDB(t)
@@ -87,10 +111,10 @@ func TestAgentWorkflowRepositoryCompareAndSwapAndDelete(t *testing.T) {
 	next.State = string(agent.WorkflowReady)
 	next.SnapshotJSON = `{"state":"ready"}`
 	next.ExpiresAt = now.Add(2 * time.Hour)
-	if err := repo.CompareAndSwap(ctx, key, 1, &next); err != nil {
+	if err := repo.CompareAndSwap(ctx, key, 1, &next, now); err != nil {
 		t.Fatalf("CompareAndSwap() error = %v", err)
 	}
-	if err := repo.CompareAndSwap(ctx, key, 1, &next); !errors.Is(err, agent.ErrWorkflowConflict) {
+	if err := repo.CompareAndSwap(ctx, key, 1, &next, now); !errors.Is(err, agent.ErrWorkflowConflict) {
 		t.Fatalf("stale CompareAndSwap() error = %v, want conflict", err)
 	}
 	got, err := repo.Load(ctx, key, now)
@@ -110,6 +134,35 @@ func TestAgentWorkflowRepositoryCompareAndSwapAndDelete(t *testing.T) {
 	got, err = repo.Load(ctx, key, now)
 	if err != nil || got != nil {
 		t.Fatalf("Load(after delete) = %+v, %v", got, err)
+	}
+}
+
+func TestAgentWorkflowRepositoryCompareAndSwapRejectsExpiredWorkflow(t *testing.T) {
+	db := openAgentWorkflowRepoTestDB(t)
+	repo := NewAgentWorkflowRepository(db)
+	ctx := context.Background()
+	now := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
+	key := agent.WorkflowKey{TenantID: 1, ConversationID: "conv", ActorUserID: 7}
+	row := agentWorkflowRow(1, "conv", 7, now.Add(-time.Second))
+	if err := repo.Create(ctx, row, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	next := *row
+	next.State = string(agent.WorkflowReady)
+	next.ExpiresAt = now.Add(time.Hour)
+	if err := repo.CompareAndSwap(ctx, key, 1, &next, now); !errors.Is(err, agent.ErrWorkflowConflict) {
+		t.Fatalf("CompareAndSwap(expired) error = %v, want conflict", err)
+	}
+
+	var persisted model.AgentWorkflow
+	if err := db.WithContext(tenantctx.WithSkipTenantScope(ctx)).
+		Where("tenant_id = ? AND conversation_id = ? AND actor_user_id = ?", key.TenantID, key.ConversationID, key.ActorUserID).
+		First(&persisted).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Version != 1 || persisted.State != string(agent.WorkflowCollectScope) || !persisted.ExpiresAt.Before(now) {
+		t.Fatalf("expired workflow was revived: %+v", persisted)
 	}
 }
 

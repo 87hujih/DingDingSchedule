@@ -49,6 +49,12 @@ func TestAgentWorkflowStoreJSONVersionAndTTLRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNewAgentWorkflowStoreReturnsNilWithoutRepository(t *testing.T) {
+	if got := newAgentWorkflowStore(nil, nil); got != nil {
+		t.Fatalf("newAgentWorkflowStore(nil) = %T, want nil for NewAgent memory fallback", got)
+	}
+}
+
 func TestAgentWorkflowStoreCreateConflictExpiredRecreateAndCAS(t *testing.T) {
 	now := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 	store := newAgentWorkflowStore(openAgentWorkflowStoreTestDB(t), func() time.Time { return now })

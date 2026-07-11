@@ -9,6 +9,7 @@ import (
 	"schedule_server/internal/model"
 	"schedule_server/internal/tenantctx"
 
+	mysqlDriver "github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -17,7 +18,7 @@ import (
 type AgentWorkflowRepository interface {
 	Load(ctx context.Context, key agent.WorkflowKey, now time.Time) (*model.AgentWorkflow, error)
 	Create(ctx context.Context, workflow *model.AgentWorkflow, now time.Time) error
-	CompareAndSwap(ctx context.Context, key agent.WorkflowKey, expected uint64, next *model.AgentWorkflow) error
+	CompareAndSwap(ctx context.Context, key agent.WorkflowKey, expected uint64, next *model.AgentWorkflow, now time.Time) error
 	DeleteIfVersion(ctx context.Context, key agent.WorkflowKey, expected uint64) error
 }
 
@@ -59,19 +60,16 @@ func (r *agentWorkflowRepository) Create(ctx context.Context, workflow *model.Ag
 			return err
 		}
 		if err := tx.Create(workflow).Error; err != nil {
-			if errors.Is(err, gorm.ErrDuplicatedKey) {
-				return agent.ErrWorkflowConflict
-			}
-			return err
+			return agentWorkflowConflictError(err)
 		}
 		return nil
 	})
 }
 
-func (r *agentWorkflowRepository) CompareAndSwap(ctx context.Context, key agent.WorkflowKey, expected uint64, next *model.AgentWorkflow) error {
+func (r *agentWorkflowRepository) CompareAndSwap(ctx context.Context, key agent.WorkflowKey, expected uint64, next *model.AgentWorkflow, now time.Time) error {
 	result := r.scoped(ctx).Model(&model.AgentWorkflow{}).
-		Where("tenant_id = ? AND conversation_id = ? AND actor_user_id = ? AND version = ?",
-			key.TenantID, key.ConversationID, key.ActorUserID, expected).
+		Where("tenant_id = ? AND conversation_id = ? AND actor_user_id = ? AND version = ? AND expires_at > ?",
+			key.TenantID, key.ConversationID, key.ActorUserID, expected, now).
 		Updates(map[string]any{
 			"workflow_id":   next.WorkflowID,
 			"workflow_type": next.WorkflowType,
@@ -114,4 +112,15 @@ func (r *agentWorkflowRepository) DeleteIfVersion(ctx context.Context, key agent
 
 func (r *agentWorkflowRepository) scoped(ctx context.Context) *gorm.DB {
 	return r.db.WithContext(tenantctx.WithSkipTenantScope(ctx))
+}
+
+func agentWorkflowConflictError(err error) error {
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return agent.ErrWorkflowConflict
+	}
+	var mysqlErr *mysqlDriver.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+		return agent.ErrWorkflowConflict
+	}
+	return err
 }

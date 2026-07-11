@@ -16,6 +16,9 @@ type agentWorkflowStore struct {
 }
 
 func newAgentWorkflowStore(repo repository.AgentWorkflowRepository, clock func() time.Time) agent.WorkflowStore {
+	if repo == nil {
+		return nil
+	}
 	if clock == nil {
 		clock = time.Now
 	}
@@ -70,7 +73,7 @@ func (s *agentWorkflowStore) CompareAndSwap(ctx context.Context, key agent.Workf
 	if err != nil {
 		return nil, err
 	}
-	if err := s.repo.CompareAndSwap(ctx, key, expected, row); err != nil {
+	if err := s.repo.CompareAndSwap(ctx, key, expected, row, now); err != nil {
 		return nil, err
 	}
 	return decodeAgentWorkflow(row)
