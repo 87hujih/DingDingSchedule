@@ -133,12 +133,18 @@ func TestProtocolCompilerUsesInjectedIntentCompilerDraftContracts(t *testing.T) 
 		})
 	}
 
-	if len(fake.requests) != len(tests) {
-		t.Fatalf("compiler requests = %d, want %d", len(fake.requests), len(tests))
+	wantRequests := make([]string, 0, len(tests))
+	for _, tt := range tests {
+		if tt.message != "开启本群考勤订阅" && tt.message != "取消本群考勤推送" {
+			wantRequests = append(wantRequests, tt.message)
+		}
+	}
+	if len(fake.requests) != len(wantRequests) {
+		t.Fatalf("compiler requests = %d, want %d", len(fake.requests), len(wantRequests))
 	}
 	for i, req := range fake.requests {
-		if req.Message != tests[i].message {
-			t.Fatalf("request %d Message = %q, want %q", i, req.Message, tests[i].message)
+		if req.Message != wantRequests[i] {
+			t.Fatalf("request %d Message = %q, want %q", i, req.Message, wantRequests[i])
 		}
 	}
 }
@@ -181,7 +187,7 @@ func TestProtocolCompilerPassesWorkflowContextToInjectedCompiler(t *testing.T) {
 	}
 }
 
-func TestProtocolCompilerFallsBackToDeterministicWorkflowContinueWhenInjectedCompilerReturnsUnknown(t *testing.T) {
+func TestProtocolCompilerSkipsInjectedCompilerForExactCandidateSelection(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeProtocolIntentCompiler{
@@ -213,8 +219,8 @@ func TestProtocolCompilerFallsBackToDeterministicWorkflowContinueWhenInjectedCom
 	if draft.Operation != "subscription.start" {
 		t.Fatalf("Operation = %q, want subscription.start", draft.Operation)
 	}
-	if len(fake.requests) != 1 {
-		t.Fatalf("compiler requests = %d, want 1", len(fake.requests))
+	if len(fake.requests) != 0 {
+		t.Fatalf("compiler requests = %d, want 0", len(fake.requests))
 	}
 }
 

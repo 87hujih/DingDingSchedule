@@ -47,6 +47,32 @@ func newOperationArbiter() operationArbiter {
 	return operationArbiter{}
 }
 
+func deterministicOperationDecision(input OperationArbiterInput) (OperationArbiterDecision, bool) {
+	if len(input.Candidates) != 1 {
+		return OperationArbiterDecision{}, false
+	}
+
+	candidate := input.Candidates[0]
+	if candidate.Confidence != 1 || candidate.Draft.Operation == "" {
+		return OperationArbiterDecision{}, false
+	}
+	switch candidate.Source {
+	case OperationCandidateSourceCatalogAlias, OperationCandidateSourceWorkflowCtrl:
+	case OperationCandidateSourceWorkflowSlot:
+		if _, ok := parseCandidateOrdinal(input.Message); !ok {
+			return OperationArbiterDecision{}, false
+		}
+	default:
+		return OperationArbiterDecision{}, false
+	}
+
+	decision := newOperationArbiter().Decide(input)
+	if decision.Kind == OperationArbiterDecisionUnknown || decision.Draft.Operation == "" {
+		return OperationArbiterDecision{}, false
+	}
+	return decision, true
+}
+
 func (operationArbiter) Decide(input OperationArbiterInput) OperationArbiterDecision {
 	if len(input.Candidates) == 0 {
 		return OperationArbiterDecision{

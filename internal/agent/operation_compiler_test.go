@@ -5,6 +5,94 @@ import (
 	"testing"
 )
 
+type recordingIntentCompiler struct {
+	draft    IntentDraft
+	requests []IntentCompileRequest
+}
+
+func (c *recordingIntentCompiler) Compile(_ context.Context, req IntentCompileRequest) (IntentDraft, error) {
+	c.requests = append(c.requests, req)
+	return c.draft, nil
+}
+
+func TestOperationCompilerExactAliasSkipsLLM(t *testing.T) {
+	t.Parallel()
+
+	intent := &recordingIntentCompiler{
+		draft: IntentDraft{Act: ActUnknown, Domain: DomainUnknown, Reason: "should_not_be_called"},
+	}
+	compiler := newOperationCompiler(intent)
+
+	result, err := compiler.Compile(context.Background(), protocolInput{Message: "取消考勤推送"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if len(intent.requests) != 0 {
+		t.Fatalf("LLM Compile() calls = %d, want 0", len(intent.requests))
+	}
+	if result.Draft.Act != ActWriteRequest || result.Draft.Operation != "subscription.cancel" {
+		t.Fatalf("Draft = %+v, want subscription.cancel write request", result.Draft)
+	}
+	if result.Source != CompilerSourceDeterministic {
+		t.Fatalf("Source = %q, want deterministic", result.Source)
+	}
+	if result.LLMInvoked {
+		t.Fatal("LLMInvoked = true, want false")
+	}
+}
+
+func TestOperationCompilerAmbiguousAliasTextStillInvokesLLM(t *testing.T) {
+	t.Parallel()
+
+	intent := &recordingIntentCompiler{
+		draft: IntentDraft{
+			Act:        ActReadQuery,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.query_status",
+			Confidence: 0.9,
+			Reason:     "ambiguous_request_resolved_by_llm",
+		},
+	}
+	compiler := newOperationCompiler(intent)
+
+	result, err := compiler.Compile(context.Background(), protocolInput{Message: "取消考勤推送还是查询状态"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if len(intent.requests) != 1 {
+		t.Fatalf("LLM Compile() calls = %d, want 1", len(intent.requests))
+	}
+	if result.Source != CompilerSourceLLM || !result.LLMInvoked {
+		t.Fatalf("Source = %q, LLMInvoked = %v; want llm, true", result.Source, result.LLMInvoked)
+	}
+}
+
+func TestOperationCompilerInferredWriteStillInvokesLLM(t *testing.T) {
+	t.Parallel()
+
+	intent := &recordingIntentCompiler{
+		draft: IntentDraft{
+			Act:        ActWriteRequest,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.cancel",
+			Confidence: 0.9,
+			Reason:     "inferred_write_resolved_by_llm",
+		},
+	}
+	compiler := newOperationCompiler(intent)
+
+	result, err := compiler.Compile(context.Background(), protocolInput{Message: "把这个群的考勤推送关掉"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if len(intent.requests) != 1 {
+		t.Fatalf("LLM Compile() calls = %d, want 1", len(intent.requests))
+	}
+	if result.Source != CompilerSourceLLM || !result.LLMInvoked {
+		t.Fatalf("Source = %q, LLMInvoked = %v; want llm, true", result.Source, result.LLMInvoked)
+	}
+}
+
 func TestOperationCompilerProducesCatalogAliasCandidateWhenLLMReturnsUnknown(t *testing.T) {
 	t.Parallel()
 

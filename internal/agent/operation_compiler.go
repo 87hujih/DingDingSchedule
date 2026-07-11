@@ -5,10 +5,22 @@ import (
 	"strings"
 )
 
+type CompilerSource string
+
+const (
+	CompilerSourceDeterministic CompilerSource = "deterministic"
+	CompilerSourceLLM           CompilerSource = "llm"
+	CompilerSourceFallback      CompilerSource = "fallback"
+)
+
 type OperationCompileResult struct {
-	Draft      ProtocolDraft
-	Candidates []OperationCandidate
-	Decision   OperationArbiterDecision
+	Draft          ProtocolDraft
+	Candidates     []OperationCandidate
+	Decision       OperationArbiterDecision
+	Source         CompilerSource
+	LLMInvoked     bool
+	LLMStatus      string
+	FallbackReason string
 }
 
 type operationCompiler struct {
@@ -23,12 +35,34 @@ func (c operationCompiler) Compile(ctx context.Context, input protocolInput) (Op
 	message := strings.TrimSpace(input.Message)
 	if message == "" {
 		draft := ProtocolDraft{Act: ActUnknown, Domain: DomainUnknown, Reason: "empty_message", ClarifyReason: "empty_message"}
-		return OperationCompileResult{Draft: draft, Decision: OperationArbiterDecision{Kind: OperationArbiterDecisionUnknown, Draft: draft, Reason: "empty_message"}}, nil
+		return OperationCompileResult{
+			Draft:      draft,
+			Decision:   OperationArbiterDecision{Kind: OperationArbiterDecisionUnknown, Draft: draft, Reason: "empty_message"},
+			Source:     CompilerSourceDeterministic,
+			LLMStatus:  "not_invoked",
+			LLMInvoked: false,
+		}, nil
 	}
 
 	candidates := catalogAliasCandidates(message)
 	candidates = append(candidates, workflowControlCandidates(message, input.ActiveWorkflow)...)
 	candidates = append(candidates, workflowSlotCandidates(message, input.ActiveWorkflow)...)
+
+	arbiterInput := OperationArbiterInput{
+		Message:        message,
+		ActiveWorkflow: input.ActiveWorkflow,
+		Candidates:     candidates,
+	}
+	if decision, ok := deterministicOperationDecision(arbiterInput); ok {
+		return OperationCompileResult{
+			Draft:      decision.Draft,
+			Candidates: candidates,
+			Decision:   decision,
+			Source:     CompilerSourceDeterministic,
+			LLMInvoked: false,
+			LLMStatus:  "not_invoked",
+		}, nil
+	}
 
 	var llmDraft ProtocolDraft
 	if c.intent != nil {
@@ -67,7 +101,13 @@ func (c operationCompiler) Compile(ctx context.Context, input protocolInput) (Op
 			draft = unknownIntentDraft("unknown_intent")
 		}
 		decision := OperationArbiterDecision{Kind: OperationArbiterDecisionUnknown, Draft: draft, Reason: "no_candidate"}
-		return OperationCompileResult{Draft: draft, Decision: decision}, nil
+		return OperationCompileResult{
+			Draft:      draft,
+			Decision:   decision,
+			Source:     CompilerSourceLLM,
+			LLMInvoked: c.intent != nil,
+			LLMStatus:  compilerLLMStatus(c.intent != nil),
+		}, nil
 	}
 
 	decision := newOperationArbiter().Decide(OperationArbiterInput{
@@ -79,7 +119,17 @@ func (c operationCompiler) Compile(ctx context.Context, input protocolInput) (Op
 		Draft:      decision.Draft,
 		Candidates: candidates,
 		Decision:   decision,
+		Source:     CompilerSourceLLM,
+		LLMInvoked: c.intent != nil,
+		LLMStatus:  compilerLLMStatus(c.intent != nil),
 	}, nil
+}
+
+func compilerLLMStatus(invoked bool) string {
+	if invoked {
+		return "success"
+	}
+	return "not_invoked"
 }
 
 func catalogAliasCandidates(message string) []OperationCandidate {
