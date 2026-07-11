@@ -44,7 +44,9 @@ type protocolLiveOutcome struct {
 	ExecutionMetrics        OperationExecutionMetrics
 	AnswerMode              answerMode
 	BlockedReason           string
+	CompilerSource          string
 	CompilerStatus          string
+	CompilerFallbackReason  string
 	CompilerLatencyMs       int64
 	IntentDraftJSON         string
 	CatalogValidationCode   string
@@ -116,12 +118,15 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 	}
 	workflowCtx := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
 	compileStart := time.Now()
-	draft, err := compileProtocolWithCompiler(ctx, protocolInput{
+	compileResult, err := compileProtocolResultWithCompiler(ctx, protocolInput{
 		Message:        input.Message,
 		ActiveWorkflow: workflowCtx,
 	}, p.deps.Compiler)
 	outcome.CompilerLatencyMs = elapsedMs(compileStart)
-	outcome.CompilerStatus = "ok"
+	outcome.CompilerSource = string(compileResult.Source)
+	outcome.CompilerStatus = compileResult.LLMStatus
+	outcome.CompilerFallbackReason = compileResult.FallbackReason
+	draft := compileResult.Draft
 	if err != nil {
 		reason := "intent_parse_failed"
 		if errors.Is(err, context.DeadlineExceeded) {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 )
 
@@ -71,7 +72,40 @@ func (c operationCompiler) Compile(ctx context.Context, input protocolInput) (Op
 			ActiveWorkflow: intentCompileWorkflowContext(input.ActiveWorkflow),
 		})
 		if err != nil {
-			return OperationCompileResult{}, err
+			status := "error"
+			if errors.Is(err, context.DeadlineExceeded) {
+				status = "timeout"
+			}
+			if fallback := compileProtocol(input); fallback.Act != ActUnknown {
+				candidates = append(candidates, OperationCandidate{
+					Draft:      fallback,
+					Source:     deterministicFallbackSource(fallback),
+					Confidence: fallback.Confidence,
+					Evidence:   "deterministic_fallback",
+				})
+			}
+			reason := "llm_" + status
+			if decision, ok := safeDeterministicFallback(arbiterInput.Message, input.ActiveWorkflow, candidates); ok {
+				return OperationCompileResult{
+					Draft:          decision.Draft,
+					Candidates:     candidates,
+					Decision:       decision,
+					Source:         CompilerSourceFallback,
+					LLMInvoked:     true,
+					LLMStatus:      status,
+					FallbackReason: reason,
+				}, nil
+			}
+			draft := unknownIntentDraft(reason)
+			return OperationCompileResult{
+				Draft:          draft,
+				Candidates:     candidates,
+				Decision:       OperationArbiterDecision{Kind: OperationArbiterDecisionUnknown, Draft: draft, Reason: "unsafe_fallback"},
+				Source:         CompilerSourceFallback,
+				LLMInvoked:     true,
+				LLMStatus:      status,
+				FallbackReason: reason,
+			}, nil
 		}
 		llmDraft = draft
 		if draft.Act != ActUnknown {
@@ -123,6 +157,69 @@ func (c operationCompiler) Compile(ctx context.Context, input protocolInput) (Op
 		LLMInvoked: c.intent != nil,
 		LLMStatus:  compilerLLMStatus(c.intent != nil),
 	}, nil
+}
+
+func safeDeterministicFallback(message string, workflow *protocolWorkflowContext, candidates []OperationCandidate) (OperationArbiterDecision, bool) {
+	if len(candidates) == 0 {
+		return OperationArbiterDecision{}, false
+	}
+	candidate, ok := equivalentFallbackCandidate(candidates)
+	if !ok {
+		return OperationArbiterDecision{}, false
+	}
+	manifest, ok := lookupOperation(candidate.Draft.Operation)
+	if !ok || !actAllowed(candidate.Draft.Act, manifest.AllowedActs) {
+		return OperationArbiterDecision{}, false
+	}
+	switch candidate.Source {
+	case OperationCandidateSourceWorkflowCtrl:
+	case OperationCandidateSourceWorkflowSlot:
+		if _, exact := parseCandidateOrdinal(message); !exact {
+			return OperationArbiterDecision{}, false
+		}
+	case OperationCandidateSourceCatalogAlias:
+		if candidate.Confidence != 1 {
+			return OperationArbiterDecision{}, false
+		}
+		if manifest.IsWrite && manifest.Risk != RiskWriteLow {
+			return OperationArbiterDecision{}, false
+		}
+	case OperationCandidateSourceLegacy:
+		if manifest.IsWrite {
+			return OperationArbiterDecision{}, false
+		}
+		switch candidate.Draft.Act {
+		case ActReadQuery, ActCapabilityQuestion, ActRuleQuestion, ActHelp:
+		default:
+			return OperationArbiterDecision{}, false
+		}
+	default:
+		return OperationArbiterDecision{}, false
+	}
+	decision := newOperationArbiter().Decide(OperationArbiterInput{
+		Message:        message,
+		ActiveWorkflow: workflow,
+		Candidates:     []OperationCandidate{candidate},
+	})
+	if decision.Kind == OperationArbiterDecisionUnknown || decision.Draft.Operation == "" {
+		return OperationArbiterDecision{}, false
+	}
+	return decision, true
+}
+
+func equivalentFallbackCandidate(candidates []OperationCandidate) (OperationCandidate, bool) {
+	selected := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if candidate.Draft.Operation != selected.Draft.Operation ||
+			candidate.Draft.Act != selected.Draft.Act ||
+			candidate.Draft.Domain != selected.Draft.Domain {
+			return OperationCandidate{}, false
+		}
+		if candidate.Source == OperationCandidateSourceLegacy {
+			selected = candidate
+		}
+	}
+	return selected, true
 }
 
 func compilerLLMStatus(invoked bool) string {

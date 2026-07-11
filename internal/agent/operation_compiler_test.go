@@ -7,12 +7,13 @@ import (
 
 type recordingIntentCompiler struct {
 	draft    IntentDraft
+	err      error
 	requests []IntentCompileRequest
 }
 
 func (c *recordingIntentCompiler) Compile(_ context.Context, req IntentCompileRequest) (IntentDraft, error) {
 	c.requests = append(c.requests, req)
-	return c.draft, nil
+	return c.draft, c.err
 }
 
 func TestOperationCompilerExactAliasSkipsLLM(t *testing.T) {
@@ -188,6 +189,41 @@ func TestOperationCompilerProducesWorkflowSlotCandidateForActiveWorkflowInput(t 
 	}
 	if result.Decision.Kind != OperationArbiterDecisionWorkflowContinue {
 		t.Fatalf("Decision.Kind = %q, want workflow continue", result.Decision.Kind)
+	}
+}
+
+func TestOperationCompilerFallsBackToExactReadOnLLMTimeout(t *testing.T) {
+	t.Parallel()
+
+	compiler := newOperationCompiler(&recordingIntentCompiler{err: context.DeadlineExceeded})
+	result, err := compiler.Compile(context.Background(), protocolInput{Message: "当前都有哪些部门"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if result.Draft.Act != ActReadQuery || result.Draft.Operation != "subscription.list_departments" {
+		t.Fatalf("Draft = %+v, want subscription.list_departments read", result.Draft)
+	}
+	if result.Source != CompilerSourceFallback || !result.LLMInvoked {
+		t.Fatalf("Source=%q LLMInvoked=%v, want fallback/true", result.Source, result.LLMInvoked)
+	}
+	if result.LLMStatus != "timeout" || result.FallbackReason != "llm_timeout" {
+		t.Fatalf("LLMStatus=%q FallbackReason=%q, want timeout/llm_timeout", result.LLMStatus, result.FallbackReason)
+	}
+}
+
+func TestOperationCompilerInferredWriteFailsClosedOnLLMTimeout(t *testing.T) {
+	t.Parallel()
+
+	compiler := newOperationCompiler(&recordingIntentCompiler{err: context.DeadlineExceeded})
+	result, err := compiler.Compile(context.Background(), protocolInput{Message: "帮我弄一下群推送"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if result.Draft.Act != ActUnknown || result.Draft.Operation != "" {
+		t.Fatalf("Draft = %+v, want non-executable unknown", result.Draft)
+	}
+	if result.Source != CompilerSourceFallback || result.LLMStatus != "timeout" || result.FallbackReason != "llm_timeout" {
+		t.Fatalf("result metadata = %+v, want closed timeout fallback", result)
 	}
 }
 

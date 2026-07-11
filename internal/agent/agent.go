@@ -1497,7 +1497,9 @@ func (a *Agent) applyProtocolLiveOutcomeMetrics(metrics *callMetrics, outcome pr
 	metrics.Proto.ResolvedSlotsJSON = metrics.Proto.ResolvedSlots
 	metrics.Proto.CandidateCount = outcome.CandidateCount
 	metrics.Proto.RequestID = outcome.RequestID
+	metrics.Proto.CompilerSource = outcome.CompilerSource
 	metrics.Proto.CompilerStatus = outcome.CompilerStatus
+	metrics.Proto.CompilerFallbackReason = outcome.CompilerFallbackReason
 	metrics.Proto.CompilerLatencyMs = outcome.CompilerLatencyMs
 	metrics.Proto.IntentDraftJSON = outcome.IntentDraftJSON
 	metrics.Proto.CatalogValidationCode = firstNonEmpty(outcome.CatalogValidationCode, outcome.Validation.ValidationCode)

@@ -86,7 +86,9 @@ type protocolMetrics struct {
 	CandidateCount          int
 	ExecutionAllowed        bool
 	RequestID               string
+	CompilerSource          string
 	CompilerStatus          string
+	CompilerFallbackReason  string
 	CompilerLatencyMs       int64
 	IntentDraftJSON         string
 	CatalogValidationCode   string
