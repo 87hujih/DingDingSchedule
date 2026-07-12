@@ -5,6 +5,30 @@ import (
 	"time"
 )
 
+func TestInterpretSystemIntentMatchesOnlyExactShortSystemMessages(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		message string
+		want    SystemIntent
+	}{
+		{message: "你好", want: SystemIntentGreeting},
+		{message: " 您好！ ", want: SystemIntentGreeting},
+		{message: "你有什么功能？", want: SystemIntentHelp},
+		{message: "你好，帮我取消订阅", want: ""},
+		{message: "你好，查一下我的课表", want: ""},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.message, func(t *testing.T) {
+			t.Parallel()
+			if got := interpretSystemIntent(tt.message); got != tt.want {
+				t.Fatalf("interpretSystemIntent(%q) = %q, want %q", tt.message, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestInterpretConversationReturnsGreetingForHello(t *testing.T) {
 	t.Parallel()
 

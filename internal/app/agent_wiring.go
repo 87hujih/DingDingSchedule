@@ -74,9 +74,32 @@ func BuildAgent(
 		AttendanceStats:         attendanceSrv,
 		UserCross:               attendanceSrv,
 		Tenant:                  &tenantAdapter{repo: repo.TenantRepo},
+		WorkflowStore:           newAgentWorkflowStore(repo.AgentWorkflowRepo, nil),
+		OperationLedger:         &operationExecutionLedgerAdapter{repo: repo.AgentOperationExecutionRepo},
 
 		Logger: global.Log,
 	})
+}
+
+type operationExecutionLedgerAdapter struct {
+	repo repository.AgentOperationExecutionRepository
+}
+
+func (a *operationExecutionLedgerAdapter) FindSucceeded(ctx context.Context, tenantID uint, businessKey string) (*agent.RecoveredOperationResult, error) {
+	if a == nil || a.repo == nil {
+		return nil, nil
+	}
+	row, err := a.repo.FindSucceeded(ctx, tenantID, businessKey)
+	if err != nil || row == nil {
+		return nil, err
+	}
+	var payload struct {
+		PushEnabled *bool `json:"push_enabled"`
+	}
+	if err := json.Unmarshal([]byte(row.ResultJSON), &payload); err != nil {
+		return nil, err
+	}
+	return &agent.RecoveredOperationResult{Operation: row.Operation, WriteEffect: row.WriteEffect, PushEnabled: payload.PushEnabled}, nil
 }
 
 func intentCompilerTimeoutFromConfig(cfg config.LLM) time.Duration {
@@ -583,7 +606,7 @@ func (a *restDayAdapter) GetMyRestDay(ctx context.Context, userID uint) (int, st
 // ────────────── groupSubAdapter ──────────────
 
 type groupSubAdapter struct {
-	repo repository.GroupAttendanceSubscriptionRepository
+	repo repository.IdempotentGroupAttendanceSubscriptionRepository
 }
 
 // Subscribe 为群会话创建或更新考勤订阅配置。
@@ -608,6 +631,45 @@ func (a *groupSubAdapter) Subscribe(ctx context.Context, tenantID uint, conversa
 // Unsubscribe 取消指定群会话的考勤订阅。
 func (a *groupSubAdapter) Unsubscribe(ctx context.Context, tenantID uint, conversationID string) error {
 	return a.repo.SoftDelete(ctx, tenantID, conversationID)
+}
+
+func (a *groupSubAdapter) ExecuteSubscriptionStart(ctx context.Context, businessKey string, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64) (agenttool.GroupSubWriteResult, error) {
+	deptIDs = append([]int64(nil), deptIDs...)
+	sort.Slice(deptIDs, func(i, j int) bool { return deptIDs[i] < deptIDs[j] })
+	deptIDsJSON := ""
+	if len(deptIDs) > 0 {
+		encoded, err := json.Marshal(deptIDs)
+		if err != nil {
+			return agenttool.GroupSubWriteResult{}, err
+		}
+		deptIDsJSON = string(encoded)
+	}
+	execution, err := a.repo.ExecuteSubscriptionStart(ctx, repository.SubscriptionStartExecution{TenantID: tenantID, BusinessKey: businessKey, ConversationID: conversationID, GroupName: groupName, EnabledByUID: enabledByUID, DeptIDsJSON: deptIDsJSON})
+	if err != nil {
+		return agenttool.GroupSubWriteResult{}, err
+	}
+	return groupSubWriteResultFromExecution(execution)
+}
+
+func (a *groupSubAdapter) ExecuteSubscriptionCancel(ctx context.Context, businessKey string, tenantID uint, conversationID string) (agenttool.GroupSubWriteResult, error) {
+	execution, err := a.repo.ExecuteSubscriptionCancel(ctx, repository.SubscriptionCancelExecution{TenantID: tenantID, BusinessKey: businessKey, ConversationID: conversationID})
+	if err != nil {
+		return agenttool.GroupSubWriteResult{}, err
+	}
+	return groupSubWriteResultFromExecution(execution)
+}
+
+func groupSubWriteResultFromExecution(execution *model.AgentOperationExecution) (agenttool.GroupSubWriteResult, error) {
+	if execution == nil {
+		return agenttool.GroupSubWriteResult{}, errors.New("missing operation execution")
+	}
+	var payload struct {
+		PushEnabled *bool `json:"push_enabled"`
+	}
+	if err := json.Unmarshal([]byte(execution.ResultJSON), &payload); err != nil {
+		return agenttool.GroupSubWriteResult{}, err
+	}
+	return agenttool.GroupSubWriteResult{WriteEffect: execution.WriteEffect, PushEnabled: payload.PushEnabled}, nil
 }
 
 // GetSubscription 查询群会话当前的考勤订阅状态及配置。
@@ -776,7 +838,9 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 		ProtocolCandidateCount:     log.ProtocolCandidateCount,
 		RequestID:                  boundedAgentCallLogCode(log.RequestID, agentCallLogMaxCodeRunes),
 		ConversationID:             boundedAgentCallLogCode(log.ConversationID, agentCallLogMaxKeyRunes),
+		CompilerSource:             boundedAgentCallLogCode(log.CompilerSource, 32),
 		CompilerStatus:             boundedAgentCallLogCode(log.CompilerStatus, 32),
+		CompilerFallbackReason:     boundedAgentCallLogCode(log.CompilerFallbackReason, 32),
 		CompilerLatencyMs:          log.CompilerLatencyMs,
 		IntentDraftJSON:            boundedAgentCallLogJSON(log.IntentDraftJSON),
 		CatalogValidationCode:      boundedAgentCallLogCode(log.CatalogValidationCode, agentCallLogMaxCodeRunes),

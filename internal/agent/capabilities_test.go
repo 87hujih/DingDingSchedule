@@ -26,6 +26,97 @@ func TestBuildHelpReplyIncludesSystemOverviewAndCurrentAvailability(t *testing.T
 	}
 }
 
+func TestBuildHelpReplyDoesNotAdvertiseSubscriptionInDirectMessage(t *testing.T) {
+	t.Parallel()
+
+	reply := buildHelpReply(&tools.UserContext{
+		UserRole:         1,
+		ConversationType: "1",
+	})
+	if strings.Contains(reply, "订阅") {
+		t.Fatalf("DM help = %q, should not advertise group-only subscription", reply)
+	}
+}
+
+func TestBuildHelpReplyFiltersGroupSubscriptionCapabilitiesByRole(t *testing.T) {
+	t.Parallel()
+
+	groupUserReply := buildHelpReply(&tools.UserContext{
+		UserRole:         0,
+		ConversationType: "2",
+	})
+	if !strings.Contains(groupUserReply, "查询当前群考勤推送订阅状态") {
+		t.Fatalf("ordinary group help = %q, want subscription status query", groupUserReply)
+	}
+	if strings.Contains(groupUserReply, "开启、取消") || strings.Contains(groupUserReply, "开启或取消") {
+		t.Fatalf("ordinary group help = %q, should not advertise admin subscription writes", groupUserReply)
+	}
+
+	groupAdminReply := buildHelpReply(&tools.UserContext{
+		UserRole:         1,
+		ConversationType: "2",
+	})
+	if !strings.Contains(groupAdminReply, "开启") || !strings.Contains(groupAdminReply, "取消") {
+		t.Fatalf("admin group help = %q, want subscription write capabilities", groupAdminReply)
+	}
+}
+
+func TestBuildGreetingReplyUsesAvailableCatalogCapabilitiesOnly(t *testing.T) {
+	t.Parallel()
+
+	reply := buildGreetingReply(&tools.UserContext{
+		UserRole:         1,
+		ConversationType: "2",
+	})
+
+	for _, unavailable := range []string{"请假", "统计", "分析", "周排行", "周排名"} {
+		if strings.Contains(reply, unavailable) {
+			t.Fatalf("reply = %q, should not advertise unavailable %q capability", reply, unavailable)
+		}
+	}
+	if !strings.Contains(reply, "课表") || !strings.Contains(reply, "考勤") || !strings.Contains(reply, "订阅") {
+		t.Fatalf("reply = %q, want available schedule, attendance and group subscription capabilities", reply)
+	}
+	if !strings.Contains(reply, "不在聊天中直接执行") {
+		t.Fatalf("reply = %q, want explicit manual sign answer-only limitation", reply)
+	}
+}
+
+func TestBuildGreetingReplyRespectsConversationRestrictions(t *testing.T) {
+	t.Parallel()
+
+	reply := buildGreetingReply(&tools.UserContext{
+		UserRole:         1,
+		ConversationType: "1",
+	})
+	if strings.Contains(reply, "订阅") {
+		t.Fatalf("DM greeting = %q, should not advertise group-only subscription", reply)
+	}
+}
+
+func TestBuildGreetingReplyAdvertisesSubscriptionExecutionOnlyWhenSnapshotAllowsIt(t *testing.T) {
+	t.Parallel()
+
+	groupUserReply := buildGreetingReply(&tools.UserContext{
+		UserRole:         0,
+		ConversationType: "2",
+	})
+	if strings.Contains(groupUserReply, "开启或取消订阅") {
+		t.Fatalf("ordinary group greeting = %q, should not advertise admin execution operations", groupUserReply)
+	}
+	if !strings.Contains(groupUserReply, "查询考勤订阅") {
+		t.Fatalf("ordinary group greeting = %q, want allowed subscription query", groupUserReply)
+	}
+
+	groupAdminReply := buildGreetingReply(&tools.UserContext{
+		UserRole:         1,
+		ConversationType: "2",
+	})
+	if !strings.Contains(groupAdminReply, "开启或取消订阅") {
+		t.Fatalf("admin group greeting = %q, want active start/cancel operations", groupAdminReply)
+	}
+}
+
 func TestCapabilitiesFilterHidesAdminGroupFeaturesForNormalDMUser(t *testing.T) {
 	t.Parallel()
 

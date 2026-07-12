@@ -50,7 +50,9 @@ type AgentCallLog struct {
 	ProtocolCandidateCount     int
 	RequestID                  string `gorm:"size:64;index"`
 	ConversationID             string `gorm:"size:128;index"`
+	CompilerSource             string `gorm:"size:32"`
 	CompilerStatus             string `gorm:"size:32"`
+	CompilerFallbackReason     string `gorm:"size:32"`
 	CompilerLatencyMs          int64
 	IntentDraftJSON            string `gorm:"type:text"`
 	CatalogValidationCode      string `gorm:"size:64"`

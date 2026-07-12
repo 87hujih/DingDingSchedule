@@ -171,6 +171,14 @@ func (e operationExecutor) executeSubscriptionStart(ctx context.Context, req Ope
 	default:
 		return operationExecutionResult(ResponseModel{Kind: ResponseRefuse, RefusalReason: "订阅范围只能是全部人员或指定部门。请重新说明要订阅的范围。"}, answerModeReject)
 	}
+	if writer, ok := e.deps.GroupSub.(tools.IdempotentGroupSubPort); ok {
+		write, err := writer.ExecuteSubscriptionStart(ctx, req.IdempotencyKey, req.TenantID, conversationID, operationRequestConversationTitle(req), req.ActorUserID, deptIDs)
+		if err != nil {
+			return operationExecutionResult(operationErrorResponse(), answerModeReject)
+		}
+		status := WriteStatus(write.WriteEffect)
+		return operationExecutionResult(ResponseModel{Kind: ResponseResult, Payload: OperationStatusPayload{Code: "subscription_started", Status: status, PushEnabled: write.PushEnabled}}, answerModeToolFirst)
+	}
 	current, err := e.deps.GroupSub.GetSubscription(ctx, req.TenantID, conversationID)
 	if err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
@@ -219,6 +227,13 @@ func (e operationExecutor) executeSubscriptionCancel(ctx context.Context, req Op
 	}
 	if req.ConversationID != "" && conversationID != strings.TrimSpace(req.ConversationID) {
 		return operationExecutionResult(subscriptionConversationMismatchResponse(), answerModeReject)
+	}
+	if writer, ok := e.deps.GroupSub.(tools.IdempotentGroupSubPort); ok {
+		write, err := writer.ExecuteSubscriptionCancel(ctx, req.IdempotencyKey, req.TenantID, conversationID)
+		if err != nil {
+			return operationExecutionResult(operationErrorResponse(), answerModeReject)
+		}
+		return operationExecutionResult(ResponseModel{Kind: ResponseResult, Payload: OperationStatusPayload{Code: "subscription_cancelled", Status: WriteStatus(write.WriteEffect)}}, answerModeToolFirst)
 	}
 	current, err := e.deps.GroupSub.GetSubscription(ctx, req.TenantID, conversationID)
 	if err != nil {

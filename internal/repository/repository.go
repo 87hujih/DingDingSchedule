@@ -17,7 +17,9 @@ type Repository struct {
 	ScheduleSettingRepo          ScheduleSettingRepository
 	AuditLogRepo                 AuditLogRepository
 	UserRestDayRepo              UserRestDayRepository
-	GroupSubRepo                 GroupAttendanceSubscriptionRepository
+	GroupSubRepo                 IdempotentGroupAttendanceSubscriptionRepository
+	AgentWorkflowRepo            AgentWorkflowRepository
+	AgentOperationExecutionRepo  AgentOperationExecutionRepository
 }
 
 // NewRepository 创建仓库实例
@@ -38,5 +40,7 @@ func NewRepository(db *gorm.DB) *Repository {
 		AuditLogRepo:                 NewAuditLogRepository(db),
 		UserRestDayRepo:              NewUserRestDayRepository(db),
 		GroupSubRepo:                 NewGroupAttendanceSubscriptionRepository(db),
+		AgentWorkflowRepo:            NewAgentWorkflowRepository(db),
+		AgentOperationExecutionRepo:  NewAgentOperationExecutionRepository(db),
 	}
 }

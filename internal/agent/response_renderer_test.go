@@ -192,3 +192,22 @@ func TestResponseModelHasNoInternalErrorField(t *testing.T) {
 		t.Fatalf("ResponseModel should not expose InternalError")
 	}
 }
+
+func TestRenderSubscriptionWriteEffectsGolden(t *testing.T) {
+	tests := []struct {
+		code   string
+		status WriteStatus
+		want   string
+	}{
+		{"subscription_started", WriteStatusCreated, "已为此群开启考勤推送。"},
+		{"subscription_started", WriteStatusUpdated, "已更新此群考勤推送范围。"},
+		{"subscription_started", WriteStatusNoOp, "此群考勤推送未发生变化。"},
+		{"subscription_cancelled", WriteStatusCancelled, "已取消此群的考勤自动推送。"},
+		{"subscription_cancelled", WriteStatusNoOp, "当前群还没有开启考勤自动推送，无需取消。"},
+	}
+	for _, tt := range tests {
+		if got := renderProtocolResponse(ResponseModel{Kind: ResponseResult, Payload: OperationStatusPayload{Code: tt.code, Status: tt.status}}); got != tt.want {
+			t.Errorf("%s/%s = %q, want %q", tt.code, tt.status, got, tt.want)
+		}
+	}
+}

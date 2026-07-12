@@ -361,7 +361,7 @@ func TestApplyProtocolLiveOutcomeRecordsTerminalWorkflowState(t *testing.T) {
 	}
 }
 
-func TestProtocolLiveChatDoesNotUseWorkflowStoreLockAroundPipeline(t *testing.T) {
+func TestProtocolLiveChatPersistsWorkflowAfterPipeline(t *testing.T) {
 	t.Parallel()
 
 	store := newRecordingWorkflowStore()
@@ -396,14 +396,11 @@ func TestProtocolLiveChatDoesNotUseWorkflowStoreLockAroundPipeline(t *testing.T)
 		t.Fatalf("Chat() error = %v", err)
 	}
 
-	if store.withLockCalls() != 0 {
-		t.Fatalf("WithLock calls = %d, want 0; protocol_live must not run pipeline under store lock", store.withLockCalls())
-	}
 	workflow, err := store.Load(context.Background(), WorkflowKey{TenantID: 42, ConversationID: "conv-lock", ActorUserID: 7})
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if workflow == nil || workflow.State != WorkflowCollectScope {
+	if workflow == nil || workflow.Snapshot.State != WorkflowCollectScope {
 		t.Fatalf("workflow = %+v, want collect_scope saved under structured key", workflow)
 	}
 }
@@ -532,6 +529,36 @@ func TestProtocolLiveWorkflowStoreFailureRecordsV2Fields(t *testing.T) {
 	}
 }
 
+func TestWriteCallLogCarriesCompilerFallbackMetadataWithoutRawError(t *testing.T) {
+	t.Parallel()
+
+	callLog := newTestCallLogPort()
+	a := &Agent{
+		deps:      Deps{CallLog: callLog},
+		logWriter: newCallLogWriter(callLog, zap.NewNop().Sugar()),
+	}
+	defer a.logWriter.Stop()
+
+	a.writeCallLog(context.Background(), executorUserContext(), "当前都有哪些部门", "部门列表", nil, 0, time.Now(), "success", "", callMetrics{
+		Proto: protocolMetrics{
+			CompilerSource:         string(CompilerSourceFallback),
+			CompilerStatus:         "timeout",
+			CompilerFallbackReason: "llm_timeout",
+		},
+	})
+
+	log, ok := callLog.Wait(time.Second)
+	if !ok {
+		t.Fatal("expected call log")
+	}
+	if log.CompilerSource != "fallback" || log.CompilerStatus != "timeout" || log.CompilerFallbackReason != "llm_timeout" {
+		t.Fatalf("compiler metadata = %q/%q/%q", log.CompilerSource, log.CompilerStatus, log.CompilerFallbackReason)
+	}
+	if log.ErrorMsg != "" {
+		t.Fatalf("ErrorMsg = %q, successful fallback must not persist raw compiler error", log.ErrorMsg)
+	}
+}
+
 type fixedIntentCompiler struct {
 	draft ProtocolDraft
 }
@@ -542,54 +569,59 @@ func (c fixedIntentCompiler) Compile(context.Context, IntentCompileRequest) (Int
 
 type recordingWorkflowStore struct {
 	inner *memoryWorkflowStore
-	mu    sync.Mutex
-	locks int
 }
 
 func newRecordingWorkflowStore() *recordingWorkflowStore {
 	return &recordingWorkflowStore{inner: newMemoryWorkflowStore(nil)}
 }
 
-func (s *recordingWorkflowStore) Load(ctx context.Context, key WorkflowKey) (*WorkflowSnapshot, error) {
+func (s *recordingWorkflowStore) Load(ctx context.Context, key WorkflowKey) (*VersionedWorkflow, error) {
 	return s.inner.Load(ctx, key)
 }
 
-func (s *recordingWorkflowStore) Save(ctx context.Context, workflow *WorkflowSnapshot) error {
-	return s.inner.Save(ctx, workflow)
+func (s *recordingWorkflowStore) Create(ctx context.Context, key WorkflowKey, workflow *WorkflowSnapshot) (*VersionedWorkflow, error) {
+	return s.inner.Create(ctx, key, workflow)
 }
 
-func (s *recordingWorkflowStore) Clear(ctx context.Context, key WorkflowKey, reason string) error {
-	return s.inner.Clear(ctx, key, reason)
+func (s *recordingWorkflowStore) CompareAndSwap(ctx context.Context, key WorkflowKey, expectedVersion uint64, workflow *WorkflowSnapshot) (*VersionedWorkflow, error) {
+	return s.inner.CompareAndSwap(ctx, key, expectedVersion, workflow)
 }
 
-func (s *recordingWorkflowStore) WithLock(ctx context.Context, key WorkflowKey, fn func(*WorkflowSnapshot) (*WorkflowSnapshot, error)) error {
-	s.mu.Lock()
-	s.locks++
-	s.mu.Unlock()
-	return s.inner.WithLock(ctx, key, fn)
+func (s *recordingWorkflowStore) DeleteIfVersion(ctx context.Context, key WorkflowKey, expectedVersion uint64, reason string) error {
+	return s.inner.DeleteIfVersion(ctx, key, expectedVersion, reason)
 }
 
-func (s *recordingWorkflowStore) withLockCalls() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.locks
+func (s *recordingWorkflowStore) ReserveExecution(ctx context.Context, key WorkflowKey, expectedVersion uint64, base *WorkflowSnapshot, lease WorkflowExecutionLease) (*VersionedWorkflow, error) {
+	return s.inner.ReserveExecution(ctx, key, expectedVersion, base, lease)
+}
+
+func (s *recordingWorkflowStore) FinalizeExecution(ctx context.Context, key WorkflowKey, expectedVersion uint64, executionToken string, next *WorkflowSnapshot) error {
+	return s.inner.FinalizeExecution(ctx, key, expectedVersion, executionToken, next)
 }
 
 type failingWorkflowStore struct{}
 
-func (failingWorkflowStore) Load(context.Context, WorkflowKey) (*WorkflowSnapshot, error) {
+func (failingWorkflowStore) Load(context.Context, WorkflowKey) (*VersionedWorkflow, error) {
 	return nil, nil
 }
 
-func (failingWorkflowStore) Save(context.Context, *WorkflowSnapshot) error {
+func (failingWorkflowStore) Create(context.Context, WorkflowKey, *WorkflowSnapshot) (*VersionedWorkflow, error) {
+	return nil, errors.New("workflow store unavailable")
+}
+
+func (failingWorkflowStore) CompareAndSwap(context.Context, WorkflowKey, uint64, *WorkflowSnapshot) (*VersionedWorkflow, error) {
+	return nil, errors.New("workflow store unavailable")
+}
+
+func (failingWorkflowStore) DeleteIfVersion(context.Context, WorkflowKey, uint64, string) error {
 	return errors.New("workflow store unavailable")
 }
 
-func (failingWorkflowStore) Clear(context.Context, WorkflowKey, string) error {
-	return errors.New("workflow store unavailable")
+func (failingWorkflowStore) ReserveExecution(context.Context, WorkflowKey, uint64, *WorkflowSnapshot, WorkflowExecutionLease) (*VersionedWorkflow, error) {
+	return nil, errors.New("workflow store unavailable")
 }
 
-func (failingWorkflowStore) WithLock(context.Context, WorkflowKey, func(*WorkflowSnapshot) (*WorkflowSnapshot, error)) error {
+func (failingWorkflowStore) FinalizeExecution(context.Context, WorkflowKey, uint64, string, *WorkflowSnapshot) error {
 	return errors.New("workflow store unavailable")
 }
 

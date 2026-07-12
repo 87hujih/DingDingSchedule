@@ -532,29 +532,61 @@ func TestProtocolLivePipelineWithoutCompilerFailsClosed(t *testing.T) {
 func TestProtocolLivePipelineCompilerTimeoutFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	attendance := &executorFakeAttendancePort{detailResp: &tools.AttendanceResult{Date: "2026-06-06", Week: 10, Section: 2}}
+	groupSub := &executorFakeGroupSubPort{}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
 		Compiler: pipelineFakeIntentCompiler{err: context.DeadlineExceeded},
-		Executor: newOperationExecutor(operationExecutorDeps{Attendance: attendance, Semester: &executorFakeSemesterPort{week: 10}}),
-		Semester: &executorFakeSemesterPort{week: 10},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
 	})
 
 	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
-		Message: "查询今天第二节考勤状态",
+		Message: "帮我弄一下群推送",
 		User:    executorUserContext(),
 	})
 
 	if outcome.Response.Kind != ResponseClarify {
 		t.Fatalf("Response = %+v, want clarify", outcome.Response)
 	}
-	if outcome.Draft.Act != ActUnknown || outcome.Draft.Reason != "intent_timeout" {
-		t.Fatalf("Draft = %+v, want timeout unknown draft", outcome.Draft)
+	if outcome.Draft.Act != ActUnknown || outcome.Draft.Reason != "llm_timeout" {
+		t.Fatalf("Draft = %+v, want fail-closed timeout unknown draft", outcome.Draft)
 	}
-	if outcome.BlockedReason != "intent_timeout" {
-		t.Fatalf("BlockedReason = %q, want intent_timeout", outcome.BlockedReason)
+	if outcome.BlockedReason != "unknown_intent" {
+		t.Fatalf("BlockedReason = %q, want unknown_intent", outcome.BlockedReason)
 	}
-	if attendance.detailCalls != 0 {
-		t.Fatalf("detailCalls = %d, want 0 after compiler timeout", attendance.detailCalls)
+	if outcome.CompilerStatus != "timeout" || outcome.CompilerFallbackReason != "llm_timeout" {
+		t.Fatalf("compiler metadata = status:%q fallback:%q", outcome.CompilerStatus, outcome.CompilerFallbackReason)
+	}
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 after inferred write timeout", groupSub.subscribeCalls)
+	}
+}
+
+func TestProtocolLivePipelineCompilerTimeoutFallbackPreservesSuccessfulOutcomeAndMetrics(t *testing.T) {
+	t.Parallel()
+
+	dept := executorFakeDeptPort{depts: []tools.DeptItem{{TenantID: 42, DeptID: 101, Name: "家族7期"}}}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{err: context.DeadlineExceeded},
+		Executor: newOperationExecutor(operationExecutorDeps{Dept: dept}),
+	})
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message: "当前都有哪些部门",
+		User:    executorUserContext(),
+	})
+
+	if outcome.Response.Kind != ResponseSelectOptions || outcome.FailureLayer != "" {
+		t.Fatalf("Response=%+v FailureLayer=%q, want successful result", outcome.Response, outcome.FailureLayer)
+	}
+	if outcome.CompilerSource != string(CompilerSourceFallback) || outcome.CompilerStatus != "timeout" ||
+		outcome.CompilerFallbackReason != "llm_timeout" {
+		t.Fatalf("compiler metadata = source:%q status:%q fallback:%q", outcome.CompilerSource, outcome.CompilerStatus, outcome.CompilerFallbackReason)
+	}
+
+	metrics := callMetrics{}
+	(&Agent{}).applyProtocolLiveOutcomeMetrics(&metrics, outcome, nil)
+	if metrics.Proto.CompilerSource != string(CompilerSourceFallback) || metrics.Proto.CompilerStatus != "timeout" ||
+		metrics.Proto.CompilerFallbackReason != "llm_timeout" {
+		t.Fatalf("metrics compiler metadata = %+v", metrics.Proto)
 	}
 }
 

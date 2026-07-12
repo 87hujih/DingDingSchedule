@@ -38,6 +38,7 @@ type Deps struct {
 	IntentCompiler        IntentCompiler
 	IntentCompilerTimeout time.Duration
 	WorkflowStore         WorkflowStore
+	OperationLedger       OperationExecutionLedger
 
 	Schedule                SchedulePort
 	Attendance              AttendancePort
@@ -219,11 +220,17 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		var workflowBefore *WorkflowSnapshot
 		var outcome protocolLiveOutcome
 
-		activeWorkflow, workflowErr := a.workflowStore.Load(ctx, workflowKey)
+		versionedWorkflow, workflowErr := a.workflowStore.Load(ctx, workflowKey)
 		if workflowErr != nil {
 			a.deps.Logger.Warnw("读取 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", workflowErr)
 			outcome = workflowStoreFailureOutcome()
 		} else {
+			var activeWorkflow *WorkflowSnapshot
+			var expectedVersion uint64
+			if versionedWorkflow != nil {
+				activeWorkflow = versionedWorkflow.Snapshot
+				expectedVersion = versionedWorkflow.Version
+			}
 			workflowBefore = cloneWorkflowSnapshot(activeWorkflow)
 			if activeWorkflow != nil {
 				metrics.Wf.IDBefore = activeWorkflow.ID
@@ -233,7 +240,7 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 				User:           uctx,
 				ActiveWorkflow: activeWorkflow,
 			})
-			if persistErr := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, outcome); persistErr != nil {
+			if persistErr := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, expectedVersion, outcome); persistErr != nil {
 				a.deps.Logger.Warnw("更新 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", persistErr)
 				outcome = workflowStoreFailureOutcome()
 			}
@@ -482,10 +489,50 @@ func (a *Agent) chatLegacy(
 
 // buildGreetingReply builds greeting reply.
 func buildGreetingReply(uctx *tools.UserContext) string {
-	if uctx != nil && uctx.UserRole >= 1 {
-		return "你好，我是课表助手。你可以直接让我查课表、考勤、请假；如果需要，也可以继续处理补签、统计和群订阅。"
+	role := 0
+	convType := "1"
+	if uctx != nil {
+		role = uctx.UserRole
+		convType = uctx.ConversationType
 	}
-	return "你好，我是课表助手。你可以直接让我查课表、考勤或请假相关信息。"
+
+	snapshot := capabilitySnapshot(capabilityContext{
+		UserRole:         role,
+		ConversationType: convType,
+	})
+	operations := make(map[string]bool, len(snapshot))
+	for _, entry := range snapshot {
+		operations[entry.Operation] = true
+	}
+
+	var capabilities []string
+	if operations["schedule.describe_capability"] {
+		capabilities = append(capabilities, "课表")
+	}
+	if operations["attendance.describe_capability"] {
+		capabilities = append(capabilities, "考勤状态")
+	}
+	if operations["system.describe_capability"] {
+		capabilities = append(capabilities, "规则")
+	}
+
+	var b strings.Builder
+	b.WriteString("你好，我是课表与考勤助手。")
+	if len(capabilities) > 0 {
+		b.WriteString("你可以让我查询")
+		b.WriteString(strings.Join(capabilities, "、"))
+		b.WriteString("。")
+	}
+	if operations["subscription.describe_capability"] {
+		b.WriteString("在群聊中还可以查询考勤订阅。")
+	}
+	if operations["subscription.start"] && operations["subscription.cancel"] {
+		b.WriteString("管理员可以开启或取消订阅。")
+	}
+	if operations["manual_sign.describe_capability"] {
+		b.WriteString("补签目前只提供能力说明，不在聊天中直接执行。")
+	}
+	return b.String()
 }
 
 // respondForTaskState handles replies while a legacy active task is still open.
@@ -1261,7 +1308,9 @@ func (a *Agent) writeCallLog(_ context.Context, uctx *tools.UserContext, questio
 		ProtocolCandidateCount:     metrics.Proto.CandidateCount,
 		RequestID:                  metrics.Proto.RequestID,
 		ConversationID:             uctx.ConversationID,
+		CompilerSource:             metrics.Proto.CompilerSource,
 		CompilerStatus:             metrics.Proto.CompilerStatus,
+		CompilerFallbackReason:     metrics.Proto.CompilerFallbackReason,
 		CompilerLatencyMs:          metrics.Proto.CompilerLatencyMs,
 		IntentDraftJSON:            metrics.Proto.IntentDraftJSON,
 		CatalogValidationCode:      metrics.Proto.CatalogValidationCode,
@@ -1375,12 +1424,14 @@ func (a *Agent) operationExecutor() operationExecutor {
 
 func (a *Agent) protocolLivePipeline() protocolLivePipeline {
 	return newProtocolLivePipeline(protocolLivePipelineDeps{
-		Compiler:       a.intentCompiler,
-		Executor:       a.operationExecutor(),
-		User:           a.deps.User,
-		Dept:           a.deps.Dept,
-		Semester:       a.deps.Semester,
-		SchedulePeriod: a.deps.SchedulePeriod,
+		Compiler:        a.intentCompiler,
+		Executor:        a.operationExecutor(),
+		User:            a.deps.User,
+		Dept:            a.deps.Dept,
+		Semester:        a.deps.Semester,
+		SchedulePeriod:  a.deps.SchedulePeriod,
+		WorkflowStore:   a.workflowStore,
+		OperationLedger: a.deps.OperationLedger,
 	})
 }
 
@@ -1390,9 +1441,11 @@ func (a *Agent) applyProtocolLiveOutcome(sessionKey string, metrics *callMetrics
 
 func (a *Agent) applyProtocolLiveOutcomeForKey(ctx context.Context, workflowKey WorkflowKey, sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome) {
 	var workflowBefore *WorkflowSnapshot
+	var expectedVersion uint64
 	if a != nil && a.workflowStore != nil {
-		if loaded, err := a.workflowStore.Load(ctx, workflowKey); err == nil {
-			workflowBefore = loaded
+		if loaded, err := a.workflowStore.Load(ctx, workflowKey); err == nil && loaded != nil {
+			workflowBefore = loaded.Snapshot
+			expectedVersion = loaded.Version
 		} else if a.deps.Logger != nil {
 			a.deps.Logger.Warnw("读取 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", err)
 		}
@@ -1402,19 +1455,22 @@ func (a *Agent) applyProtocolLiveOutcomeForKey(ctx context.Context, workflowKey 
 	}
 
 	if a != nil {
-		if err := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, outcome); err != nil && a.deps.Logger != nil {
+		if err := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, expectedVersion, outcome); err != nil && a.deps.Logger != nil {
 			a.deps.Logger.Warnw("更新 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", err)
 		}
 	}
 	a.applyProtocolLiveOutcomeAfterStore(sessionKey, metrics, outcome, workflowBefore)
 }
 
-func (a *Agent) persistProtocolLiveWorkflowOutcome(ctx context.Context, workflowKey WorkflowKey, outcome protocolLiveOutcome) error {
+func (a *Agent) persistProtocolLiveWorkflowOutcome(ctx context.Context, workflowKey WorkflowKey, expectedVersion uint64, outcome protocolLiveOutcome) error {
 	if a == nil || a.workflowStore == nil {
 		return nil
 	}
+	if outcome.WorkflowStoreApplied {
+		return nil
+	}
 	if outcome.ClearWorkflow {
-		return a.workflowStore.Clear(ctx, workflowKey, string(outcome.WorkflowDecision))
+		return a.workflowStore.DeleteIfVersion(ctx, workflowKey, expectedVersion, string(outcome.WorkflowDecision))
 	}
 	if outcome.WorkflowAfter == nil {
 		return nil
@@ -1423,7 +1479,12 @@ func (a *Agent) persistProtocolLiveWorkflowOutcome(ctx context.Context, workflow
 	next.TenantID = workflowKey.TenantID
 	next.ConversationID = workflowKey.ConversationID
 	next.ActorUserID = workflowKey.ActorUserID
-	return a.workflowStore.Save(ctx, next)
+	if expectedVersion == 0 {
+		_, err := a.workflowStore.Create(ctx, workflowKey, next)
+		return err
+	}
+	_, err := a.workflowStore.CompareAndSwap(ctx, workflowKey, expectedVersion, next)
+	return err
 }
 
 func (a *Agent) applyProtocolLiveOutcomeAfterStore(sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome, workflowBefore *WorkflowSnapshot) {
@@ -1457,7 +1518,9 @@ func (a *Agent) applyProtocolLiveOutcomeMetrics(metrics *callMetrics, outcome pr
 	metrics.Proto.ResolvedSlotsJSON = metrics.Proto.ResolvedSlots
 	metrics.Proto.CandidateCount = outcome.CandidateCount
 	metrics.Proto.RequestID = outcome.RequestID
+	metrics.Proto.CompilerSource = outcome.CompilerSource
 	metrics.Proto.CompilerStatus = outcome.CompilerStatus
+	metrics.Proto.CompilerFallbackReason = outcome.CompilerFallbackReason
 	metrics.Proto.CompilerLatencyMs = outcome.CompilerLatencyMs
 	metrics.Proto.IntentDraftJSON = outcome.IntentDraftJSON
 	metrics.Proto.CatalogValidationCode = firstNonEmpty(outcome.CatalogValidationCode, outcome.Validation.ValidationCode)

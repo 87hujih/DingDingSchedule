@@ -101,6 +101,58 @@ func TestCapabilityCatalogEntriesAreDerivedFromOperationManifestBindings(t *test
 	}
 }
 
+func TestCapabilitySnapshotUsesOnlyUserVisibleManifestCapabilities(t *testing.T) {
+	t.Parallel()
+
+	snapshot := capabilitySnapshot(capabilityContext{
+		UserRole:         1,
+		ConversationType: "2",
+	})
+	if len(snapshot) == 0 {
+		t.Fatal("capabilitySnapshot() = empty, want user-visible catalog capabilities")
+	}
+	for _, entry := range snapshot {
+		manifest, ok := lookupOperation(entry.Operation)
+		if !ok {
+			t.Fatalf("snapshot operation %q has no manifest", entry.Operation)
+		}
+		if manifest.Availability != OperationAvailabilityActive &&
+			manifest.Availability != OperationAvailabilityAnswerOnly {
+			t.Fatalf("snapshot operation %q availability = %q, want user-visible", entry.Operation, manifest.Availability)
+		}
+		if entry.Availability != manifest.Availability {
+			t.Fatalf("snapshot entry = %+v, want availability from manifest %+v", entry, manifest)
+		}
+		if manifest.Capability != nil && entry.DirectlyUsable != manifest.Capability.DirectlyUsable {
+			t.Fatalf("snapshot entry = %+v, want direct usability from capability binding %+v", entry, manifest.Capability)
+		}
+	}
+}
+
+func TestCapabilitySnapshotKeepsRoleAndConversationRestrictions(t *testing.T) {
+	t.Parallel()
+
+	dmUser := capabilitySnapshot(capabilityContext{UserRole: 0, ConversationType: "1"})
+	if containsSnapshotCapability(dmUser, "subscription.describe_capability") {
+		t.Fatalf("ordinary DM snapshot should hide group-only subscription: %+v", dmUser)
+	}
+
+	groupUser := capabilitySnapshot(capabilityContext{UserRole: 0, ConversationType: "2"})
+	if !containsSnapshotCapability(groupUser, "subscription.describe_capability") {
+		t.Fatalf("ordinary group snapshot should include subscription query: %+v", groupUser)
+	}
+	if containsSnapshotCapability(groupUser, "subscription.start") ||
+		containsSnapshotCapability(groupUser, "subscription.cancel") {
+		t.Fatalf("ordinary group snapshot should hide admin subscription execution: %+v", groupUser)
+	}
+
+	groupAdmin := capabilitySnapshot(capabilityContext{UserRole: 1, ConversationType: "2"})
+	if !containsSnapshotCapability(groupAdmin, "subscription.start") ||
+		!containsSnapshotCapability(groupAdmin, "subscription.cancel") {
+		t.Fatalf("admin group snapshot should include active subscription execution: %+v", groupAdmin)
+	}
+}
+
 func TestProtocolHelpDoesNotAdvertiseManualSignAsDirectExecution(t *testing.T) {
 	t.Parallel()
 
@@ -120,6 +172,12 @@ func TestProtocolHelpDoesNotAdvertiseManualSignAsDirectExecution(t *testing.T) {
 	if strings.Contains(reply, "人员交叉筛选") || strings.Contains(reply, "考勤统计分析") {
 		t.Fatalf("reply = %q, should not advertise legacy-only direct actions as protocol-live direct abilities", reply)
 	}
+	if strings.Contains(reply, "周排行") || strings.Contains(reply, "周排名") {
+		t.Fatalf("reply = %q, should not advertise legacy-only weekly rankings", reply)
+	}
+	if !strings.Contains(reply, "当前聊天路径不直接执行补签") {
+		t.Fatalf("reply = %q, want explicit answer-only manual sign limitation", reply)
+	}
 }
 
 func TestManualSignCapabilityReplyIsAnswerOnly(t *testing.T) {
@@ -137,6 +195,15 @@ func TestManualSignCapabilityReplyIsAnswerOnly(t *testing.T) {
 func containsCapability(entries []CapabilityEntry, operation string) bool {
 	for _, entry := range entries {
 		if entry.OperationScope == operation {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSnapshotCapability(entries []CapabilitySnapshotEntry, operation string) bool {
+	for _, entry := range entries {
+		if entry.Operation == operation {
 			return true
 		}
 	}

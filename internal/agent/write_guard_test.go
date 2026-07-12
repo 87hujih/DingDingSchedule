@@ -75,6 +75,40 @@ func TestWriteGuardIdempotencyKeyChangesWithTrustedParams(t *testing.T) {
 	}
 }
 
+func TestSubscriptionStartBusinessKeyIgnoresActorAndWorkflowAndSortsDepartments(t *testing.T) {
+	manifest, ok := lookupOperation("subscription.start")
+	if !ok {
+		t.Fatal("subscription.start manifest missing")
+	}
+	request := OperationRequest{
+		TenantID: 1, ActorUserID: 10, ConversationID: "conv-1", Operation: "subscription.start",
+		TrustedParams: map[string]TrustedParam{
+			"scope": {Value: "department"}, "dept_ids": {Value: []int64{102, 101}},
+		},
+	}
+	first := buildIdempotencyKey(manifest, WriteGuardInput{Request: request, Workflow: &WorkflowSnapshot{ID: "workflow-a"}})
+	request.ActorUserID = 99
+	request.TrustedParams["dept_ids"] = TrustedParam{Value: []int64{101, 102}}
+	second := buildIdempotencyKey(manifest, WriteGuardInput{Request: request, Workflow: &WorkflowSnapshot{ID: "workflow-b"}})
+	if first == "" || first != second {
+		t.Fatalf("business key changed across actor/workflow/order: %q vs %q", first, second)
+	}
+}
+
+func TestSubscriptionCancelBusinessKeyIgnoresActor(t *testing.T) {
+	manifest, ok := lookupOperation("subscription.cancel")
+	if !ok {
+		t.Fatal("subscription.cancel manifest missing")
+	}
+	request := OperationRequest{TenantID: 1, ActorUserID: 10, ConversationID: "conv-1", Operation: "subscription.cancel"}
+	first := buildIdempotencyKey(manifest, WriteGuardInput{Request: request})
+	request.ActorUserID = 99
+	second := buildIdempotencyKey(manifest, WriteGuardInput{Request: request})
+	if first == "" || first != second {
+		t.Fatalf("cancel business key changed across actor: %q vs %q", first, second)
+	}
+}
+
 func TestWriteGuardRequiresConfirmForHighRiskManifest(t *testing.T) {
 	t.Parallel()
 

@@ -102,7 +102,10 @@ func (sm *sessionManager) getWorkflowState(key string) ([]tools.Message, *Workfl
 		if err != nil {
 			return nil, nil
 		}
-		return nil, workflow
+		if workflow == nil {
+			return nil, nil
+		}
+		return nil, workflow.Snapshot
 	}
 
 	msgs := make([]tools.Message, len(s.messages))
@@ -117,7 +120,10 @@ func (sm *sessionManager) getWorkflowState(key string) ([]tools.Message, *Workfl
 	if err != nil {
 		return msgs, nil
 	}
-	return msgs, workflow
+	if workflow == nil {
+		return msgs, nil
+	}
+	return msgs, workflow.Snapshot
 }
 
 // appendMessages 追加消息到 session，并裁剪超长历史
@@ -189,7 +195,16 @@ func (sm *sessionManager) setWorkflowState(key string, workflow *WorkflowSnapsho
 	next.TenantID = keyParts.TenantID
 	next.ConversationID = keyParts.ConversationID
 	next.ActorUserID = keyParts.ActorUserID
-	if err := sm.workflowStore.Save(context.Background(), next); err != nil {
+	current, err := sm.workflowStore.Load(context.Background(), keyParts)
+	if err != nil {
+		return
+	}
+	if current == nil {
+		_, err = sm.workflowStore.Create(context.Background(), keyParts, next)
+	} else {
+		_, err = sm.workflowStore.CompareAndSwap(context.Background(), keyParts, current.Version, next)
+	}
+	if err != nil {
 		return
 	}
 
@@ -262,7 +277,14 @@ func (sm *sessionManager) clearWorkflowState(key string) {
 	}
 	sm.mu.RUnlock()
 
-	if err := sm.workflowStore.Clear(context.Background(), workflowKey, "session_clear"); err != nil {
+	current, err := sm.workflowStore.Load(context.Background(), workflowKey)
+	if err != nil {
+		return
+	}
+	if current != nil {
+		err = sm.workflowStore.DeleteIfVersion(context.Background(), workflowKey, current.Version, "session_clear")
+	}
+	if err != nil {
 		return
 	}
 

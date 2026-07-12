@@ -2,11 +2,76 @@ package agent
 
 import (
 	"context"
+	"errors"
 
 	"schedule_server/internal/agent/tools"
 )
 
 func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserContext, req OperationRequest, outcome protocolLiveOutcome) protocolLiveOutcome {
+	prepared, outcome, ok := p.prepareExecution(ctx, uctx, req, outcome)
+	if !ok {
+		return outcome
+	}
+	if !prepared.Manifest.IsWrite {
+		result := p.executor().Execute(ctx, prepared.Request)
+		return applyOperationExecutionResult(outcome, prepared.Request, result)
+	}
+	outcome.WorkflowStoreApplied = true
+
+	base := cloneWorkflowSnapshot(outcome.WorkflowAfter)
+	if base == nil {
+		base = cloneWorkflowSnapshot(outcome.WorkflowExecutionBase)
+	}
+	if base == nil {
+		base = &WorkflowSnapshot{
+			ID:    outcome.RequestID,
+			Type:  WorkflowType(prepared.Request.Operation),
+			State: WorkflowReady,
+		}
+	}
+	key := workflowKeyFromUserContext(uctx)
+	executed, err := newProtocolLiveExecutionCoordinator(p.deps.WorkflowStore, p.deps.OperationLedger, p.now).Execute(ctx, WorkflowExecutionRequest{
+		Key:             key,
+		ExpectedVersion: uint64(max(base.Version, 0)),
+		Workflow:        base,
+		Operation:       prepared.Request,
+		BusinessKey:     prepared.Request.IdempotencyKey,
+		RequestID:       outcome.RequestID,
+	}, p.executor())
+	if err != nil {
+		outcome.FailureLayer = FailureExecutor
+		outcome.BlockedReason = "workflow_execution_conflict"
+		outcome.ExecutorStatus = "failed"
+		if errors.Is(err, ErrOperationLedgerLookup) {
+			outcome.BlockedReason = "operation_ledger_lookup_failed"
+			setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseRefuse, RefusalReason: "操作状态暂时无法确认，请稍后再试。"}, answerModeReject)
+		} else if errors.Is(err, ErrWorkflowConflict) {
+			outcome.BlockedReason = "workflow_processing"
+			outcome.ExecutorStatus = "blocked"
+			setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseRefuse, RefusalReason: processingReply}, answerModeReject)
+		} else {
+			setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseRefuse, RefusalReason: "操作暂时无法执行，请稍后再试。"}, answerModeReject)
+		}
+		return outcome
+	}
+	if executed.OperationResult.Response.RefusalReason == recoveryRequiredReply {
+		outcome.FailureLayer = FailureExecutor
+		outcome.BlockedReason = "workflow_recovery_required"
+	}
+	outcome.WorkflowStoreApplied = true
+	outcome.ClearWorkflow = executed.OperationResult.Response.Kind == ResponseResult
+	if outcome.ClearWorkflow {
+		outcome.WorkflowAfter = nil
+	}
+	return applyOperationExecutionResult(outcome, prepared.Request, executed.OperationResult)
+}
+
+type PreparedProtocolExecution struct {
+	Request  OperationRequest
+	Manifest OperationManifest
+}
+
+func (p protocolLivePipeline) prepareExecution(ctx context.Context, uctx *tools.UserContext, req OperationRequest, outcome protocolLiveOutcome) (PreparedProtocolExecution, protocolLiveOutcome, bool) {
 	req = enrichOperationRequestFromUser(req, uctx)
 	if resource := p.resourcePolicyGate().Validate(ctx, ResourcePolicyGateInput{
 		User:    uctx,
@@ -24,10 +89,11 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 			RefusalReason: resourceRefusalText(resource.BlockedReason),
 		}, answerModeReject)
 		outcome.BlockedReason = resource.BlockedReason
-		return outcome
+		return PreparedProtocolExecution{}, outcome, false
 	}
 	outcome.ResourcePolicyResult = "allow"
-	if manifest, ok := lookupOperation(req.Operation); ok && manifest.IsWrite {
+	manifest, manifestOK := lookupOperation(req.Operation)
+	if manifestOK && manifest.IsWrite {
 		guard := p.writeGuard().Check(WriteGuardInput{
 			User:     uctx,
 			Manifest: manifest,
@@ -48,13 +114,16 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 				Message: writeGuardResponseText(guard.BlockedReason),
 			}, answerModeReject)
 			outcome.BlockedReason = guard.BlockedReason
-			return outcome
+			return PreparedProtocolExecution{}, outcome, false
 		}
 		outcome.WriteGuardResult = "allow"
 	} else if outcome.WriteGuardResult == "" {
 		outcome.WriteGuardResult = "not_required"
 	}
-	result := p.executor().Execute(ctx, req)
+	return PreparedProtocolExecution{Request: req, Manifest: manifest}, outcome, true
+}
+
+func applyOperationExecutionResult(outcome protocolLiveOutcome, req OperationRequest, result OperationExecutionResult) protocolLiveOutcome {
 	setProtocolOutcomeResponse(&outcome, result.Response, result.Metrics.AnswerMode)
 	if len(req.TrustedParams) > 0 {
 		outcome.ResolvedSlots = mergeProtocolResolvedSlots(outcome.ResolvedSlots, protocolResolvedSlotsFromParams(req.TrustedParams))

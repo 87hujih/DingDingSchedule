@@ -2,10 +2,37 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestMemoryWorkflowStoreCompareAndSwapRejectsStaleVersion(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
+	store := newMemoryWorkflowStore(func() time.Time { return now })
+	key := WorkflowKey{TenantID: 42, ConversationID: "conv-a", ActorUserID: 7}
+	snapshot := &WorkflowSnapshot{
+		ID:             "wf-1",
+		TenantID:       key.TenantID,
+		ConversationID: key.ConversationID,
+		ActorUserID:    key.ActorUserID,
+		Type:           WorkflowSubscriptionStart,
+		State:          WorkflowCollectScope,
+		ExpiresAt:      now.Add(time.Minute),
+	}
+
+	created, err := store.Create(context.Background(), key, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.CompareAndSwap(context.Background(), key, created.Version+1, snapshot)
+	if !errors.Is(err, ErrWorkflowConflict) {
+		t.Fatalf("err=%v", err)
+	}
+}
 
 func TestMemoryWorkflowStoreKeysByTenantConversationAndActor(t *testing.T) {
 	t.Parallel()
@@ -14,7 +41,7 @@ func TestMemoryWorkflowStoreKeysByTenantConversationAndActor(t *testing.T) {
 	store := newMemoryWorkflowStore(func() time.Time { return now })
 	key := WorkflowKey{TenantID: 42, ConversationID: "conv-a", ActorUserID: 7}
 
-	err := store.Save(context.Background(), &WorkflowSnapshot{
+	created, err := store.Create(context.Background(), key, &WorkflowSnapshot{
 		ID:             "wf-1",
 		TenantID:       key.TenantID,
 		ConversationID: key.ConversationID,
@@ -25,7 +52,10 @@ func TestMemoryWorkflowStoreKeysByTenantConversationAndActor(t *testing.T) {
 		ExpiresAt:      now.Add(time.Minute),
 	})
 	if err != nil {
-		t.Fatalf("Save() error = %v", err)
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.Version != 1 {
+		t.Fatalf("Version = %d, want 1 after create", created.Version)
 	}
 
 	loaded, err := store.Load(context.Background(), key)
@@ -35,11 +65,11 @@ func TestMemoryWorkflowStoreKeysByTenantConversationAndActor(t *testing.T) {
 	if loaded == nil {
 		t.Fatalf("Load() = nil, want workflow")
 	}
-	if loaded.TenantID != 42 || loaded.ConversationID != "conv-a" || loaded.ActorUserID != 7 {
-		t.Fatalf("loaded identity = tenant:%d conversation:%q actor:%d", loaded.TenantID, loaded.ConversationID, loaded.ActorUserID)
+	if loaded.Snapshot.TenantID != 42 || loaded.Snapshot.ConversationID != "conv-a" || loaded.Snapshot.ActorUserID != 7 {
+		t.Fatalf("loaded identity = tenant:%d conversation:%q actor:%d", loaded.Snapshot.TenantID, loaded.Snapshot.ConversationID, loaded.Snapshot.ActorUserID)
 	}
 	if loaded.Version != 1 {
-		t.Fatalf("Version = %d, want 1 after first save", loaded.Version)
+		t.Fatalf("Version = %d, want 1 after create", loaded.Version)
 	}
 
 	otherActor, err := store.Load(context.Background(), WorkflowKey{TenantID: 42, ConversationID: "conv-a", ActorUserID: 8})
@@ -57,7 +87,7 @@ func TestMemoryWorkflowStoreExpiresAndClonesSnapshots(t *testing.T) {
 	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
 	store := newMemoryWorkflowStore(func() time.Time { return now })
 	key := WorkflowKey{TenantID: 42, ConversationID: "conv-a", ActorUserID: 7}
-	err := store.Save(context.Background(), &WorkflowSnapshot{
+	_, err := store.Create(context.Background(), key, &WorkflowSnapshot{
 		ID:             "wf-1",
 		TenantID:       key.TenantID,
 		ConversationID: key.ConversationID,
@@ -75,25 +105,25 @@ func TestMemoryWorkflowStoreExpiresAndClonesSnapshots(t *testing.T) {
 		ExpiresAt: now.Add(time.Minute),
 	})
 	if err != nil {
-		t.Fatalf("Save() error = %v", err)
+		t.Fatalf("Create() error = %v", err)
 	}
 
 	loaded, err := store.Load(context.Background(), key)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	loaded.Candidates["dept_ids"][0].Label = "mutated"
-	loaded.MissingFields[0] = "mutated"
+	loaded.Snapshot.Candidates["dept_ids"][0].Label = "mutated"
+	loaded.Snapshot.MissingFields[0] = "mutated"
 
 	reloaded, err := store.Load(context.Background(), key)
 	if err != nil {
 		t.Fatalf("Load() after mutation error = %v", err)
 	}
-	if reloaded.Candidates["dept_ids"][0].Label != "信工24级" {
-		t.Fatalf("candidate clone leaked mutation: %+v", reloaded.Candidates["dept_ids"][0])
+	if reloaded.Snapshot.Candidates["dept_ids"][0].Label != "信工24级" {
+		t.Fatalf("candidate clone leaked mutation: %+v", reloaded.Snapshot.Candidates["dept_ids"][0])
 	}
-	if reloaded.MissingFields[0] != "dept_names" {
-		t.Fatalf("MissingFields clone leaked mutation: %v", reloaded.MissingFields)
+	if reloaded.Snapshot.MissingFields[0] != "dept_names" {
+		t.Fatalf("MissingFields clone leaked mutation: %v", reloaded.Snapshot.MissingFields)
 	}
 
 	now = now.Add(2 * time.Minute)
@@ -106,122 +136,141 @@ func TestMemoryWorkflowStoreExpiresAndClonesSnapshots(t *testing.T) {
 	}
 }
 
-func TestMemoryWorkflowStoreWithLockSerializesConcurrentUpdates(t *testing.T) {
+func TestMemoryWorkflowStoreCompareAndSwapAllowsOnlyOneConcurrentUpdate(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
 	store := newMemoryWorkflowStore(func() time.Time { return now })
 	key := WorkflowKey{TenantID: 42, ConversationID: "conv-a", ActorUserID: 7}
+	created, err := store.Create(context.Background(), key, &WorkflowSnapshot{
+		ID:        "wf-cas",
+		Type:      WorkflowSubscriptionStart,
+		State:     WorkflowCollectScope,
+		ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	const updates = 25
+	const updates = 2
 	var wg sync.WaitGroup
 	errs := make(chan error, updates)
 	for i := 0; i < updates; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- store.WithLock(context.Background(), key, func(current *WorkflowSnapshot) (*WorkflowSnapshot, error) {
-				if current == nil {
-					current = &WorkflowSnapshot{
-						ID:             "wf-locked",
-						TenantID:       key.TenantID,
-						ConversationID: key.ConversationID,
-						ActorUserID:    key.ActorUserID,
-						Type:           WorkflowSubscriptionStart,
-						State:          WorkflowCollectScope,
-						ExpiresAt:      now.Add(time.Minute),
-					}
-				}
-				current.LastUserMessage += "x"
-				return current, nil
-			})
+			next := cloneWorkflowSnapshot(created.Snapshot)
+			next.LastUserMessage = "updated"
+			_, err := store.CompareAndSwap(context.Background(), key, created.Version, next)
+			errs <- err
 		}()
 	}
 	wg.Wait()
 	close(errs)
+	successes := 0
+	conflicts := 0
 	for err := range errs {
-		if err != nil {
-			t.Fatalf("WithLock() error = %v", err)
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrWorkflowConflict):
+			conflicts++
+		default:
+			t.Fatalf("CompareAndSwap() error = %v", err)
 		}
 	}
-
-	loaded, err := store.Load(context.Background(), key)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if loaded == nil {
-		t.Fatalf("Load() = nil, want workflow")
-	}
-	if len(loaded.LastUserMessage) != updates {
-		t.Fatalf("LastUserMessage length = %d, want %d", len(loaded.LastUserMessage), updates)
-	}
-	if loaded.Version != updates {
-		t.Fatalf("Version = %d, want %d", loaded.Version, updates)
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("successes=%d conflicts=%d, want 1/1", successes, conflicts)
 	}
 }
 
-func TestMemoryWorkflowStoreWithLockDoesNotBlockDifferentKeys(t *testing.T) {
+func TestMemoryWorkflowStoreDeleteIfVersionRejectsStaleVersion(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
 	store := newMemoryWorkflowStore(func() time.Time { return now })
-	keyA := WorkflowKey{TenantID: 42, ConversationID: "conv-a", ActorUserID: 7}
-	keyB := WorkflowKey{TenantID: 42, ConversationID: "conv-b", ActorUserID: 7}
+	key := WorkflowKey{TenantID: 42, ConversationID: "conv-a", ActorUserID: 7}
+	created, err := store.Create(context.Background(), key, &WorkflowSnapshot{
+		ID:        "wf-delete",
+		Type:      WorkflowSubscriptionStart,
+		State:     WorkflowCollectScope,
+		ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteIfVersion(context.Background(), key, created.Version+1, "stale"); !errors.Is(err, ErrWorkflowConflict) {
+		t.Fatalf("DeleteIfVersion() error = %v, want conflict", err)
+	}
+	loaded, err := store.Load(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded == nil {
+		t.Fatal("stale delete removed workflow")
+	}
+}
 
-	enteredA := make(chan struct{})
-	releaseA := make(chan struct{})
-	doneA := make(chan error, 1)
-	go func() {
-		doneA <- store.WithLock(context.Background(), keyA, func(current *WorkflowSnapshot) (*WorkflowSnapshot, error) {
-			close(enteredA)
-			<-releaseA
-			if current == nil {
-				current = &WorkflowSnapshot{ID: "wf-a", Type: WorkflowSubscriptionStart, State: WorkflowCollectScope, ExpiresAt: now.Add(time.Minute)}
-			}
-			current.LastUserMessage = "a"
-			return current, nil
-		})
-	}()
+func TestMemoryWorkflowStoreCreateConflictsUntilExpiredThenRecreatesAtVersionOne(t *testing.T) {
+	t.Parallel()
 
-	select {
-	case <-enteredA:
-	case <-time.After(time.Second):
-		t.Fatal("first WithLock callback did not start")
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
+	store := newMemoryWorkflowStore(func() time.Time { return now })
+	key := WorkflowKey{TenantID: 42, ConversationID: "conv-a", ActorUserID: 7}
+	snapshot := &WorkflowSnapshot{
+		ID:        "wf-original",
+		Type:      WorkflowSubscriptionStart,
+		State:     WorkflowCollectScope,
+		ExpiresAt: now.Add(time.Minute),
+	}
+	if _, err := store.Create(context.Background(), key, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(context.Background(), key, snapshot); !errors.Is(err, ErrWorkflowConflict) {
+		t.Fatalf("Create(existing) error = %v, want conflict", err)
 	}
 
-	enteredB := make(chan struct{})
-	doneB := make(chan error, 1)
-	go func() {
-		doneB <- store.WithLock(context.Background(), keyB, func(current *WorkflowSnapshot) (*WorkflowSnapshot, error) {
-			close(enteredB)
-			if current == nil {
-				current = &WorkflowSnapshot{ID: "wf-b", Type: WorkflowSubscriptionStart, State: WorkflowCollectScope, ExpiresAt: now.Add(time.Minute)}
-			}
-			current.LastUserMessage = "b"
-			return current, nil
-		})
-	}()
-
-	blockedDifferentKey := false
-	select {
-	case <-enteredB:
-	case <-time.After(200 * time.Millisecond):
-		blockedDifferentKey = true
+	now = now.Add(2 * time.Minute)
+	recreated, err := store.Create(context.Background(), key, &WorkflowSnapshot{
+		ID:        "wf-recreated",
+		Type:      WorkflowSubscriptionStart,
+		State:     WorkflowCollectDepartments,
+		ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Create(expired replacement) error = %v", err)
 	}
-
-	close(releaseA)
-	for name, done := range map[string]<-chan error{"keyA": doneA, "keyB": doneB} {
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("%s WithLock() error = %v", name, err)
-			}
-		case <-time.After(time.Second):
-			t.Fatalf("%s WithLock() did not finish", name)
-		}
+	if recreated.Version != 1 || recreated.Snapshot.Version != 1 || recreated.Snapshot.ID != "wf-recreated" {
+		t.Fatalf("recreated = %+v", recreated)
 	}
-	if blockedDifferentKey {
-		t.Fatalf("WithLock for %v was blocked by an active lock for %v; locks must be isolated by workflow key", keyB, keyA)
+}
+
+func TestMemoryWorkflowStoreReturnedVersionsAndSnapshotsAreIsolated(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
+	store := newMemoryWorkflowStore(func() time.Time { return now })
+	key := WorkflowKey{TenantID: 42, ConversationID: "conv-a", ActorUserID: 7}
+	created, err := store.Create(context.Background(), key, &WorkflowSnapshot{
+		ID:            "wf-1",
+		Type:          WorkflowSubscriptionStart,
+		State:         WorkflowCollectDepartments,
+		MissingFields: []string{"dept_ids"},
+		ExpiresAt:     now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Version = 99
+	created.Snapshot.Version = 99
+	created.Snapshot.MissingFields[0] = "mutated"
+
+	loaded, err := store.Load(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Version != 1 || loaded.Snapshot.Version != 1 || loaded.Snapshot.MissingFields[0] != "dept_ids" {
+		t.Fatalf("stored workflow leaked returned mutation: %+v", loaded)
 	}
 }
 

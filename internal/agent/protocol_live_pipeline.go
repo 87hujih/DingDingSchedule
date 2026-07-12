@@ -9,17 +9,19 @@ import (
 )
 
 type protocolLivePipelineDeps struct {
-	Compiler       IntentCompiler
-	Validator      CatalogValidator
-	PrePolicy      PrePolicyGate
-	ResourcePolicy ResourcePolicyGate
-	WriteGuard     WriteGuard
-	Executor       protocolOperationExecutor
-	User           UserPort
-	Dept           DeptPort
-	Semester       SemesterPort
-	SchedulePeriod SchedulePeriodPort
-	Clock          func() time.Time
+	Compiler        IntentCompiler
+	Validator       CatalogValidator
+	PrePolicy       PrePolicyGate
+	ResourcePolicy  ResourcePolicyGate
+	WriteGuard      WriteGuard
+	Executor        protocolOperationExecutor
+	User            UserPort
+	Dept            DeptPort
+	Semester        SemesterPort
+	SchedulePeriod  SchedulePeriodPort
+	Clock           func() time.Time
+	WorkflowStore   WorkflowStore
+	OperationLedger OperationExecutionLedger
 }
 
 type protocolOperationExecutor interface {
@@ -44,7 +46,9 @@ type protocolLiveOutcome struct {
 	ExecutionMetrics        OperationExecutionMetrics
 	AnswerMode              answerMode
 	BlockedReason           string
+	CompilerSource          string
 	CompilerStatus          string
+	CompilerFallbackReason  string
 	CompilerLatencyMs       int64
 	IntentDraftJSON         string
 	CatalogValidationCode   string
@@ -63,9 +67,14 @@ type protocolLiveOutcome struct {
 	WorkflowInterruptReason string
 	WorkflowAfter           *WorkflowSnapshot
 	ClearWorkflow           bool
+	WorkflowStoreApplied    bool
+	WorkflowExecutionBase   *WorkflowSnapshot
 }
 
 func newProtocolLivePipeline(deps protocolLivePipelineDeps) protocolLivePipeline {
+	if deps.WorkflowStore == nil {
+		deps.WorkflowStore = newMemoryWorkflowStore(deps.Clock)
+	}
 	return protocolLivePipeline{deps: deps}
 }
 
@@ -110,27 +119,55 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 	defer finalizeProtocolLiveOutcome(&outcome)
 
 	receivedWorkflow := input.ActiveWorkflow
+	outcome.WorkflowExecutionBase = cloneWorkflowSnapshot(receivedWorkflow)
 	activeWorkflow := receivedWorkflow
 	if workflowExpired(activeWorkflow, p.now()) {
 		activeWorkflow = nil
 	}
 	workflowCtx := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
-	compileStart := time.Now()
-	draft, err := compileProtocolWithCompiler(ctx, protocolInput{
-		Message:        input.Message,
-		ActiveWorkflow: workflowCtx,
-	}, p.deps.Compiler)
-	outcome.CompilerLatencyMs = elapsedMs(compileStart)
-	outcome.CompilerStatus = "ok"
-	if err != nil {
-		reason := "intent_parse_failed"
-		if errors.Is(err, context.DeadlineExceeded) {
-			reason = "intent_timeout"
-			outcome.CompilerStatus = "timeout"
-		} else {
-			outcome.CompilerStatus = "error"
+	systemIntent := interpretSystemIntent(input.Message)
+	if systemIntent == SystemIntentGreeting {
+		outcome.CompilerSource = "system_intent"
+		outcome.CompilerStatus = "skipped"
+		outcome.IntentDraftJSON = compactIntentDraft(unknownIntentDraft("system_greeting"))
+		outcome.CatalogValidationCode = "system_intent_greeting"
+		outcome.PrePolicyResult = "allow"
+		setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseAnswer, Answer: buildGreetingReply(input.User)}, answerModeToolFirst)
+		return outcome
+	}
+
+	var draft ProtocolDraft
+	if systemIntent == SystemIntentHelp {
+		draft = ProtocolDraft{
+			Act:        ActHelp,
+			Domain:     DomainSystem,
+			Operation:  "system.describe_capability",
+			Confidence: 1,
+			Reason:     "system_intent_help",
 		}
-		draft = unknownIntentDraft(reason)
+		outcome.CompilerSource = "system_intent"
+		outcome.CompilerStatus = "skipped"
+	} else {
+		compileStart := time.Now()
+		compileResult, err := compileProtocolResultWithCompiler(ctx, protocolInput{
+			Message:        input.Message,
+			ActiveWorkflow: workflowCtx,
+		}, p.deps.Compiler)
+		outcome.CompilerLatencyMs = elapsedMs(compileStart)
+		outcome.CompilerSource = string(compileResult.Source)
+		outcome.CompilerStatus = compileResult.LLMStatus
+		outcome.CompilerFallbackReason = compileResult.FallbackReason
+		draft = compileResult.Draft
+		if err != nil {
+			reason := "intent_parse_failed"
+			if errors.Is(err, context.DeadlineExceeded) {
+				reason = "intent_timeout"
+				outcome.CompilerStatus = "timeout"
+			} else {
+				outcome.CompilerStatus = "error"
+			}
+			draft = unknownIntentDraft(reason)
+		}
 	}
 	outcome.IntentDraftJSON = compactIntentDraft(draft)
 

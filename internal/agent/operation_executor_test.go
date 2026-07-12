@@ -490,6 +490,30 @@ func TestOperationExecutorSubscriptionCancelReturnsStableWriteStatuses(t *testin
 	}
 }
 
+func TestOperationExecutorUsesTransactionalIdempotentSubscriptionPort(t *testing.T) {
+	t.Parallel()
+	pushEnabled := false
+	groupSub := &executorFakeIdempotentGroupSubPort{startResult: tools.GroupSubWriteResult{WriteEffect: string(WriteStatusUpdated), PushEnabled: &pushEnabled}, cancelResult: tools.GroupSubWriteResult{WriteEffect: string(WriteStatusCancelled)}}
+	executor := newOperationExecutor(operationExecutorDeps{GroupSub: groupSub})
+	uctx := executorUserContext()
+	start := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{Operation: "subscription.start", IdempotencyKey: "start-key", TrustedParams: executorTrustedParams(map[string]any{"conversation_id": uctx.ConversationID, "scope": "all"})}, uctx))
+	startPayload, ok := start.Response.Payload.(OperationStatusPayload)
+	if !ok || startPayload.Status != WriteStatusUpdated || startPayload.PushEnabled == nil || *startPayload.PushEnabled {
+		t.Fatalf("start payload = %+v", start.Response.Payload)
+	}
+	if groupSub.startKey != "start-key" || groupSub.GetCalls != 0 || groupSub.SubscribeCalls != 0 {
+		t.Fatalf("start calls = %+v", groupSub)
+	}
+	cancel := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{Operation: "subscription.cancel", IdempotencyKey: "cancel-key", TrustedParams: executorTrustedParams(map[string]any{"conversation_id": uctx.ConversationID})}, uctx))
+	cancelPayload, ok := cancel.Response.Payload.(OperationStatusPayload)
+	if !ok || cancelPayload.Status != WriteStatusCancelled {
+		t.Fatalf("cancel payload = %+v", cancel.Response.Payload)
+	}
+	if groupSub.cancelKey != "cancel-key" || groupSub.UnsubscribeCalls != 0 {
+		t.Fatalf("cancel calls = %+v", groupSub)
+	}
+}
+
 func TestOperationExecutorSubscriptionOperationsBindConversationIDToRuntimeGroup(t *testing.T) {
 	t.Parallel()
 
@@ -782,6 +806,33 @@ type executorFakeGroupSubPort struct {
 	lastGroupName      string
 	lastEnabledByUID   uint
 	lastDeptIDs        []int64
+}
+
+type executorFakeIdempotentGroupSubPort struct {
+	startResult, cancelResult                  tools.GroupSubWriteResult
+	startKey, cancelKey                        string
+	GetCalls, SubscribeCalls, UnsubscribeCalls int
+}
+
+func (p *executorFakeIdempotentGroupSubPort) Subscribe(context.Context, uint, string, string, uint, []int64) error {
+	p.SubscribeCalls++
+	return nil
+}
+func (p *executorFakeIdempotentGroupSubPort) Unsubscribe(context.Context, uint, string) error {
+	p.UnsubscribeCalls++
+	return nil
+}
+func (p *executorFakeIdempotentGroupSubPort) GetSubscription(context.Context, uint, string) (*tools.GroupSubInfo, error) {
+	p.GetCalls++
+	return &tools.GroupSubInfo{}, nil
+}
+func (p *executorFakeIdempotentGroupSubPort) ExecuteSubscriptionStart(_ context.Context, key string, _ uint, _, _ string, _ uint, _ []int64) (tools.GroupSubWriteResult, error) {
+	p.startKey = key
+	return p.startResult, nil
+}
+func (p *executorFakeIdempotentGroupSubPort) ExecuteSubscriptionCancel(_ context.Context, key string, _ uint, _ string) (tools.GroupSubWriteResult, error) {
+	p.cancelKey = key
+	return p.cancelResult, nil
 }
 
 func (p *executorFakeGroupSubPort) Subscribe(_ context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64) error {

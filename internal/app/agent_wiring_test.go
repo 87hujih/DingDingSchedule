@@ -19,6 +19,7 @@ import (
 	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
 	"schedule_server/internal/service"
+	"schedule_server/internal/tenantctx"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -78,6 +79,84 @@ func TestAttendanceAdapterUsesRealtimeViewForCurrentSlot(t *testing.T) {
 	}
 }
 
+func TestOperationExecutionLedgerAdapterReloadsSucceededResult(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:ledger-restart?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.AgentOperationExecution{}); err != nil {
+		t.Fatal(err)
+	}
+	pushEnabled := false
+	row := model.AgentOperationExecution{TenantID: 7, BusinessKey: "business", ConversationID: "conv", Operation: "subscription.start", Status: model.AgentOperationStatusSucceeded, WriteEffect: model.AgentWriteEffectUpdated, ResultJSON: `{"push_enabled":false}`}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Recreate both repository and adapter to model a process restart.
+	adapter := &operationExecutionLedgerAdapter{repo: repository.NewAgentOperationExecutionRepository(db)}
+	got, err := adapter.FindSucceeded(context.Background(), 7, "business")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.WriteEffect != model.AgentWriteEffectUpdated || got.PushEnabled == nil || *got.PushEnabled != pushEnabled {
+		t.Fatalf("recovered=%+v", got)
+	}
+}
+
+type recoveryIntegrationExecutor struct{ calls int }
+
+func (e *recoveryIntegrationExecutor) Execute(context.Context, agentpkg.OperationRequest) agentpkg.OperationExecutionResult {
+	e.calls++
+	return agentpkg.OperationExecutionResult{}
+}
+
+func TestWorkflowAndLedgerDBRestartRecoversWithoutExecutor(t *testing.T) {
+	now := time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC)
+	db, err := gorm.Open(sqlite.Open("file:workflow-ledger-restart?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Use(repository.NewTenantScopePlugin()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.AgentWorkflow{}, &model.AgentOperationExecution{}); err != nil {
+		t.Fatal(err)
+	}
+	key := agentpkg.WorkflowKey{TenantID: 7, ConversationID: "conv", ActorUserID: 9}
+	ctx := tenantctx.WithTenantID(context.Background(), 7)
+	firstStore := newAgentWorkflowStore(repository.NewAgentWorkflowRepository(db), func() time.Time { return now })
+	created, err := firstStore.Create(ctx, key, &agentpkg.WorkflowSnapshot{ID: "wf", TenantID: 7, ConversationID: "conv", ActorUserID: 9, Type: agentpkg.WorkflowSubscriptionStart, State: agentpkg.WorkflowExecuting, ExecutionLease: &agentpkg.WorkflowExecutionLease{ExecutionToken: "original", Operation: "subscription.start", BusinessKey: "business", LeaseExpiresAt: now.Add(time.Minute)}, ExpiresAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := model.AgentOperationExecution{TenantID: 7, BusinessKey: "business", ConversationID: "conv", Operation: "subscription.start", Status: model.AgentOperationStatusSucceeded, WriteEffect: model.AgentWriteEffectCreated, ResultJSON: `{"push_enabled":true}`}
+	if err := db.WithContext(ctx).Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Rebuild both adapters, as a restarted process would.
+	restartedStore := newAgentWorkflowStore(repository.NewAgentWorkflowRepository(db), func() time.Time { return now })
+	restartedLedger := &operationExecutionLedgerAdapter{repo: repository.NewAgentOperationExecutionRepository(db)}
+	executor := &recoveryIntegrationExecutor{}
+	got, err := agentpkg.ExecuteWorkflowOperation(ctx, restartedStore, restartedLedger, func() time.Time { return now }, agentpkg.WorkflowExecutionRequest{Key: key, ExpectedVersion: created.Version, Workflow: created.Snapshot, Operation: agentpkg.OperationRequest{Operation: "subscription.start"}, BusinessKey: "business"}, executor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls=%d", executor.calls)
+	}
+	if got.OperationResult.Response.Kind != agentpkg.ResponseResult {
+		t.Fatalf("response=%+v", got.OperationResult.Response)
+	}
+	loaded, err := restartedStore.Load(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded != nil {
+		t.Fatalf("workflow remains after fenced recovery: %+v", loaded)
+	}
+}
+
 func TestGroupSubAdapterIncludesPushEnabledInSubscriptionInfo(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:group-sub-adapter-test?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
@@ -113,6 +192,35 @@ func TestGroupSubAdapterIncludesPushEnabledInSubscriptionInfo(t *testing.T) {
 	}
 	if info.PushEnabled {
 		t.Fatalf("PushEnabled = true, want false")
+	}
+}
+
+func TestGroupSubAdapterExecutesAndReplaysSubscriptionWrite(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:group-sub-ledger-adapter?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.GroupAttendanceSubscription{}, &model.AgentOperationExecution{}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &groupSubAdapter{repo: repository.NewGroupAttendanceSubscriptionRepository(db)}
+	first, err := adapter.ExecuteSubscriptionStart(context.Background(), "business-key", 1, "conv-1", "group", 10, []int64{102, 101})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := adapter.ExecuteSubscriptionStart(context.Background(), "business-key", 1, "conv-1", "changed", 99, []int64{999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.WriteEffect != model.AgentWriteEffectCreated || second.WriteEffect != first.WriteEffect {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+	var sub model.GroupAttendanceSubscription
+	if err := db.Where("tenant_id = ? AND conversation_id = ?", 1, "conv-1").First(&sub).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sub.GroupName != "group" || sub.DeptIDsJSON != "[101,102]" {
+		t.Fatalf("subscription mutated on replay: %+v", sub)
 	}
 }
 
@@ -329,6 +437,14 @@ func TestBuildAgentUsesConfiguredProtocolMode(t *testing.T) {
 	if got := field.String(); got != string(agentpkg.ProtocolModeLive) {
 		t.Fatalf("protocolMode = %q, want %q", got, agentpkg.ProtocolModeLive)
 	}
+
+	workflowStore := reflect.ValueOf(a).Elem().FieldByName("workflowStore")
+	if !workflowStore.IsValid() || workflowStore.IsNil() {
+		t.Fatalf("workflowStore = nil, want memory fallback")
+	}
+	if got := workflowStore.Elem().Type().String(); got != "*agent.memoryWorkflowStore" {
+		t.Fatalf("workflowStore type = %q, want memory workflow store", got)
+	}
 }
 
 func TestIntentCompilerTimeoutFromConfig(t *testing.T) {
@@ -393,6 +509,8 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 		RequestID:                  "req-v2-1",
 		ConversationID:             "conv-v2-1",
 		CompilerStatus:             "ok",
+		CompilerSource:             "fallback",
+		CompilerFallbackReason:     "llm_timeout",
 		CompilerLatencyMs:          11,
 		IntentDraftJSON:            `{"operation":"attendance.query_status","raw":"手机号 13812345678"}`,
 		CatalogValidationCode:      "allowed_read_query",
@@ -557,6 +675,9 @@ func TestCallLogAdapterPersistsDomainModeAndRetrievalDetails(t *testing.T) {
 	}
 	if row.CompilerStatus != "ok" || row.CompilerLatencyMs != 11 {
 		t.Fatalf("compiler fields = %q/%d, want ok/11", row.CompilerStatus, row.CompilerLatencyMs)
+	}
+	if row.CompilerSource != "fallback" || row.CompilerFallbackReason != "llm_timeout" {
+		t.Fatalf("compiler fallback fields = %q/%q, want fallback/llm_timeout", row.CompilerSource, row.CompilerFallbackReason)
 	}
 	if strings.Contains(row.IntentDraftJSON, "13812345678") {
 		t.Fatalf("IntentDraftJSON was not sanitized: %q", row.IntentDraftJSON)

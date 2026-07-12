@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,81 @@ import (
 
 	"go.uber.org/zap"
 )
+
+func TestProtocolLiveGoldenSystemIntentIsStableWhenCompilerFails(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		message     string
+		wantReply   string
+		compilerErr error
+	}{
+		{name: "help timeout", message: "你有什么功能", wantReply: "系统能力", compilerErr: context.DeadlineExceeded},
+		{name: "greeting error", message: "你好", wantReply: "你好", compilerErr: errors.New("compiler unavailable")},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			compiler := &protocolLiveGoldenCompiler{err: tt.compilerErr}
+			a := NewAgent(Deps{
+				ProtocolMode:   string(ProtocolModeLive),
+				IntentCompiler: compiler,
+				User:           testUserPort{},
+				Semester:       testSemesterPort{},
+				SchedulePeriod: testSchedulePeriodPort{},
+				Tenant:         testTenantPort{},
+				Logger:         zap.NewNop().Sugar(),
+			})
+			defer a.Stop()
+
+			reply, err := a.Chat(context.Background(), protocolLiveGoldenMessage(tt.message, "conv-system-intent-"+tt.name, "1"))
+			if err != nil {
+				t.Fatalf("Chat() error = %v", err)
+			}
+			if !strings.Contains(reply, tt.wantReply) {
+				t.Fatalf("reply = %q, want %q", reply, tt.wantReply)
+			}
+			if compiler.callCount() != 0 {
+				t.Fatalf("compiler calls = %d, want 0 for deterministic system intent", compiler.callCount())
+			}
+		})
+	}
+}
+
+func TestProtocolLiveGoldenMixedGreetingBusinessRequestUsesCompiler(t *testing.T) {
+	t.Parallel()
+
+	compiler := &protocolLiveGoldenCompiler{drafts: []ProtocolDraft{{
+		Act:        ActWriteRequest,
+		Domain:     DomainSubscription,
+		Operation:  "subscription.cancel",
+		Confidence: 0.95,
+	}}}
+	a := NewAgent(Deps{
+		ProtocolMode:   string(ProtocolModeLive),
+		IntentCompiler: compiler,
+		User:           testUserPort{},
+		Semester:       testSemesterPort{},
+		SchedulePeriod: testSchedulePeriodPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), protocolLiveGoldenMessage("你好，帮我取消订阅", "conv-mixed-greeting-business", "2"))
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if compiler.callCount() != 1 {
+		t.Fatalf("compiler calls = %d, want 1 for mixed business request", compiler.callCount())
+	}
+	if strings.HasPrefix(reply, "@Alice\n你好，我是") {
+		t.Fatalf("reply = %q, mixed business request was short-circuited as greeting", reply)
+	}
+}
 
 func TestProtocolLiveGoldenHelpDoesNotCallBusinessTools(t *testing.T) {
 	t.Parallel()
@@ -274,17 +350,29 @@ func assertProtocolLiveGoldenCallLog(t *testing.T, log agenttools.CallLog) {
 type protocolLiveGoldenCompiler struct {
 	mu     sync.Mutex
 	drafts []ProtocolDraft
+	err    error
+	calls  int
 }
 
 func (c *protocolLiveGoldenCompiler) Compile(context.Context, IntentCompileRequest) (IntentDraft, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.calls++
+	if c.err != nil {
+		return IntentDraft{}, c.err
+	}
 	if len(c.drafts) == 0 {
 		return unknownIntentDraft("unknown_intent"), nil
 	}
 	draft := c.drafts[0]
 	c.drafts = c.drafts[1:]
 	return draft, nil
+}
+
+func (c *protocolLiveGoldenCompiler) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
 }
 
 type protocolLiveGoldenSchedulePort struct {

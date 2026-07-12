@@ -17,19 +17,22 @@ type protocolWorkflowContext struct {
 
 // compileProtocolWithCompiler delegates draft classification to an injected compiler.
 func compileProtocolWithCompiler(ctx context.Context, input protocolInput, compiler IntentCompiler) (ProtocolDraft, error) {
+	result, err := compileProtocolResultWithCompiler(ctx, input, compiler)
+	return result.Draft, err
+}
+
+func compileProtocolResultWithCompiler(ctx context.Context, input protocolInput, compiler IntentCompiler) (OperationCompileResult, error) {
 	message := strings.TrimSpace(input.Message)
 	if message == "" {
-		return ProtocolDraft{Act: ActUnknown, Domain: DomainUnknown, Reason: "empty_message", ClarifyReason: "empty_message"}, nil
+		draft := ProtocolDraft{Act: ActUnknown, Domain: DomainUnknown, Reason: "empty_message", ClarifyReason: "empty_message"}
+		return OperationCompileResult{Draft: draft, Source: CompilerSourceDeterministic, LLMStatus: "not_invoked"}, nil
 	}
 
 	if compiler == nil {
-		return unknownIntentDraft("intent_compiler_unavailable"), nil
+		draft := unknownIntentDraft("intent_compiler_unavailable")
+		return OperationCompileResult{Draft: draft, Source: CompilerSourceDeterministic, LLMStatus: "not_invoked"}, nil
 	}
-	result, err := newOperationCompiler(compiler).Compile(ctx, input)
-	if err != nil {
-		return ProtocolDraft{}, err
-	}
-	return result.Draft, nil
+	return newOperationCompiler(compiler).Compile(ctx, input)
 }
 
 func intentCompileWorkflowContext(workflow *protocolWorkflowContext) *IntentCompileWorkflowContext {

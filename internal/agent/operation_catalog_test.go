@@ -103,6 +103,78 @@ func TestOperationCatalogLintPasses(t *testing.T) {
 	}
 }
 
+func TestOperationCatalogEveryManifestDeclaresValidAvailability(t *testing.T) {
+	t.Parallel()
+
+	for _, manifest := range operationManifests() {
+		if !validOperationAvailability(manifest.Availability) {
+			t.Fatalf("%s Availability = %q, want a valid availability", manifest.Name, manifest.Availability)
+		}
+	}
+}
+
+func TestOperationCatalogManualSignCapabilityIsAnswerOnly(t *testing.T) {
+	t.Parallel()
+
+	manifest, ok := lookupOperation("manual_sign.describe_capability")
+	if !ok {
+		t.Fatal("manual_sign.describe_capability missing")
+	}
+	if manifest.Availability != OperationAvailabilityAnswerOnly {
+		t.Fatalf("manual_sign.describe_capability Availability = %q, want %q",
+			manifest.Availability, OperationAvailabilityAnswerOnly)
+	}
+}
+
+func TestOperationCatalogManualSignCreateIsNotExecutable(t *testing.T) {
+	t.Parallel()
+
+	for _, manifest := range executableOperationManifests() {
+		if manifest.Name == "manual_sign.create" {
+			t.Fatal("manual_sign.create must not be executable")
+		}
+	}
+}
+
+func TestOperationCatalogAvailabilityFilters(t *testing.T) {
+	t.Parallel()
+
+	for _, manifest := range userVisibleOperationManifests() {
+		if manifest.Availability != OperationAvailabilityActive &&
+			manifest.Availability != OperationAvailabilityAnswerOnly {
+			t.Fatalf("%s is user-visible with availability %q", manifest.Name, manifest.Availability)
+		}
+	}
+	for _, manifest := range executableOperationManifests() {
+		if manifest.Availability != OperationAvailabilityActive {
+			t.Fatalf("%s is executable with availability %q", manifest.Name, manifest.Availability)
+		}
+	}
+}
+
+func TestOperationCatalogLintRejectsInvalidAvailability(t *testing.T) {
+	t.Parallel()
+
+	manifest := operationManifests()[0]
+	manifest.Availability = OperationAvailability("unknown")
+	if errs := lintOperationCatalog([]OperationManifest{manifest}); !containsString(errs, manifest.Name+": invalid availability") {
+		t.Fatalf("lintOperationCatalog() errors = %v, want invalid availability", errs)
+	}
+}
+
+func TestOperationCatalogLintRequiresCapabilityForAnswerOnly(t *testing.T) {
+	t.Parallel()
+
+	manifest, ok := lookupOperation("manual_sign.describe_capability")
+	if !ok {
+		t.Fatal("manual_sign.describe_capability missing")
+	}
+	manifest.Capability = nil
+	if errs := lintOperationCatalog([]OperationManifest{manifest}); !containsString(errs, manifest.Name+": answer_only requires capability binding") {
+		t.Fatalf("lintOperationCatalog() errors = %v, want answer_only capability binding error", errs)
+	}
+}
+
 func TestOperationCatalogWriteManifestsDeclareSafetyBindings(t *testing.T) {
 	t.Parallel()
 
@@ -297,4 +369,13 @@ func assertQueryShape(t *testing.T, metadata OperationMetadata, name string, req
 		return
 	}
 	t.Fatalf("%s query shape %s missing", metadata.Name, name)
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

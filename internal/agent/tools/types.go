@@ -99,6 +99,18 @@ type GroupSubPort interface {
 	GetSubscription(ctx context.Context, tenantID uint, conversationID string) (*GroupSubInfo, error)
 }
 
+// IdempotentGroupSubPort exposes transactional business-idempotent subscription writes.
+// GroupSubPort remains separate so read-only/test adapters do not need persistence details.
+type IdempotentGroupSubPort interface {
+	ExecuteSubscriptionStart(ctx context.Context, businessKey string, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64) (GroupSubWriteResult, error)
+	ExecuteSubscriptionCancel(ctx context.Context, businessKey string, tenantID uint, conversationID string) (GroupSubWriteResult, error)
+}
+
+type GroupSubWriteResult struct {
+	WriteEffect string `json:"write_effect"`
+	PushEnabled *bool  `json:"push_enabled,omitempty"`
+}
+
 // GroupSubInfo 群订阅状态
 type GroupSubInfo struct {
 	Subscribed  bool    `json:"subscribed"`
@@ -288,7 +300,9 @@ type CallLog struct {
 	ProtocolCandidateCount     int
 	RequestID                  string
 	ConversationID             string
+	CompilerSource             string
 	CompilerStatus             string
+	CompilerFallbackReason     string
 	CompilerLatencyMs          int64
 	IntentDraftJSON            string
 	CatalogValidationCode      string

@@ -51,6 +51,7 @@ const (
 	WriteStatusAlreadyExists WriteStatus = "already_exists"
 	WriteStatusUpdated       WriteStatus = "updated"
 	WriteStatusNoOp          WriteStatus = "no_op"
+	WriteStatusCancelled     WriteStatus = "cancelled"
 )
 
 type OperationStatusPayload struct {
@@ -213,14 +214,14 @@ func renderOperationStatus(payload OperationStatusPayload) string {
 		case WriteStatusNoOp:
 			return "此群考勤推送未发生变化。"
 		default:
-			return "已为此群开启考勤推送"
+			return "已为此群开启考勤推送。"
 		}
 	case "subscription_cancelled":
 		switch payload.Status {
 		case WriteStatusNoOp:
 			return "当前群还没有开启考勤自动推送，无需取消。"
 		default:
-			return "已取消此群的考勤自动推送"
+			return "已取消此群的考勤自动推送。"
 		}
 	default:
 		return ""

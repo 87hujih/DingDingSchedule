@@ -8,6 +8,13 @@ import (
 
 const shortFollowUpMaxRunes = 32
 
+type SystemIntent string
+
+const (
+	SystemIntentGreeting SystemIntent = "greeting"
+	SystemIntentHelp     SystemIntent = "help"
+)
+
 type conversationEvent string
 
 const (
@@ -21,6 +28,17 @@ const (
 type conversationDecision struct {
 	Event  conversationEvent
 	Reason string
+}
+
+func interpretSystemIntent(message string) SystemIntent {
+	switch normalizeQuery(message) {
+	case "你好", "您好", "hello", "hi", "嗨", "哈喽", "早上好", "上午好", "中午好", "下午好", "晚上好":
+		return SystemIntentGreeting
+	case "你有什么功能", "有什么功能", "你能做什么", "能做什么", "怎么用你", "如何使用你", "你会什么":
+		return SystemIntentHelp
+	default:
+		return ""
+	}
 }
 
 // interpretConversation handles interpret conversation.
