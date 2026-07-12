@@ -75,9 +75,31 @@ func BuildAgent(
 		UserCross:               attendanceSrv,
 		Tenant:                  &tenantAdapter{repo: repo.TenantRepo},
 		WorkflowStore:           newAgentWorkflowStore(repo.AgentWorkflowRepo, nil),
+		OperationLedger:         &operationExecutionLedgerAdapter{repo: repo.AgentOperationExecutionRepo},
 
 		Logger: global.Log,
 	})
+}
+
+type operationExecutionLedgerAdapter struct {
+	repo repository.AgentOperationExecutionRepository
+}
+
+func (a *operationExecutionLedgerAdapter) FindSucceeded(ctx context.Context, tenantID uint, businessKey string) (*agent.RecoveredOperationResult, error) {
+	if a == nil || a.repo == nil {
+		return nil, nil
+	}
+	row, err := a.repo.FindSucceeded(ctx, tenantID, businessKey)
+	if err != nil || row == nil {
+		return nil, err
+	}
+	var payload struct {
+		PushEnabled *bool `json:"push_enabled"`
+	}
+	if err := json.Unmarshal([]byte(row.ResultJSON), &payload); err != nil {
+		return nil, err
+	}
+	return &agent.RecoveredOperationResult{Operation: row.Operation, WriteEffect: row.WriteEffect, PushEnabled: payload.PushEnabled}, nil
 }
 
 func intentCompilerTimeoutFromConfig(cfg config.LLM) time.Duration {

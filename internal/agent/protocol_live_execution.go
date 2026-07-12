@@ -30,7 +30,7 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 		}
 	}
 	key := workflowKeyFromUserContext(uctx)
-	executed, err := newProtocolLiveExecutionCoordinator(p.deps.WorkflowStore, p.now).Execute(ctx, WorkflowExecutionRequest{
+	executed, err := newProtocolLiveExecutionCoordinator(p.deps.WorkflowStore, p.deps.OperationLedger, p.now).Execute(ctx, WorkflowExecutionRequest{
 		Key:             key,
 		ExpectedVersion: uint64(max(base.Version, 0)),
 		Workflow:        base,
@@ -41,12 +41,22 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 	if err != nil {
 		outcome.FailureLayer = FailureExecutor
 		outcome.BlockedReason = "workflow_execution_conflict"
-		if errors.Is(err, ErrWorkflowConflict) {
-			setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseRefuse, RefusalReason: "操作正在处理中，请稍后再试。"}, answerModeReject)
+		outcome.ExecutorStatus = "failed"
+		if errors.Is(err, ErrOperationLedgerLookup) {
+			outcome.BlockedReason = "operation_ledger_lookup_failed"
+			setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseRefuse, RefusalReason: "操作状态暂时无法确认，请稍后再试。"}, answerModeReject)
+		} else if errors.Is(err, ErrWorkflowConflict) {
+			outcome.BlockedReason = "workflow_processing"
+			outcome.ExecutorStatus = "blocked"
+			setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseRefuse, RefusalReason: processingReply}, answerModeReject)
 		} else {
 			setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseRefuse, RefusalReason: "操作暂时无法执行，请稍后再试。"}, answerModeReject)
 		}
 		return outcome
+	}
+	if executed.OperationResult.Response.RefusalReason == recoveryRequiredReply {
+		outcome.FailureLayer = FailureExecutor
+		outcome.BlockedReason = "workflow_recovery_required"
 	}
 	outcome.WorkflowStoreApplied = true
 	outcome.ClearWorkflow = executed.OperationResult.Response.Kind == ResponseResult

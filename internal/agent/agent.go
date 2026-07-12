@@ -38,6 +38,7 @@ type Deps struct {
 	IntentCompiler        IntentCompiler
 	IntentCompilerTimeout time.Duration
 	WorkflowStore         WorkflowStore
+	OperationLedger       OperationExecutionLedger
 
 	Schedule                SchedulePort
 	Attendance              AttendancePort
@@ -1423,13 +1424,14 @@ func (a *Agent) operationExecutor() operationExecutor {
 
 func (a *Agent) protocolLivePipeline() protocolLivePipeline {
 	return newProtocolLivePipeline(protocolLivePipelineDeps{
-		Compiler:       a.intentCompiler,
-		Executor:       a.operationExecutor(),
-		User:           a.deps.User,
-		Dept:           a.deps.Dept,
-		Semester:       a.deps.Semester,
-		SchedulePeriod: a.deps.SchedulePeriod,
-		WorkflowStore:  a.workflowStore,
+		Compiler:        a.intentCompiler,
+		Executor:        a.operationExecutor(),
+		User:            a.deps.User,
+		Dept:            a.deps.Dept,
+		Semester:        a.deps.Semester,
+		SchedulePeriod:  a.deps.SchedulePeriod,
+		WorkflowStore:   a.workflowStore,
+		OperationLedger: a.deps.OperationLedger,
 	})
 }
 

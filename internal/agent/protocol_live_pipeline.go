@@ -9,18 +9,19 @@ import (
 )
 
 type protocolLivePipelineDeps struct {
-	Compiler       IntentCompiler
-	Validator      CatalogValidator
-	PrePolicy      PrePolicyGate
-	ResourcePolicy ResourcePolicyGate
-	WriteGuard     WriteGuard
-	Executor       protocolOperationExecutor
-	User           UserPort
-	Dept           DeptPort
-	Semester       SemesterPort
-	SchedulePeriod SchedulePeriodPort
-	Clock          func() time.Time
-	WorkflowStore  WorkflowStore
+	Compiler        IntentCompiler
+	Validator       CatalogValidator
+	PrePolicy       PrePolicyGate
+	ResourcePolicy  ResourcePolicyGate
+	WriteGuard      WriteGuard
+	Executor        protocolOperationExecutor
+	User            UserPort
+	Dept            DeptPort
+	Semester        SemesterPort
+	SchedulePeriod  SchedulePeriodPort
+	Clock           func() time.Time
+	WorkflowStore   WorkflowStore
+	OperationLedger OperationExecutionLedger
 }
 
 type protocolOperationExecutor interface {

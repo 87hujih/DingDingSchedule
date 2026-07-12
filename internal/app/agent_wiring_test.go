@@ -19,6 +19,7 @@ import (
 	"schedule_server/internal/model"
 	"schedule_server/internal/repository"
 	"schedule_server/internal/service"
+	"schedule_server/internal/tenantctx"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -75,6 +76,84 @@ func TestAttendanceAdapterUsesRealtimeViewForCurrentSlot(t *testing.T) {
 	}
 	if !slices.Equal(result.LateUsers, []string{"LateUser"}) {
 		t.Fatalf("LateUsers = %v, want [LateUser]", result.LateUsers)
+	}
+}
+
+func TestOperationExecutionLedgerAdapterReloadsSucceededResult(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:ledger-restart?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.AgentOperationExecution{}); err != nil {
+		t.Fatal(err)
+	}
+	pushEnabled := false
+	row := model.AgentOperationExecution{TenantID: 7, BusinessKey: "business", ConversationID: "conv", Operation: "subscription.start", Status: model.AgentOperationStatusSucceeded, WriteEffect: model.AgentWriteEffectUpdated, ResultJSON: `{"push_enabled":false}`}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Recreate both repository and adapter to model a process restart.
+	adapter := &operationExecutionLedgerAdapter{repo: repository.NewAgentOperationExecutionRepository(db)}
+	got, err := adapter.FindSucceeded(context.Background(), 7, "business")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.WriteEffect != model.AgentWriteEffectUpdated || got.PushEnabled == nil || *got.PushEnabled != pushEnabled {
+		t.Fatalf("recovered=%+v", got)
+	}
+}
+
+type recoveryIntegrationExecutor struct{ calls int }
+
+func (e *recoveryIntegrationExecutor) Execute(context.Context, agentpkg.OperationRequest) agentpkg.OperationExecutionResult {
+	e.calls++
+	return agentpkg.OperationExecutionResult{}
+}
+
+func TestWorkflowAndLedgerDBRestartRecoversWithoutExecutor(t *testing.T) {
+	now := time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC)
+	db, err := gorm.Open(sqlite.Open("file:workflow-ledger-restart?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Use(repository.NewTenantScopePlugin()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.AgentWorkflow{}, &model.AgentOperationExecution{}); err != nil {
+		t.Fatal(err)
+	}
+	key := agentpkg.WorkflowKey{TenantID: 7, ConversationID: "conv", ActorUserID: 9}
+	ctx := tenantctx.WithTenantID(context.Background(), 7)
+	firstStore := newAgentWorkflowStore(repository.NewAgentWorkflowRepository(db), func() time.Time { return now })
+	created, err := firstStore.Create(ctx, key, &agentpkg.WorkflowSnapshot{ID: "wf", TenantID: 7, ConversationID: "conv", ActorUserID: 9, Type: agentpkg.WorkflowSubscriptionStart, State: agentpkg.WorkflowExecuting, ExecutionLease: &agentpkg.WorkflowExecutionLease{ExecutionToken: "original", Operation: "subscription.start", BusinessKey: "business", LeaseExpiresAt: now.Add(time.Minute)}, ExpiresAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := model.AgentOperationExecution{TenantID: 7, BusinessKey: "business", ConversationID: "conv", Operation: "subscription.start", Status: model.AgentOperationStatusSucceeded, WriteEffect: model.AgentWriteEffectCreated, ResultJSON: `{"push_enabled":true}`}
+	if err := db.WithContext(ctx).Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Rebuild both adapters, as a restarted process would.
+	restartedStore := newAgentWorkflowStore(repository.NewAgentWorkflowRepository(db), func() time.Time { return now })
+	restartedLedger := &operationExecutionLedgerAdapter{repo: repository.NewAgentOperationExecutionRepository(db)}
+	executor := &recoveryIntegrationExecutor{}
+	got, err := agentpkg.ExecuteWorkflowOperation(ctx, restartedStore, restartedLedger, func() time.Time { return now }, agentpkg.WorkflowExecutionRequest{Key: key, ExpectedVersion: created.Version, Workflow: created.Snapshot, Operation: agentpkg.OperationRequest{Operation: "subscription.start"}, BusinessKey: "business"}, executor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls=%d", executor.calls)
+	}
+	if got.OperationResult.Response.Kind != agentpkg.ResponseResult {
+		t.Fatalf("response=%+v", got.OperationResult.Response)
+	}
+	loaded, err := restartedStore.Load(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded != nil {
+		t.Fatalf("workflow remains after fenced recovery: %+v", loaded)
 	}
 }
 
