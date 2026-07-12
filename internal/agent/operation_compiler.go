@@ -163,29 +163,7 @@ func safeDeterministicFallback(message string, workflow *protocolWorkflowContext
 	if !ok {
 		return OperationArbiterDecision{}, false
 	}
-	switch candidate.Source {
-	case OperationCandidateSourceWorkflowCtrl:
-		if candidate.Draft.Act != ActWorkflowCancel || workflow == nil || candidate.Draft.Operation != workflow.Type {
-			return OperationArbiterDecision{}, false
-		}
-	case OperationCandidateSourceWorkflowSlot:
-		if candidate.Draft.Act != ActWorkflowContinue || workflow == nil || candidate.Draft.Operation != workflow.Type {
-			return OperationArbiterDecision{}, false
-		}
-		if _, exact := parseCandidateOrdinal(message); !exact {
-			return OperationArbiterDecision{}, false
-		}
-	case OperationCandidateSourceCatalogAlias:
-		if !actAllowed(candidate.Draft.Act, manifest.AllowedActs) {
-			return OperationArbiterDecision{}, false
-		}
-		if candidate.Confidence != 1 {
-			return OperationArbiterDecision{}, false
-		}
-		if manifest.IsWrite && manifest.Risk != RiskWriteLow {
-			return OperationArbiterDecision{}, false
-		}
-	default:
+	if !safeFallbackCandidate(message, workflow, candidate, manifest) {
 		return OperationArbiterDecision{}, false
 	}
 	decision := newOperationArbiter().Decide(OperationArbiterInput{
@@ -197,6 +175,35 @@ func safeDeterministicFallback(message string, workflow *protocolWorkflowContext
 		return OperationArbiterDecision{}, false
 	}
 	return decision, true
+}
+
+func safeFallbackCandidate(message string, workflow *protocolWorkflowContext, candidate OperationCandidate, manifest OperationManifest) bool {
+	switch candidate.Source {
+	case OperationCandidateSourceWorkflowCtrl:
+		if candidate.Draft.Act != ActWorkflowCancel || workflow == nil || candidate.Draft.Operation != workflow.Type {
+			return false
+		}
+	case OperationCandidateSourceWorkflowSlot:
+		if candidate.Draft.Act != ActWorkflowContinue || workflow == nil || candidate.Draft.Operation != workflow.Type {
+			return false
+		}
+		if _, exact := parseCandidateOrdinal(message); !exact {
+			return false
+		}
+	case OperationCandidateSourceCatalogAlias:
+		if !actAllowed(candidate.Draft.Act, manifest.AllowedActs) {
+			return false
+		}
+		if candidate.Confidence != 1 {
+			return false
+		}
+		if manifest.IsWrite && manifest.Risk != RiskWriteLow {
+			return false
+		}
+	default:
+		return false
+	}
+	return true
 }
 
 func equivalentFallbackCandidate(candidates []OperationCandidate) (OperationCandidate, bool) {

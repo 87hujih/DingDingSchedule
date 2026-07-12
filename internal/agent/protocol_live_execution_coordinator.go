@@ -73,14 +73,8 @@ func (c protocolLiveExecutionCoordinator) Execute(ctx context.Context, req Workf
 	if err != nil {
 		return WorkflowExecutionResult{}, fmt.Errorf("%w: %v", ErrOperationLedgerLookup, err)
 	}
-	if recovered != nil && req.Workflow != nil && req.Workflow.State == WorkflowExecuting && req.Workflow.ExecutionLease != nil {
-		// The durable ledger proves the business effect completed. Only the
-		// execution that owns the original version+token may clear its workflow;
-		// a conflict means a newer owner exists and must be left untouched.
-		if finalizeErr := c.store.FinalizeExecution(ctx, req.Key, req.ExpectedVersion, req.Workflow.ExecutionLease.ExecutionToken, nil); finalizeErr != nil && !errors.Is(finalizeErr, ErrWorkflowConflict) {
-			return WorkflowExecutionResult{}, finalizeErr
-		}
-		return WorkflowExecutionResult{OperationResult: recoveredExecutionResult(recovered)}, nil
+	if result, handled, err := c.finalizePreviouslySucceeded(ctx, req, recovered); handled {
+		return result, err
 	}
 	token := newExecutionToken()
 	reserved, err := c.store.ReserveExecution(ctx, req.Key, req.ExpectedVersion, req.Workflow, WorkflowExecutionLease{
@@ -95,25 +89,49 @@ func (c protocolLiveExecutionCoordinator) Execute(ctx context.Context, req Workf
 		return WorkflowExecutionResult{}, err
 	}
 	if recovered != nil {
-		result := recoveredExecutionResult(recovered)
-		if err := c.store.FinalizeExecution(ctx, req.Key, reserved.Version, token, nil); err != nil {
-			if recoveredAgain, recoverErr := c.recoverAfterFinalizeConflict(ctx, req); recoverErr == nil && recoveredAgain != nil {
-				return WorkflowExecutionResult{OperationResult: recoveredExecutionResult(recoveredAgain), Reserved: reserved}, nil
-			}
-			return WorkflowExecutionResult{OperationResult: result, Reserved: reserved}, err
-		}
-		return WorkflowExecutionResult{OperationResult: result, Reserved: reserved}, nil
+		return c.finalizeRecoveredReservation(ctx, req, reserved, token, recovered)
 	}
 	if req.Workflow != nil && req.Workflow.State == WorkflowExecuting && req.Workflow.ExecutionLease != nil && !req.Workflow.ExecutionLease.LeaseExpiresAt.After(now) {
 		next := cloneWorkflowSnapshot(req.Workflow)
 		next.State = WorkflowRecoveryRequired
-		result := OperationExecutionResult{Response: ResponseModel{Kind: ResponseRefuse, RefusalReason: recoveryRequiredReply}}
-		if err := c.store.FinalizeExecution(ctx, req.Key, reserved.Version, token, next); err != nil {
-			return WorkflowExecutionResult{OperationResult: result, Reserved: reserved}, err
-		}
-		return WorkflowExecutionResult{OperationResult: result, Reserved: reserved}, nil
+		return c.finalizeRecoveryRequired(ctx, req, reserved, token, next)
 	}
+	return c.executeReserved(ctx, req, reserved, token, executor)
+}
 
+func (c protocolLiveExecutionCoordinator) finalizePreviouslySucceeded(ctx context.Context, req WorkflowExecutionRequest, recovered *RecoveredOperationResult) (WorkflowExecutionResult, bool, error) {
+	if recovered == nil || req.Workflow == nil || req.Workflow.State != WorkflowExecuting || req.Workflow.ExecutionLease == nil {
+		return WorkflowExecutionResult{}, false, nil
+	}
+	// The durable ledger proves the business effect completed. Only the
+	// execution that owns the original version+token may clear its workflow;
+	// a conflict means a newer owner exists and must be left untouched.
+	if err := c.store.FinalizeExecution(ctx, req.Key, req.ExpectedVersion, req.Workflow.ExecutionLease.ExecutionToken, nil); err != nil && !errors.Is(err, ErrWorkflowConflict) {
+		return WorkflowExecutionResult{}, true, err
+	}
+	return WorkflowExecutionResult{OperationResult: recoveredExecutionResult(recovered)}, true, nil
+}
+
+func (c protocolLiveExecutionCoordinator) finalizeRecoveredReservation(ctx context.Context, req WorkflowExecutionRequest, reserved *VersionedWorkflow, token string, recovered *RecoveredOperationResult) (WorkflowExecutionResult, error) {
+	result := recoveredExecutionResult(recovered)
+	if err := c.store.FinalizeExecution(ctx, req.Key, reserved.Version, token, nil); err != nil {
+		if recoveredAgain, recoverErr := c.recoverAfterFinalizeConflict(ctx, req); recoverErr == nil && recoveredAgain != nil {
+			return WorkflowExecutionResult{OperationResult: recoveredExecutionResult(recoveredAgain), Reserved: reserved}, nil
+		}
+		return WorkflowExecutionResult{OperationResult: result, Reserved: reserved}, err
+	}
+	return WorkflowExecutionResult{OperationResult: result, Reserved: reserved}, nil
+}
+
+func (c protocolLiveExecutionCoordinator) finalizeRecoveryRequired(ctx context.Context, req WorkflowExecutionRequest, reserved *VersionedWorkflow, token string, next *WorkflowSnapshot) (WorkflowExecutionResult, error) {
+	result := OperationExecutionResult{Response: ResponseModel{Kind: ResponseRefuse, RefusalReason: recoveryRequiredReply}}
+	if err := c.store.FinalizeExecution(ctx, req.Key, reserved.Version, token, next); err != nil {
+		return WorkflowExecutionResult{OperationResult: result, Reserved: reserved}, err
+	}
+	return WorkflowExecutionResult{OperationResult: result, Reserved: reserved}, nil
+}
+
+func (c protocolLiveExecutionCoordinator) executeReserved(ctx context.Context, req WorkflowExecutionRequest, reserved *VersionedWorkflow, token string, executor WorkflowOperationExecutor) (WorkflowExecutionResult, error) {
 	result := executor.Execute(ctx, req.Operation)
 	var next *WorkflowSnapshot
 	if result.Response.Kind != ResponseResult {

@@ -141,76 +141,85 @@ func (r *groupAttendanceSubscriptionRepository) executeSubscriptionWrite(ctx con
 		return nil, fmt.Errorf("invalid agent operation identity")
 	}
 	for attempt := 0; attempt < 5; attempt++ {
-		var result *model.AgentOperationExecution
-		err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			execution := &model.AgentOperationExecution{TenantID: tenantID, BusinessKey: businessKey, ConversationID: conversationID, Operation: operation, Status: model.AgentOperationStatusExecuting, WriteEffect: model.AgentWriteEffectNoOp, ResultJSON: `{}`}
-			claim := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "tenant_id"}, {Name: "business_key"}}, DoNothing: true}).Create(execution)
-			if claim.Error != nil {
-				return claim.Error
-			}
-			if claim.RowsAffected == 0 {
-				return errAgentOperationAlreadyClaimed
-			}
-			effect, extra, err := mutate(tx)
-			if err != nil {
-				return err
-			}
-			if err := tx.Where("tenant_id = ? AND conversation_id = ? AND operation = ?", tenantID, conversationID, oppositeOperation).Delete(&model.AgentOperationExecution{}).Error; err != nil {
-				return err
-			}
-			if operation == "subscription.start" {
-				if err := tx.Where("tenant_id = ? AND conversation_id = ? AND operation = ? AND business_key <> ?", tenantID, conversationID, operation, businessKey).Delete(&model.AgentOperationExecution{}).Error; err != nil {
-					return err
-				}
-			}
-			payloadData := map[string]any{"operation": operation, "write_effect": effect}
-			for key, value := range extra {
-				payloadData[key] = value
-			}
-			payload, err := json.Marshal(payloadData)
-			if err != nil {
-				return err
-			}
-			execution.Status = model.AgentOperationStatusSucceeded
-			execution.WriteEffect = effect
-			execution.ResultJSON = string(payload)
-			if err := tx.Save(execution).Error; err != nil {
-				return err
-			}
-			result = execution
-			return nil
-		})
+		result, err := r.trySubscriptionWrite(ctx, tenantID, businessKey, conversationID, operation, oppositeOperation, mutate)
 		if err == nil {
 			return result, nil
 		}
-		if errors.Is(err, errAgentOperationAlreadyClaimed) {
-			existing, loadErr := NewAgentOperationExecutionRepository(r.db).FindSucceeded(ctx, tenantID, businessKey)
-			if loadErr != nil && !isRetryableSubscriptionWriteError(loadErr) {
-				return nil, loadErr
-			}
-			if existing != nil {
-				return existing, nil
-			}
-			if err := waitSubscriptionRetry(ctx, time.Duration(attempt+1)*time.Millisecond); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if !isRetryableSubscriptionWriteError(err) {
-			return nil, err
-		}
-		existing, loadErr := NewAgentOperationExecutionRepository(r.db).FindSucceeded(ctx, tenantID, businessKey)
-		if loadErr != nil && !isRetryableSubscriptionWriteError(loadErr) {
-			return nil, loadErr
-		}
-		if existing != nil {
-			return existing, nil
+		result, retry, err := r.resolveSubscriptionWriteError(ctx, tenantID, businessKey, err)
+		if err != nil || !retry || result != nil {
+			return result, err
 		}
 		if err := waitSubscriptionRetry(ctx, time.Duration(attempt+1)*time.Millisecond); err != nil {
 			return nil, err
 		}
 	}
 	return nil, fmt.Errorf("subscription write contention exceeded retries")
+}
+
+func (r *groupAttendanceSubscriptionRepository) trySubscriptionWrite(ctx context.Context, tenantID uint, businessKey, conversationID, operation, oppositeOperation string, mutate func(*gorm.DB) (string, map[string]any, error)) (*model.AgentOperationExecution, error) {
+	var result *model.AgentOperationExecution
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		execution := &model.AgentOperationExecution{TenantID: tenantID, BusinessKey: businessKey, ConversationID: conversationID, Operation: operation, Status: model.AgentOperationStatusExecuting, WriteEffect: model.AgentWriteEffectNoOp, ResultJSON: `{}`}
+		claim := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "tenant_id"}, {Name: "business_key"}}, DoNothing: true}).Create(execution)
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected == 0 {
+			return errAgentOperationAlreadyClaimed
+		}
+		effect, extra, err := mutate(tx)
+		if err != nil {
+			return err
+		}
+		if err := r.replaceSubscriptionLedger(tx, tenantID, businessKey, conversationID, operation, oppositeOperation); err != nil {
+			return err
+		}
+		payload, err := subscriptionExecutionPayload(operation, effect, extra)
+		if err != nil {
+			return err
+		}
+		execution.Status = model.AgentOperationStatusSucceeded
+		execution.WriteEffect = effect
+		execution.ResultJSON = string(payload)
+		if err := tx.Save(execution).Error; err != nil {
+			return err
+		}
+		result = execution
+		return nil
+	})
+	return result, err
+}
+
+func (r *groupAttendanceSubscriptionRepository) replaceSubscriptionLedger(tx *gorm.DB, tenantID uint, businessKey, conversationID, operation, oppositeOperation string) error {
+	if err := tx.Where("tenant_id = ? AND conversation_id = ? AND operation = ?", tenantID, conversationID, oppositeOperation).Delete(&model.AgentOperationExecution{}).Error; err != nil {
+		return err
+	}
+	if operation != "subscription.start" {
+		return nil
+	}
+	return tx.Where("tenant_id = ? AND conversation_id = ? AND operation = ? AND business_key <> ?", tenantID, conversationID, operation, businessKey).Delete(&model.AgentOperationExecution{}).Error
+}
+
+func subscriptionExecutionPayload(operation, effect string, extra map[string]any) ([]byte, error) {
+	payloadData := map[string]any{"operation": operation, "write_effect": effect}
+	for key, value := range extra {
+		payloadData[key] = value
+	}
+	return json.Marshal(payloadData)
+}
+
+func (r *groupAttendanceSubscriptionRepository) resolveSubscriptionWriteError(ctx context.Context, tenantID uint, businessKey string, writeErr error) (*model.AgentOperationExecution, bool, error) {
+	if !errors.Is(writeErr, errAgentOperationAlreadyClaimed) && !isRetryableSubscriptionWriteError(writeErr) {
+		return nil, false, writeErr
+	}
+	existing, loadErr := NewAgentOperationExecutionRepository(r.db).FindSucceeded(ctx, tenantID, businessKey)
+	if loadErr != nil && !isRetryableSubscriptionWriteError(loadErr) {
+		return nil, false, loadErr
+	}
+	if existing != nil {
+		return existing, false, nil
+	}
+	return nil, true, nil
 }
 
 func waitSubscriptionRetry(ctx context.Context, delay time.Duration) error {
