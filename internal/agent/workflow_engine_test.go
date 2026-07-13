@@ -95,6 +95,10 @@ func TestContinueSubscriptionWorkflowSwitchesDepartmentSelectionToAllScope(t *te
 			TrustedParams: map[string]TrustedParam{
 				"conversation_id": {Field: "conversation_id", Value: "conv-1", TenantID: 42},
 				"dept_ids":        {Field: "dept_ids", Value: []int64{101}, TenantID: 42},
+				"scope": trustedParam("scope", "department", 42, TrustedParamSource{
+					Kind:     TrustedParamSourceWorkflow,
+					Resolver: "subscription_scope",
+				}),
 			},
 		},
 	}
@@ -120,6 +124,13 @@ func TestContinueSubscriptionWorkflowSwitchesDepartmentSelectionToAllScope(t *te
 	}
 	if _, ok := result.Workflow.Trusted.TrustedParams["dept_ids"]; ok {
 		t.Fatalf("TrustedParams[dept_ids] = %+v, want removed", result.Workflow.Trusted.TrustedParams["dept_ids"])
+	}
+	scopeParam, ok := result.Workflow.Trusted.TrustedParams["scope"]
+	if !ok || scopeParam.Value != "all" || scopeParam.TenantID != 42 {
+		t.Fatalf("TrustedParams[scope] = %+v, want tenant-scoped all", scopeParam)
+	}
+	if scopeParam.Source.Kind != TrustedParamSourceWorkflow || scopeParam.Source.Resolver != "subscription_scope" {
+		t.Fatalf("TrustedParams[scope].Source = %+v, want preserved workflow provenance", scopeParam.Source)
 	}
 	if _, ok := result.Workflow.Trusted.TrustedParams["conversation_id"]; !ok {
 		t.Fatalf("TrustedParams = %+v, want tenant-scoped conversation_id preserved", result.Workflow.Trusted.TrustedParams)
