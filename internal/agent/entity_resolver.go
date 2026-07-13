@@ -624,7 +624,7 @@ func normalizedDepartmentMatches(raw string, departments []agenttools.DeptItem) 
 	matches := make([]agenttools.DeptItem, 0)
 	for _, department := range departments {
 		name := normalizeEntityName(department.Name)
-		for _, variant := range entityNameVariants(raw) {
+		for _, variant := range departmentNameVariants(raw) {
 			if name == variant {
 				matches = append(matches, department)
 				break
@@ -636,6 +636,15 @@ func normalizedDepartmentMatches(raw string, departments []agenttools.DeptItem) 
 
 func containsEntityVariant(normalizedName, raw string) bool {
 	for _, variant := range entityNameVariants(raw) {
+		if variant != "" && strings.Contains(normalizedName, variant) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsDepartmentVariant(normalizedName, raw string) bool {
+	for _, variant := range departmentNameVariants(raw) {
 		if variant != "" && strings.Contains(normalizedName, variant) {
 			return true
 		}
@@ -660,6 +669,17 @@ func entityNameVariants(value string) []string {
 	return variants
 }
 
+func departmentNameVariants(value string) []string {
+	variants := entityNameVariants(value)
+	for _, variant := range append([]string(nil), variants...) {
+		trimmed := strings.TrimSuffix(variant, "部门")
+		if trimmed != variant && trimmed != "" && !stringSliceContains(variants, trimmed) {
+			variants = append(variants, trimmed)
+		}
+	}
+	return variants
+}
+
 func stringSliceContains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -673,7 +693,7 @@ func stringSliceContains(values []string, target string) bool {
 func departmentCandidates(raw string, departments []agenttools.DeptItem) []agenttools.DeptItem {
 	matches := make([]agenttools.DeptItem, 0)
 	for _, candidate := range departments {
-		if containsEntityVariant(normalizeEntityName(candidate.Name), raw) {
+		if containsDepartmentVariant(normalizeEntityName(candidate.Name), raw) {
 			matches = append(matches, candidate)
 		}
 	}

@@ -1,5 +1,7 @@
 package agent
 
+import "strings"
+
 type CandidateSelectionInput struct {
 	Field      string
 	Message    string
@@ -15,6 +17,30 @@ type CandidateSelectionResult struct {
 }
 
 func resolveCandidateSelection(input CandidateSelectionInput) CandidateSelectionResult {
+	if ordinal, label, ok := parseRenderedCandidateSelection(input.Message); ok {
+		if ordinal > len(input.Candidates) {
+			return CandidateSelectionResult{Handled: true, Reason: "candidate_ordinal_out_of_range"}
+		}
+		candidate := input.Candidates[ordinal-1]
+		if label != "" {
+			labelMatches := false
+			for _, variant := range entityNameVariants(label) {
+				if normalizeEntityName(candidate.Label) == variant {
+					labelMatches = true
+					break
+				}
+			}
+			if !labelMatches {
+				return CandidateSelectionResult{
+					Handled:   true,
+					Candidate: candidate,
+					Reason:    "candidate_ordinal_label_mismatch",
+				}
+			}
+		}
+		return validateCandidateTenant(candidate, input.TenantID)
+	}
+
 	if ordinal, ok := parseCandidateOrdinal(input.Message); ok {
 		if ordinal > len(input.Candidates) {
 			return CandidateSelectionResult{Handled: true, Reason: "candidate_ordinal_out_of_range"}
@@ -30,6 +56,21 @@ func resolveCandidateSelection(input CandidateSelectionInput) CandidateSelection
 		}
 	}
 	return CandidateSelectionResult{Reason: "candidate_not_found"}
+}
+
+func parseRenderedCandidateSelection(message string) (int, string, bool) {
+	message = strings.TrimSpace(message)
+	for index, separator := range message {
+		switch separator {
+		case '.', '、', ':', '：', ')':
+			ordinal, ok := parseCandidateOrdinal(strings.TrimSpace(message[:index]))
+			if !ok {
+				return 0, "", false
+			}
+			return ordinal, strings.TrimSpace(message[index+len(string(separator)):]), true
+		}
+	}
+	return 0, "", false
 }
 
 func validateCandidateTenant(candidate Candidate, tenantID uint) CandidateSelectionResult {
