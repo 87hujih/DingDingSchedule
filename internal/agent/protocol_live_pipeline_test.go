@@ -1051,7 +1051,15 @@ func TestProtocolLivePipelineSubscriptionSwitchesDepartmentSelectionToAllScope(t
 			DepartmentID: 101,
 			DeptIDs:      []int64{101},
 			TrustedParams: map[string]TrustedParam{
+				"conversation_id": trustedParam("conversation_id", "conv-1", 42, TrustedParamSource{
+					Kind:     TrustedParamSourceRuntime,
+					Resolver: "conversation_runtime",
+				}),
 				"dept_ids": {Field: "dept_ids", Value: []int64{101}, TenantID: 42},
+				"scope": trustedParam("scope", "department", 42, TrustedParamSource{
+					Kind:     TrustedParamSourceWorkflow,
+					Resolver: "subscription_scope",
+				}),
 			},
 		},
 	}
@@ -1076,6 +1084,9 @@ func TestProtocolLivePipelineSubscriptionSwitchesDepartmentSelectionToAllScope(t
 	}
 	if !outcome.ClearWorkflow {
 		t.Fatalf("ClearWorkflow = false, want true")
+	}
+	if outcome.WorkflowAfter != nil {
+		t.Fatalf("WorkflowAfter = %+v, want nil after successful completion", outcome.WorkflowAfter)
 	}
 }
 

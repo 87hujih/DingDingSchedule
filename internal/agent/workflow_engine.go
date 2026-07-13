@@ -113,6 +113,17 @@ func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft
 		if trusted.Scope == "all" {
 			workflow.Trusted.Scope = trusted.Scope
 			mergeTrustedParams(&workflow.Trusted, trusted.TrustedParams)
+			if scopeParam, ok := workflow.Trusted.TrustedParams["scope"]; ok {
+				scopeParam.Field = "scope"
+				scopeParam.Value = trusted.Scope
+				if scopeParam.TenantID == 0 {
+					scopeParam.TenantID = trusted.TenantID
+					if scopeParam.TenantID == 0 {
+						scopeParam.TenantID = workflow.Trusted.TenantID
+					}
+				}
+				workflow.Trusted.TrustedParams["scope"] = scopeParam
+			}
 			workflow.Trusted.DepartmentID = 0
 			workflow.Trusted.DeptIDs = nil
 			delete(workflow.Trusted.TrustedParams, "dept_ids")
