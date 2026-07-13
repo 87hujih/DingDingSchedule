@@ -31,6 +31,43 @@ func TestResolveCandidateSelectionMatchesOrdinalAndLabel(t *testing.T) {
 	}
 }
 
+func TestResolveCandidateSelectionMatchesRenderedOrdinalAndLabel(t *testing.T) {
+	t.Parallel()
+
+	candidates := []Candidate{
+		{ID: "101", Label: "26鹰飞前端", Value: int64(101), TenantID: 42},
+		{ID: "1083420327", Label: "26暑期智能体开发训练营", Value: int64(1083420327), TenantID: 42},
+	}
+
+	for _, message := range []string{
+		"2. 26暑期智能体开发训练营",
+		"二、26暑期智能体开发训练营",
+		"2: 26暑期智能体开发训练营",
+		"2：26暑期智能体开发训练营",
+		"2) 26暑期智能体开发训练营",
+	} {
+		matched := resolveCandidateSelection(CandidateSelectionInput{
+			Field:      "dept_ids",
+			Message:    message,
+			TenantID:   42,
+			Candidates: candidates,
+		})
+		if !matched.Handled || !matched.OK || matched.Candidate.ID != "1083420327" {
+			t.Fatalf("rendered selection for %q = %+v, want candidate 1083420327", message, matched)
+		}
+	}
+
+	mismatch := resolveCandidateSelection(CandidateSelectionInput{
+		Field:      "dept_ids",
+		Message:    "1. 26暑期智能体开发训练营",
+		TenantID:   42,
+		Candidates: candidates,
+	})
+	if !mismatch.Handled || mismatch.OK || mismatch.Reason != "candidate_ordinal_label_mismatch" {
+		t.Fatalf("mismatched rendered selection = %+v, want candidate_ordinal_label_mismatch", mismatch)
+	}
+}
+
 func TestResolveCandidateSelectionRejectsCrossTenantCandidate(t *testing.T) {
 	t.Parallel()
 

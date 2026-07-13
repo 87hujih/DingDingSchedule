@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -969,6 +970,57 @@ func TestProtocolLivePipelineDepartmentOrdinalUsesCurrentWorkflowCandidates(t *t
 	}
 	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 125 {
 		t.Fatalf("lastDeptIDs = %v, want [125] from workflow candidates", groupSub.lastDeptIDs)
+	}
+}
+
+func TestProtocolLivePipelineSubscriptionExecutesRenderedDepartmentSelection(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.9,
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+	})
+	workflow := &WorkflowSnapshot{
+		ID:           "wf-sub",
+		Type:         WorkflowSubscriptionStart,
+		State:        WorkflowCollectDepartments,
+		MissingSlots: []string{"dept_names"},
+		Trusted: trustedEntities{
+			Scope: "department",
+		},
+		Candidates: map[string][]Candidate{
+			"dept_ids": {
+				{ID: "101", Label: "26鹰飞前端", Value: int64(101), TenantID: 42},
+				{ID: "102", Label: "26鹰飞后端", Value: int64(102), TenantID: 42},
+				{ID: "1083420327", Label: "26暑期智能体开发训练营", Value: int64(1083420327), TenantID: 42},
+				{ID: "104", Label: "全栈二期预备队", Value: int64(104), TenantID: 42},
+			},
+		},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "3. 26暑期智能体开发训练营",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	}
+	if !slices.Equal(groupSub.lastDeptIDs, []int64{1083420327}) {
+		t.Fatalf("lastDeptIDs = %v, want [1083420327]", groupSub.lastDeptIDs)
+	}
+	if outcome.Response.Kind != ResponseResult {
+		t.Fatalf("Response = %+v, want result", outcome.Response)
+	}
+	if !outcome.ClearWorkflow {
+		t.Fatalf("ClearWorkflow = false, want true")
 	}
 }
 

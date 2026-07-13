@@ -430,6 +430,21 @@ func TestResolveDepartmentSlotReturnsCanonicalDepartmentID(t *testing.T) {
 	}
 }
 
+func TestResolveDepartmentSlotAcceptsDepartmentSuffix(t *testing.T) {
+	t.Parallel()
+
+	result := resolveDepartmentSlot("26暑期智能体开发训练营部门", []agenttools.DeptItem{
+		{TenantID: 2, DeptID: 1083420327, Name: "26暑期智能体开发训练营"},
+	})
+	if result.Status != ResolveResolved {
+		t.Fatalf("Status = %q, want %q: %+v", result.Status, ResolveResolved, result)
+	}
+	ids, ok := result.Value.([]int64)
+	if !ok || len(ids) != 1 || ids[0] != 1083420327 {
+		t.Fatalf("Value = %v, want dept ids [1083420327]", result.Value)
+	}
+}
+
 func TestResolveDepartmentSlotReturnsStructuredAmbiguousCandidates(t *testing.T) {
 	t.Parallel()
 
