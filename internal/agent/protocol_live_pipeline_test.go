@@ -1024,6 +1024,57 @@ func TestProtocolLivePipelineSubscriptionExecutesRenderedDepartmentSelection(t *
 	}
 }
 
+func TestProtocolLivePipelineRejectsRenderedDepartmentSelectionMismatch(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.9,
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+	})
+	workflow := &WorkflowSnapshot{
+		ID:           "wf-sub",
+		Type:         WorkflowSubscriptionStart,
+		State:        WorkflowCollectDepartments,
+		MissingSlots: []string{"dept_names"},
+		Trusted: trustedEntities{
+			Scope: "department",
+		},
+		Candidates: map[string][]Candidate{
+			"dept_ids": {
+				{ID: "101", Label: "研发部", Value: int64(101), TenantID: 42},
+				{ID: "102", Label: "1.研发部", Value: int64(102), TenantID: 42},
+			},
+		},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "1.研发部",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 for conflicting ordinal and label", groupSub.subscribeCalls)
+	}
+	if outcome.Response.Kind != ResponseClarify || outcome.Response.Operation != "subscription.start" ||
+		!slices.Equal(outcome.Response.MissingFields, []string{"dept_names"}) {
+		t.Fatalf("Response = %+v, want subscription.start clarification for dept_names", outcome.Response)
+	}
+	if outcome.ClearWorkflow {
+		t.Fatal("ClearWorkflow = true, want conflicting selection to retain workflow")
+	}
+	if outcome.WorkflowAfter == nil || outcome.WorkflowAfter.State != WorkflowCollectDepartments ||
+		len(outcome.WorkflowAfter.Candidates["dept_ids"]) != 2 {
+		t.Fatalf("WorkflowAfter = %+v, want collect_departments with original candidates", outcome.WorkflowAfter)
+	}
+}
+
 func TestProtocolLivePipelineTimeoutExecutesRenderedDepartmentSelection(t *testing.T) {
 	t.Parallel()
 
