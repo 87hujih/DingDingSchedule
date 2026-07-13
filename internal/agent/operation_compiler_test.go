@@ -103,6 +103,36 @@ func TestOperationCompilerProducesWorkflowSlotCandidateForActiveWorkflowInput(t 
 	}
 }
 
+func TestOperationCompilerRenderedCandidateSelectionSkipsLLM(t *testing.T) {
+	t.Parallel()
+
+	intent := &countingIntentCompiler{result: IntentCompileResult{
+		Draft:  IntentDraft{Act: ActUnknown, Domain: DomainUnknown, Reason: "should_not_be_called"},
+		Status: IntentCompileUnknown,
+	}}
+	compiler := newOperationCompiler(intent)
+
+	result, err := compiler.Compile(context.Background(), protocolInput{
+		Message: "3. 26暑期智能体开发训练营",
+		ActiveWorkflow: &protocolWorkflowContext{
+			Type:          "subscription.start",
+			MissingFields: []string{"dept_names"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if intent.calls != 0 {
+		t.Fatalf("LLM Compile() calls = %d, want 0", intent.calls)
+	}
+	if result.Source != CompilerSourceDeterministic || result.LLMInvoked {
+		t.Fatalf("Source=%q LLMInvoked=%v, want deterministic/false", result.Source, result.LLMInvoked)
+	}
+	if result.Draft.Act != ActWorkflowContinue || result.Draft.Operation != "subscription.start" {
+		t.Fatalf("Draft = %+v, want subscription.start workflow continue", result.Draft)
+	}
+}
+
 func operationCandidatesContain(candidates []OperationCandidate, operation string, source OperationCandidateSource) bool {
 	_, ok := findOperationCandidate(candidates, operation, source)
 	return ok

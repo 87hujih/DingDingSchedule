@@ -330,7 +330,7 @@ func workflowSlotCanShortCircuit(message string, kind CandidateMatchKind) bool {
 }
 
 func workflowSlotMatchKind(message string, workflow *protocolWorkflowContext) CandidateMatchKind {
-	if _, ok := parseCandidateOrdinal(message); ok {
+	if isCandidateSelectionShape(message) {
 		return MatchExactCandidate
 	}
 	normalized := normalizeQuery(message)

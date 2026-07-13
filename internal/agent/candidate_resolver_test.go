@@ -68,6 +68,23 @@ func TestResolveCandidateSelectionMatchesRenderedOrdinalAndLabel(t *testing.T) {
 	}
 }
 
+func TestResolveCandidateSelectionRejectsConflictingFullLabelAndRenderedSelection(t *testing.T) {
+	t.Parallel()
+
+	result := resolveCandidateSelection(CandidateSelectionInput{
+		Field:    "dept_ids",
+		Message:  "1.研发部",
+		TenantID: 42,
+		Candidates: []Candidate{
+			{ID: "101", Label: "研发部", Value: int64(101), TenantID: 42},
+			{ID: "102", Label: "1.研发部", Value: int64(102), TenantID: 42},
+		},
+	})
+	if !result.Handled || result.OK || result.Reason != "candidate_ordinal_label_mismatch" {
+		t.Fatalf("conflicting full-label/rendered selection = %+v, want candidate_ordinal_label_mismatch", result)
+	}
+}
+
 func TestResolveCandidateSelectionRejectsCrossTenantCandidate(t *testing.T) {
 	t.Parallel()
 

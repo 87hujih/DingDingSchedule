@@ -42,6 +42,26 @@ func TestResolveDepartmentNormalizedUniqueMatch(t *testing.T) {
 	}
 }
 
+func TestResolveDepartmentPrefersFullNormalizedNameOverSuffixAlias(t *testing.T) {
+	t.Parallel()
+
+	departments := []agenttools.DeptItem{
+		{DeptID: 101, Name: "研发"},
+		{DeptID: 102, Name: "研发部门"},
+	}
+
+	resolved := resolveDepartment(entityContext{Raw: "研 发 部 门", Departments: departments})
+	if resolved.Status != ResolveResolved || resolved.Department == nil || resolved.Department.DeptID != 102 {
+		t.Fatalf("resolveDepartment() = %+v, want resolved department 102", resolved)
+	}
+
+	slot := resolveDepartmentSlot("研 发 部 门", departments)
+	ids, ok := slot.Value.([]int64)
+	if slot.Status != ResolveResolved || !ok || len(ids) != 1 || ids[0] != 102 {
+		t.Fatalf("resolveDepartmentSlot() = %+v, want resolved department ID 102", slot)
+	}
+}
+
 func TestResolveDepartmentIgnoresSelectionPrefix(t *testing.T) {
 	t.Parallel()
 
