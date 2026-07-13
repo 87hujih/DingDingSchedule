@@ -187,7 +187,7 @@ func safeFallbackCandidate(message string, workflow *protocolWorkflowContext, ca
 		if candidate.Draft.Act != ActWorkflowContinue || workflow == nil || candidate.Draft.Operation != workflow.Type {
 			return false
 		}
-		if _, exact := parseCandidateOrdinal(message); !exact {
+		if !isCandidateSelectionShape(message) {
 			return false
 		}
 	case OperationCandidateSourceCatalogAlias:
@@ -302,7 +302,7 @@ func messageMatchesWorkflowSlotShape(message string, workflow *protocolWorkflowC
 			if looksLikeEntityInput(message) {
 				return true
 			}
-			if _, ok := parseCandidateOrdinal(message); ok {
+			if isCandidateSelectionShape(message) {
 				return true
 			}
 		}

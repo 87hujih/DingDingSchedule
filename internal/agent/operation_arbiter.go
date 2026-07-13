@@ -59,7 +59,7 @@ func deterministicOperationDecision(input OperationArbiterInput) (OperationArbit
 	switch candidate.Source {
 	case OperationCandidateSourceCatalogAlias, OperationCandidateSourceWorkflowCtrl:
 	case OperationCandidateSourceWorkflowSlot:
-		if _, ok := parseCandidateOrdinal(input.Message); !ok {
+		if !isCandidateSelectionShape(input.Message) {
 			return OperationArbiterDecision{}, false
 		}
 	default:

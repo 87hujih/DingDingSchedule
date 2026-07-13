@@ -193,6 +193,35 @@ func TestOperationCompilerProducesWorkflowSlotCandidateForActiveWorkflowInput(t 
 	}
 }
 
+func TestOperationCompilerRenderedCandidateSelectionSkipsLLM(t *testing.T) {
+	t.Parallel()
+
+	intent := &recordingIntentCompiler{
+		draft: IntentDraft{Act: ActUnknown, Domain: DomainUnknown, Reason: "should_not_be_called"},
+	}
+	compiler := newOperationCompiler(intent)
+
+	result, err := compiler.Compile(context.Background(), protocolInput{
+		Message: "3. 26暑期智能体开发训练营",
+		ActiveWorkflow: &protocolWorkflowContext{
+			Type:          "subscription.start",
+			MissingFields: []string{"dept_names"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if len(intent.requests) != 0 {
+		t.Fatalf("LLM Compile() calls = %d, want 0", len(intent.requests))
+	}
+	if result.Source != CompilerSourceDeterministic || result.LLMInvoked {
+		t.Fatalf("Source=%q LLMInvoked=%v, want deterministic/false", result.Source, result.LLMInvoked)
+	}
+	if result.Draft.Act != ActWorkflowContinue || result.Draft.Operation != "subscription.start" {
+		t.Fatalf("Draft = %+v, want subscription.start workflow continue", result.Draft)
+	}
+}
+
 func TestOperationCompilerFallsBackToExactReadOnLLMTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -294,6 +323,20 @@ func TestSafeDeterministicFallbackAllowsExactWorkflowControlAndSelection(t *test
 	}
 	if decision, ok := safeDeterministicFallback("第一个", workflow, []OperationCandidate{selection}); !ok || decision.Kind != OperationArbiterDecisionWorkflowContinue {
 		t.Fatalf("workflow selection decision=%+v ok=%v", decision, ok)
+	}
+}
+
+func TestOperationCompilerSafeFallbackAllowsRenderedCandidateSelection(t *testing.T) {
+	t.Parallel()
+
+	workflow := &protocolWorkflowContext{Type: "subscription.start", MissingFields: []string{"dept_names"}}
+	selection := OperationCandidate{
+		Draft:  ProtocolDraft{Act: ActWorkflowContinue, Domain: DomainSubscription, Operation: "subscription.start"},
+		Source: OperationCandidateSourceWorkflowSlot, Confidence: 1,
+	}
+	decision, ok := safeDeterministicFallback("3. 26暑期智能体开发训练营", workflow, []OperationCandidate{selection})
+	if !ok || decision.Kind != OperationArbiterDecisionWorkflowContinue {
+		t.Fatalf("rendered workflow selection decision=%+v ok=%v, want workflow continue", decision, ok)
 	}
 }
 

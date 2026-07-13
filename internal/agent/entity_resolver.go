@@ -621,10 +621,27 @@ func exactDepartmentMatches(raw string, departments []agenttools.DeptItem) []age
 }
 
 func normalizedDepartmentMatches(raw string, departments []agenttools.DeptItem) []agenttools.DeptItem {
+	variants := entityNameVariants(raw)
+	matches := normalizedDepartmentMatchesForVariants(variants, departments)
+	if len(matches) > 0 {
+		return matches
+	}
+
+	aliases := make([]string, 0, len(variants))
+	for _, variant := range variants {
+		alias := strings.TrimSuffix(variant, "部门")
+		if alias != variant && alias != "" && !stringSliceContains(aliases, alias) {
+			aliases = append(aliases, alias)
+		}
+	}
+	return normalizedDepartmentMatchesForVariants(aliases, departments)
+}
+
+func normalizedDepartmentMatchesForVariants(variants []string, departments []agenttools.DeptItem) []agenttools.DeptItem {
 	matches := make([]agenttools.DeptItem, 0)
 	for _, department := range departments {
 		name := normalizeEntityName(department.Name)
-		for _, variant := range departmentNameVariants(raw) {
+		for _, variant := range variants {
 			if name == variant {
 				matches = append(matches, department)
 				break

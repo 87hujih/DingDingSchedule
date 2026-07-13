@@ -17,11 +17,33 @@ type CandidateSelectionResult struct {
 }
 
 func resolveCandidateSelection(input CandidateSelectionInput) CandidateSelectionResult {
+	fullLabelIndex := -1
+	for _, variant := range entityNameVariants(input.Message) {
+		for index, candidate := range input.Candidates {
+			if normalizeEntityName(candidate.Label) == variant {
+				fullLabelIndex = index
+				break
+			}
+		}
+		if fullLabelIndex >= 0 {
+			break
+		}
+	}
+
 	if ordinal, label, ok := parseRenderedCandidateSelection(input.Message); ok {
 		if ordinal > len(input.Candidates) {
+			if fullLabelIndex >= 0 {
+				return validateCandidateTenant(input.Candidates[fullLabelIndex], input.TenantID)
+			}
 			return CandidateSelectionResult{Handled: true, Reason: "candidate_ordinal_out_of_range"}
 		}
 		candidate := input.Candidates[ordinal-1]
+		if fullLabelIndex >= 0 {
+			if fullLabelIndex != ordinal-1 {
+				return CandidateSelectionResult{Handled: true, Reason: "candidate_ordinal_label_mismatch"}
+			}
+			return validateCandidateTenant(candidate, input.TenantID)
+		}
 		if label != "" {
 			labelMatches := false
 			for _, variant := range entityNameVariants(label) {
@@ -48,12 +70,8 @@ func resolveCandidateSelection(input CandidateSelectionInput) CandidateSelection
 		return validateCandidateTenant(input.Candidates[ordinal-1], input.TenantID)
 	}
 
-	for _, variant := range entityNameVariants(input.Message) {
-		for _, candidate := range input.Candidates {
-			if normalizeEntityName(candidate.Label) == variant {
-				return validateCandidateTenant(candidate, input.TenantID)
-			}
-		}
+	if fullLabelIndex >= 0 {
+		return validateCandidateTenant(input.Candidates[fullLabelIndex], input.TenantID)
 	}
 	return CandidateSelectionResult{Reason: "candidate_not_found"}
 }
@@ -71,6 +89,14 @@ func parseRenderedCandidateSelection(message string) (int, string, bool) {
 		}
 	}
 	return 0, "", false
+}
+
+func isCandidateSelectionShape(message string) bool {
+	if _, ok := parseCandidateOrdinal(message); ok {
+		return true
+	}
+	_, label, ok := parseRenderedCandidateSelection(message)
+	return ok && strings.TrimSpace(label) != ""
 }
 
 func validateCandidateTenant(candidate Candidate, tenantID uint) CandidateSelectionResult {
