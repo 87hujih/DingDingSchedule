@@ -26,23 +26,28 @@
 
 ### 1. 部门名规范化
 
-部门 resolver 保留完整原文精确匹配，再增加部门专用变体：仅剔除末尾语义后缀 `部门`。例如 `26暑期智能体开发训练营部门` 可与 `26暑期智能体开发训练营` 匹配。该规则不进入用户名或其他实体 resolver，避免扩大误匹配面。
+部门 resolver 保留完整原文精确匹配和完整 normalized 匹配，再增加部门专用变体：仅剔除末尾语义后缀 `部门`。后缀别名只在完整 normalized 零命中时启用，避免同租户同时存在 `研发` 与 `研发部门` 时把明确的完整名称降级为歧义。例如 `26暑期智能体开发训练营部门` 可与 `26暑期智能体开发训练营` 匹配。该规则不进入用户名或其他实体 resolver，避免扩大误匹配面。
 
 ### 2. 候选选择解析
 
-候选 resolver 支持纯序号、精确标签以及 Agent 展示格式 `3. 标签`。当同时存在序号和标签时，必须校验二者指向同一候选；不一致时返回可观测的 mismatch，不能仅信任序号而选错部门。租户 ID 校验仍由 `validateCandidateTenant` 完成。
+候选 resolver 支持纯序号、精确标签以及 Agent 展示格式 `3. 标签`。当同时存在序号和标签时，必须校验二者指向同一候选；不一致时返回可观测的 mismatch，不能仅信任序号而选错部门。若 `1.研发部` 同时是某候选的完整合法名称、又能解释为另一候选的展示格式，必须 fail closed，不能静默选择任一方。租户 ID 校验仍由 `validateCandidateTenant` 完成。
 
-### 3. workflow 范围切换
+### 3. 确定性编译与安全降级
+
+workflow 已处于候选选择状态时，纯序号和合法的 `序号 + 分隔符 + 非空标签` 语法都由 deterministic compiler 识别，无需依赖 LLM。LLM 超时或错误时，safe fallback 使用同一语法判断继续 workflow；它只判断输入形状，不信任标签、候选 ID 或 tenant，最终标签一致性和租户校验仍由 candidate resolver 完成。
+
+### 4. workflow 范围切换
 
 `collect_departments` 先识别明确的 `全部人员` / `全部` 范围。切换为 `scope=all` 时必须清空 workflow 中旧的部门 ID 及 `dept_ids` trusted param，然后进入 `ready_to_execute`。这保证用户能从部门选择阶段安全改为全员订阅。
 
-### 4. 错误提示
+### 5. 错误提示
 
 workflow 解析失败时，ResponseModel 携带当前 operation 和真实 `MissingFields`。对 `subscription.start + dept_names` 渲染为“请从部门选项中选择，或输入准确部门名”；`scope` 缺失仍保留现有范围提示。
 
 ## 测试与验收
 
-- 单元测试覆盖部门后缀规范化、`3. 标签` 选择、序号/标签不一致拒绝和跨租户拒绝。
+- 单元测试覆盖部门后缀规范化与完整名称优先级、`3. 标签` 选择、数字开头完整标签冲突、序号/标签不一致拒绝和跨租户拒绝。
+- compiler 与 pipeline 测试覆盖 LLM 超时/错误时的 rendered selection 安全降级，确认正确输入执行、mismatch 不执行。
 - pipeline 测试回放生产对话，断言订阅 executor 被调用、可信 `dept_ids` 正确、结果为成功且 workflow 被清除。
 - pipeline 测试覆盖 `collect_departments -> 全部人员`，断言执行参数不含部门 ID。
 - renderer 测试覆盖 `dept_names` 与 `scope` 两类不同提示。

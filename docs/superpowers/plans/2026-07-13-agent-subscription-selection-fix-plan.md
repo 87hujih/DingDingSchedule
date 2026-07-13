@@ -193,6 +193,14 @@ Run: `go test ./internal/agent -run "Test(ResolveCandidateSelection|ResolveDepar
 
 Expected: PASS，无 warning/panic。
 
+- [ ] **Step 3: 加固审查发现的解析优先级**
+
+增加回归测试并修复：数字开头的完整合法标签与 rendered selection 指向不同候选时 fail closed；完整 normalized 部门名称优先于去 `部门` 后缀的别名。
+
+- [ ] **Step 4: 验证 LLM 不可用时的确定性路径**
+
+让 compiler 和 safe fallback 共享 candidate selection shape 判断，并增加 LLM timeout/error pipeline 回放。正确的 `3. 标签` 必须到达 executor；序号/标签 mismatch 和跨租户候选仍不得执行。
+
 ### Task 4: 全量验证、审查和推送
 
 **Files:**
@@ -206,9 +214,9 @@ Expected: PASS，无 warning/panic。
 
 Run: `gofmt -w internal/agent/entity_resolver.go internal/agent/entity_resolver_test.go internal/agent/candidate_resolver.go internal/agent/candidate_resolver_test.go internal/agent/workflow_engine.go internal/agent/workflow_engine_test.go internal/agent/protocol_live_subscription_workflow.go internal/agent/protocol_live_pipeline_test.go internal/agent/response_renderer.go internal/agent/response_renderer_test.go`
 
-Run: `gofmt -l internal/agent`
+Run: `gofmt -l <本分支修改的 Go 文件>`
 
-Expected: 第二条无输出。
+Expected: 第二条无输出。仓库基线在 Windows checkout 下保留 CRLF，因此只检查本分支修改文件，避免把未改文件的行尾差异误报为格式问题。
 
 - [ ] **Step 2: Agent 包、race 和全仓测试**
 
