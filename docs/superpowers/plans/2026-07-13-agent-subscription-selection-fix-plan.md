@@ -25,6 +25,7 @@
 - Modify: `internal/agent/entity_resolver_test.go`
 - Modify: `internal/agent/candidate_resolver.go`
 - Modify: `internal/agent/candidate_resolver_test.go`
+- Modify: `internal/agent/protocol_live_pipeline_test.go`
 
 **Interfaces:**
 - Consumes: `entityNameVariants(string) []string`, `parseCandidateOrdinal(string) (int, bool)`, `validateCandidateTenant(Candidate, uint)`.
@@ -83,13 +84,30 @@ Run: `go test ./internal/agent -run TestResolveCandidateSelectionMatchesRendered
 
 Expected: FAIL，旧 parser 无法识别 `2. 标签`。
 
-- [ ] **Step 5: 实现最小规范化和候选校验**
+- [ ] **Step 5: 写生产候选回放红灯**
+
+复用现有订阅 pipeline fixture，构造 `collect_departments` workflow 及 4 个生产候选，输入 `3. 26暑期智能体开发训练营`，断言：
+
+```go
+if groupSub.subscribeCalls != 1 || !reflect.DeepEqual(groupSub.lastDeptIDs, []int64{1083420327}) {
+	t.Fatalf("calls=%d deptIDs=%v", groupSub.subscribeCalls, groupSub.lastDeptIDs)
+}
+if !outcome.ClearWorkflow || outcome.Response.Kind != ResponseResult {
+	t.Fatalf("outcome = %+v", outcome)
+}
+```
+
+Run: `go test ./internal/agent -run TestProtocolLivePipelineSubscriptionExecutesRenderedDepartmentSelection -count=1 -v`
+
+Expected: FAIL，旧 pipeline 停在 `entity_not_found` 且 executor 调用数为 0。
+
+- [ ] **Step 6: 实现最小规范化和候选校验**
 
 `departmentNameVariants` 先返回现有变体，再仅对末尾 `部门` 增加剔除变体；部门精确/归一化/候选匹配改用该函数。候选 resolver 解析行首阿拉伯数字或中文序号及 `.`, `、`, `:`, `：`, `)` 分隔符；存在剩余标签时对比选中候选的 `entityNameVariants`。
 
-- [ ] **Step 6: 运行 Task 1 绿灯**
+- [ ] **Step 7: 运行 Task 1 绿灯**
 
-Run: `go test ./internal/agent -run "TestResolve(DepartmentSlotAcceptsDepartmentSuffix|CandidateSelection)" -count=1 -v`
+Run: `go test ./internal/agent -run "Test(ResolveDepartmentSlotAcceptsDepartmentSuffix|ResolveCandidateSelection|ProtocolLivePipelineSubscriptionExecutesRenderedDepartmentSelection)" -count=1 -v`
 
 Expected: PASS，包括旧纯序号、精确标签和跨租户测试。
 
@@ -99,6 +117,7 @@ Expected: PASS，包括旧纯序号、精确标签和跨租户测试。
 - Modify: `internal/agent/workflow_engine.go`
 - Modify: `internal/agent/workflow_engine_test.go`
 - Modify: `internal/agent/protocol_live_subscription_workflow.go`
+- Modify: `internal/agent/protocol_live_pipeline_test.go`
 - Modify: `internal/agent/response_renderer.go`
 - Modify: `internal/agent/response_renderer_test.go`
 
@@ -133,61 +152,42 @@ func TestRenderProtocolResponseClarifiesMissingSubscriptionDepartments(t *testin
 }
 ```
 
-- [ ] **Step 3: 运行红灯**
+- [ ] **Step 3: 写 all-scope pipeline 回放红灯**
 
-Run: `go test ./internal/agent -run "Test(ContinueSubscriptionWorkflowSwitchesDepartmentSelectionToAllScope|RenderProtocolResponseClarifiesMissingSubscriptionDepartments)" -count=1 -v`
+构造带部门候选与旧 dept trusted data 的 `collect_departments` workflow，输入 `全部人员`，断言 `subscribeCalls == 1`、`lastDeptIDs` 为空、ResponseResult 且 workflow 清除。
+
+- [ ] **Step 4: 运行红灯**
+
+Run: `go test ./internal/agent -run "Test(ContinueSubscriptionWorkflowSwitchesDepartmentSelectionToAllScope|RenderProtocolResponseClarifiesMissingSubscriptionDepartments|ProtocolLivePipelineSubscriptionSwitchesDepartmentSelectionToAllScope)" -count=1 -v`
 
 Expected: FAIL，旧 workflow 拒绝 all scope，旧 renderer 无部门缺失提示。
 
-- [ ] **Step 4: 实现最小状态转移和结构化 clarify**
+- [ ] **Step 5: 实现最小状态转移和结构化 clarify**
 
 在 `WorkflowCollectDepartments` 对 `trusted.Scope == "all"` 设置 all scope、清理 department fields/param 并返回 ready。在 `resolveSubscriptionTrustedEntities` 的部门收集状态先识别 all scope。解析失败时 ResponseModel 填入 `Operation: startOperation` 和 `MissingFields: workflowMissingFields(activeWorkflow)`。`renderMissingFieldsClarify` 增加 `dept_names` 文案。
 
-- [ ] **Step 5: 运行 Task 2 绿灯**
+- [ ] **Step 6: 运行 Task 2 绿灯**
 
-Run: `go test ./internal/agent -run "Test(ContinueSubscriptionWorkflow|RenderProtocolResponseClarifiesMissingSubscription)" -count=1 -v`
+Run: `go test ./internal/agent -run "Test(ContinueSubscriptionWorkflow|RenderProtocolResponseClarifiesMissingSubscription|ProtocolLivePipelineSubscriptionSwitchesDepartmentSelectionToAllScope)" -count=1 -v`
 
 Expected: PASS。
 
-### Task 3: 生产对话 pipeline 回放
+### Task 3: 生产对话与相关回归验证
 
 **Files:**
-- Modify: `internal/agent/protocol_live_pipeline_test.go`
+- Verify: `internal/agent/protocol_live_pipeline_test.go`
 
 **Interfaces:**
 - Consumes: existing `executorFakeGroupSubPort`, `protocolLivePipeline`, workflow candidates and trusted params.
-- Produces: 端到端证据，确认 resolver 结果实际到达 subscription executor。
+- Produces: 端到端绿灯证据，确认 Tasks 1-2 已先红后绿的 resolver/workflow 结果实际到达 subscription executor。
 
-- [ ] **Step 1: 写候选回放红灯**
-
-复用现有订阅 pipeline fixture，构造 `collect_departments` workflow 及 4 个生产候选，输入 `3. 26暑期智能体开发训练营`，断言：
-
-```go
-if groupSub.subscribeCalls != 1 || !reflect.DeepEqual(groupSub.lastDeptIDs, []int64{1083420327}) {
-	t.Fatalf("calls=%d deptIDs=%v", groupSub.subscribeCalls, groupSub.lastDeptIDs)
-}
-if !outcome.ClearWorkflow || outcome.Response.Kind != ResponseResult {
-	t.Fatalf("outcome = %+v", outcome)
-}
-```
-
-- [ ] **Step 2: 写 all-scope 回放红灯**
-
-使用同样 `collect_departments` workflow 输入 `全部人员`，断言 `subscribeCalls == 1`、`lastDeptIDs` 为空、ResponseResult 且 workflow 清除。
-
-- [ ] **Step 3: 运行 pipeline 红灯**
+- [ ] **Step 1: 重跑生产候选回放**
 
 Run: `go test ./internal/agent -run "TestProtocolLivePipelineSubscription(ExecutesRenderedDepartmentSelection|SwitchesDepartmentSelectionToAllScope)" -count=1 -v`
 
-Expected: 两个测试均 FAIL，且失败点分别是 executor 未调用和 workflow 未进入 ready。
-
-- [ ] **Step 4: 运行实现后 pipeline 绿灯**
-
-Run: 同 Step 3。
-
 Expected: PASS。
 
-- [ ] **Step 5: 运行相关回归**
+- [ ] **Step 2: 运行相关回归**
 
 Run: `go test ./internal/agent -run "Test(ResolveCandidateSelection|ResolveDepartment|ContinueSubscriptionWorkflow|ProtocolLivePipeline.*Subscription|RenderProtocolResponseClarifiesMissingSubscription)" -count=1 -v`
 
