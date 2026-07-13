@@ -76,7 +76,12 @@ func (p protocolLivePipeline) handleSubscription(ctx context.Context, input prot
 			setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseSelectOptions, Options: responseOptionsFromEntityCandidates(resolved.Candidates)}, answerModeToolFirst)
 			return outcome
 		}
-		setProtocolOutcomeResponse(&outcome, ResponseModel{Kind: ResponseClarify, ClarifyReason: "subscription_missing_fields"}, answerModeToolFirst)
+		setProtocolOutcomeResponse(&outcome, ResponseModel{
+			Kind:          ResponseClarify,
+			Operation:     startOperation,
+			ClarifyReason: "subscription_missing_fields",
+			MissingFields: workflowMissingFields(activeWorkflow),
+		}, answerModeToolFirst)
 		if len(activeWorkflow.MissingSlots) > 0 {
 			outcome.BlockedReason = "missing_" + activeWorkflow.MissingSlots[0]
 		}
@@ -172,6 +177,10 @@ func (p protocolLivePipeline) resolveSubscriptionTrustedEntities(ctx context.Con
 			return p.resolveSubscriptionDepartmentSelection(ctx, message, tenantID)
 		}
 	case WorkflowCollectDepartments:
+		normalized := normalizeQuery(message)
+		if normalized == "全部人员" || normalized == "全部" {
+			return trustedEntities{TenantID: tenantID, Scope: "all"}, ResolveResult{}, true
+		}
 		if trusted, handled, ok := workflowDepartmentCandidateSelection(workflow, message, tenantID); handled {
 			trusted.TenantID = tenantID
 			return trusted, ResolveResult{}, ok
