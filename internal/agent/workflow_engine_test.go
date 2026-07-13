@@ -80,6 +80,55 @@ func TestWorkflowEngineAdvancesDepartmentSubscriptionToReady(t *testing.T) {
 	}
 }
 
+func TestContinueSubscriptionWorkflowSwitchesDepartmentSelectionToAllScope(t *testing.T) {
+	t.Parallel()
+
+	wf := WorkflowSnapshot{
+		Type:          WorkflowSubscriptionStart,
+		State:         WorkflowCollectDepartments,
+		MissingFields: []string{"dept_names"},
+		Trusted: trustedEntities{
+			TenantID:     42,
+			Scope:        "department",
+			DepartmentID: 101,
+			DeptIDs:      []int64{101},
+			TrustedParams: map[string]TrustedParam{
+				"conversation_id": {Field: "conversation_id", Value: "conv-1", TenantID: 42},
+				"dept_ids":        {Field: "dept_ids", Value: []int64{101}, TenantID: 42},
+			},
+		},
+	}
+	result := continueWorkflow(wf, ProtocolDraft{
+		Act:       ActWorkflowContinue,
+		Operation: "subscription.start",
+	}, trustedEntities{
+		TenantID: 42,
+		Scope:    "all",
+	})
+
+	if result.Decision != WorkflowReadyToExecute {
+		t.Fatalf("Decision = %q, want %q", result.Decision, WorkflowReadyToExecute)
+	}
+	if result.Workflow == nil || result.Workflow.State != WorkflowReady {
+		t.Fatalf("Workflow = %+v, want ready", result.Workflow)
+	}
+	if result.Workflow.Trusted.Scope != "all" {
+		t.Fatalf("Trusted.Scope = %q, want all", result.Workflow.Trusted.Scope)
+	}
+	if result.Workflow.Trusted.DepartmentID != 0 || len(result.Workflow.Trusted.DeptIDs) != 0 {
+		t.Fatalf("department IDs = %d/%v, want cleared", result.Workflow.Trusted.DepartmentID, result.Workflow.Trusted.DeptIDs)
+	}
+	if _, ok := result.Workflow.Trusted.TrustedParams["dept_ids"]; ok {
+		t.Fatalf("TrustedParams[dept_ids] = %+v, want removed", result.Workflow.Trusted.TrustedParams["dept_ids"])
+	}
+	if _, ok := result.Workflow.Trusted.TrustedParams["conversation_id"]; !ok {
+		t.Fatalf("TrustedParams = %+v, want tenant-scoped conversation_id preserved", result.Workflow.Trusted.TrustedParams)
+	}
+	if len(workflowMissingFields(result.Workflow)) != 0 {
+		t.Fatalf("missing fields = %v, want none", workflowMissingFields(result.Workflow))
+	}
+}
+
 func TestWorkflowEngineReturnsMetaForDepartmentList(t *testing.T) {
 	t.Parallel()
 

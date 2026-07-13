@@ -398,6 +398,9 @@ func renderMissingFieldsClarify(operation string, fields []string) string {
 	if operation == "subscription.start" && containsField(fields, "scope") {
 		return "请选择订阅范围：全部人员 / 指定部门。"
 	}
+	if operation == "subscription.start" && containsField(fields, "dept_names") {
+		return "请从部门选项中选择，或输入准确部门名。"
+	}
 	if operation == "attendance.query_status" && containsField(fields, "section") {
 		return "请补充要查询第几节。"
 	}

@@ -110,6 +110,16 @@ func continueSubscriptionWorkflow(workflow WorkflowSnapshot, draft ProtocolDraft
 			return WorkflowResult{Decision: WorkflowRejectInvalidShape, Workflow: &workflow}
 		}
 	case WorkflowCollectDepartments:
+		if trusted.Scope == "all" {
+			workflow.Trusted.Scope = trusted.Scope
+			mergeTrustedParams(&workflow.Trusted, trusted.TrustedParams)
+			workflow.Trusted.DepartmentID = 0
+			workflow.Trusted.DeptIDs = nil
+			delete(workflow.Trusted.TrustedParams, "dept_ids")
+			workflow.State = WorkflowReady
+			setWorkflowMissingFields(&workflow, nil)
+			return WorkflowResult{Decision: WorkflowReadyToExecute, Workflow: &workflow}
+		}
 		deptIDs := trusted.DeptIDs
 		if len(deptIDs) == 0 && trusted.DepartmentID != 0 {
 			deptIDs = []int64{trusted.DepartmentID}

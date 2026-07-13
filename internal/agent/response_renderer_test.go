@@ -38,6 +38,22 @@ func TestRenderProtocolResponseClarifiesMissingSubscriptionScope(t *testing.T) {
 	}
 }
 
+func TestRenderProtocolResponseClarifiesMissingSubscriptionDepartments(t *testing.T) {
+	t.Parallel()
+
+	reply := renderProtocolResponse(ResponseModel{
+		Kind:          ResponseClarify,
+		Operation:     "subscription.start",
+		MissingFields: []string{"dept_names"},
+	})
+	if !strings.Contains(reply, "部门选项") || !strings.Contains(reply, "准确部门名") {
+		t.Fatalf("reply = %q, want department selection guidance", reply)
+	}
+	if strings.Contains(reply, "选择订阅范围") {
+		t.Fatalf("reply = %q, should not ask for subscription scope", reply)
+	}
+}
+
 func TestRenderProtocolResponseClarifiesMissingAttendanceSection(t *testing.T) {
 	t.Parallel()
 

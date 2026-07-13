@@ -1024,6 +1024,130 @@ func TestProtocolLivePipelineSubscriptionExecutesRenderedDepartmentSelection(t *
 	}
 }
 
+func TestProtocolLivePipelineSubscriptionSwitchesDepartmentSelectionToAllScope(t *testing.T) {
+	t.Parallel()
+
+	groupSub := &executorFakeGroupSubPort{}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.9,
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
+	})
+	workflow := &WorkflowSnapshot{
+		ID:             "wf-sub",
+		TenantID:       42,
+		ActorUserID:    7,
+		ConversationID: "conv-1",
+		Type:           WorkflowSubscriptionStart,
+		State:          WorkflowCollectDepartments,
+		MissingFields:  []string{"dept_names"},
+		Trusted: trustedEntities{
+			TenantID:     42,
+			Scope:        "department",
+			DepartmentID: 101,
+			DeptIDs:      []int64{101},
+			TrustedParams: map[string]TrustedParam{
+				"dept_ids": {Field: "dept_ids", Value: []int64{101}, TenantID: 42},
+			},
+		},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "全部人员",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if groupSub.subscribeCalls != 1 {
+		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	}
+	if len(groupSub.lastDeptIDs) != 0 {
+		t.Fatalf("lastDeptIDs = %v, want all scope with no department IDs", groupSub.lastDeptIDs)
+	}
+	if groupSub.lastTenantID != 42 || groupSub.lastConversationID != "conv-1" || groupSub.lastEnabledByUID != 7 {
+		t.Fatalf("executor context = tenant:%d conversation:%q actor:%d, want tenant-scoped workflow context", groupSub.lastTenantID, groupSub.lastConversationID, groupSub.lastEnabledByUID)
+	}
+	if outcome.Response.Kind != ResponseResult {
+		t.Fatalf("Response = %+v, want result", outcome.Response)
+	}
+	if !outcome.ClearWorkflow {
+		t.Fatalf("ClearWorkflow = false, want true")
+	}
+}
+
+func TestResolveSubscriptionTrustedEntitiesDoesNotTreatDepartmentNameContainingAllAsAllScope(t *testing.T) {
+	t.Parallel()
+
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Dept: executorFakeDeptPort{depts: []tools.DeptItem{
+			{TenantID: 42, DeptID: 125, Name: "全部门店运营部"},
+		}},
+	})
+	workflow := &WorkflowSnapshot{
+		Type:  WorkflowSubscriptionStart,
+		State: WorkflowCollectDepartments,
+	}
+
+	trusted, _, ok := pipeline.resolveSubscriptionTrustedEntities(context.Background(), "全部门店运营部", workflow, 42)
+	if !ok {
+		t.Fatalf("resolveSubscriptionTrustedEntities() ok = false, want department resolution")
+	}
+	if trusted.Scope != "department" || !slices.Equal(trusted.DeptIDs, []int64{125}) {
+		t.Fatalf("trusted = %+v, want department scope [125]", trusted)
+	}
+}
+
+func TestProtocolLivePipelineSubscriptionClarifiesMissingDepartmentSelection(t *testing.T) {
+	t.Parallel()
+
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActWorkflowContinue,
+			Domain:     DomainSubscription,
+			Operation:  "subscription.start",
+			Confidence: 0.9,
+		}},
+		Executor: newOperationExecutor(operationExecutorDeps{}),
+		Dept: executorFakeDeptPort{depts: []tools.DeptItem{
+			{TenantID: 42, DeptID: 125, Name: "信工25级"},
+		}},
+	})
+	workflow := &WorkflowSnapshot{
+		ID:            "wf-sub",
+		Type:          WorkflowSubscriptionStart,
+		State:         WorkflowCollectDepartments,
+		MissingFields: []string{"dept_names"},
+		Trusted: trustedEntities{
+			TenantID: 42,
+			Scope:    "department",
+		},
+	}
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message:        "不存在的部门",
+		User:           executorUserContext(),
+		ActiveWorkflow: workflow,
+	})
+
+	if outcome.Response.Kind != ResponseClarify {
+		t.Fatalf("Response = %+v, want clarify", outcome.Response)
+	}
+	if outcome.Response.Operation != "subscription.start" || !slices.Equal(outcome.Response.MissingFields, []string{"dept_names"}) {
+		t.Fatalf("Response = %+v, want subscription.start missing dept_names", outcome.Response)
+	}
+	reply := renderProtocolResponse(outcome.Response)
+	if !strings.Contains(reply, "部门选项") || !strings.Contains(reply, "准确部门名") {
+		t.Fatalf("reply = %q, want department selection guidance", reply)
+	}
+	if strings.Contains(reply, "选择订阅范围") {
+		t.Fatalf("reply = %q, should not ask for subscription scope", reply)
+	}
+}
+
 func TestProtocolLivePipelineDepartmentOrdinalContinuesWhenCompilerReturnsUnknown(t *testing.T) {
 	t.Parallel()
 
