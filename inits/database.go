@@ -16,6 +16,17 @@ import (
 
 // DBInit 初始化 MySQL 数据库连接
 func DBInit() {
+	db, err := OpenDB()
+	if err != nil {
+		global.Log.Fatalf("连接数据库失败: %v", err)
+	}
+	global.DB = db
+	global.Log.Info("数据库连接成功")
+}
+
+// OpenDB creates the configured MySQL connection without terminating the
+// process, allowing release preflight commands to restore config on failure.
+func OpenDB() (*gorm.DB, error) {
 	cfg := global.AppConfig.Database
 
 	db, err := gorm.Open(mysql.Open(cfg.DSN()), &gorm.Config{
@@ -32,12 +43,12 @@ func DBInit() {
 		),
 	})
 	if err != nil {
-		global.Log.Fatalf("连接数据库失败: %v", err)
+		return nil, err
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
-		global.Log.Fatalf("获取 sql.DB 失败: %v", err)
+		return nil, err
 	}
 
 	// 连接池配置
@@ -51,8 +62,7 @@ func DBInit() {
 		sqlDB.SetConnMaxLifetime(time.Hour) // 默认 1 小时
 	}
 
-	global.DB = db
-	global.Log.Info("数据库连接成功")
+	return db, nil
 }
 
 // AutoMigrate 自动化迁移表

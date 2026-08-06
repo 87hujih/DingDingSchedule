@@ -241,6 +241,17 @@ jobs:
             PRECHECK_NETWORK_ARGS=(--network container:schedule-server)
           fi
 
+          echo "Preparing Agent production config and reviewed database migrations"
+          docker run --rm \
+            --user 0:0 \
+            "\${PRECHECK_NETWORK_ARGS[@]}" \
+            -e CONFIG_ENV=prod \
+            -e CONFIG_PATH=/app/configs \
+            -e AGENT_RELEASE_RUN_ID="${GITHUB_RUN_ID}" \
+            -v "\${CONFIG_DIR_VALUE}:/app/configs" \
+            "${IMAGE_REPO}:${IMAGE_TAG}" \
+            /app/schedule_server agent-release-prepare
+
           echo "Running Agent production config and database preflight against \${CONFIG_DIR_VALUE}/prod.yaml"
           docker run --rm \
             "\${PRECHECK_NETWORK_ARGS[@]}" \

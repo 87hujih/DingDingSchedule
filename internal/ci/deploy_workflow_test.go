@@ -254,6 +254,10 @@ func TestDeployWorkflowValidatesProductionAgentReleaseBeforeReplacingContainer(t
 	workflow := readDeployWorkflow(t)
 
 	requiredFragments := []string{
+		"Preparing Agent production config and reviewed database migrations",
+		"--user 0:0",
+		"-e AGENT_RELEASE_RUN_ID=\"${GITHUB_RUN_ID}\"",
+		"/app/schedule_server agent-release-prepare",
 		"Running Agent production config and database preflight",
 		"--network container:schedule-server",
 		"-e CONFIG_ENV=prod",
@@ -266,9 +270,11 @@ func TestDeployWorkflowValidatesProductionAgentReleaseBeforeReplacingContainer(t
 		}
 	}
 
+	prepareIndex := strings.Index(workflow, "agent-release-prepare")
 	preflightIndex := strings.Index(workflow, "agent-release-check")
 	deployIndex := strings.Index(workflow, "SKIP_IMAGE_PULL=1 ./deploy.sh deploy")
-	if preflightIndex == -1 || deployIndex == -1 || preflightIndex > deployIndex {
-		t.Fatal("Agent config preflight must run before replacing the production container")
+	if prepareIndex == -1 || preflightIndex == -1 || deployIndex == -1 ||
+		prepareIndex > preflightIndex || preflightIndex > deployIndex {
+		t.Fatal("Agent release preparation and preflight must run before replacing the production container")
 	}
 }
