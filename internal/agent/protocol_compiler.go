@@ -3,33 +3,55 @@ package agent
 import (
 	"context"
 	"strings"
+
+	"schedule_server/internal/agent/tools"
 )
 
 type protocolInput struct {
 	Message        string
+	RecentMessages []tools.Message
 	ActiveWorkflow *protocolWorkflowContext
 }
 
 type protocolWorkflowContext struct {
-	Type          string
-	MissingFields []string
+	Type            string
+	State           WorkflowState
+	MissingFields   []string
+	Candidates      map[string][]Candidate
+	CollectedLabels map[string]string
 }
 
 // compileProtocolWithCompiler delegates draft classification to an injected compiler.
-func compileProtocolWithCompiler(ctx context.Context, input protocolInput, compiler IntentCompiler) (ProtocolDraft, error) {
+func compileProtocolWithCompiler(ctx context.Context, input protocolInput, compiler IntentCompiler) (OperationCompileResult, error) {
+	return compileProtocolWithCompilerMode(ctx, input, compiler, "short_circuit")
+}
+
+func compileProtocolWithCompilerMode(
+	ctx context.Context,
+	input protocolInput,
+	compiler IntentCompiler,
+	mode string,
+) (OperationCompileResult, error) {
 	message := strings.TrimSpace(input.Message)
 	if message == "" {
-		return ProtocolDraft{Act: ActUnknown, Domain: DomainUnknown, Reason: "empty_message", ClarifyReason: "empty_message"}, nil
+		draft := ProtocolDraft{Act: ActUnknown, Domain: DomainUnknown, Reason: "empty_message", ClarifyReason: "empty_message"}
+		return OperationCompileResult{
+			Draft:     draft,
+			Decision:  OperationArbiterDecision{Kind: OperationArbiterDecisionUnknown, Draft: draft, Reason: "empty_message"},
+			Source:    CompilerSourceDeterministic,
+			LLMStatus: IntentCompileSkipped,
+		}, nil
 	}
 
 	if compiler == nil {
-		return unknownIntentDraft("intent_compiler_unavailable"), nil
+		draft := unknownIntentDraft("intent_compiler_unavailable")
+		return OperationCompileResult{
+			Draft:     draft,
+			Decision:  OperationArbiterDecision{Kind: OperationArbiterDecisionUnknown, Draft: draft, Reason: "compiler_unavailable"},
+			LLMStatus: IntentCompileSkipped,
+		}, nil
 	}
-	result, err := newOperationCompiler(compiler).Compile(ctx, input)
-	if err != nil {
-		return ProtocolDraft{}, err
-	}
-	return result.Draft, nil
+	return newOperationCompilerWithMode(compiler, mode).Compile(ctx, input)
 }
 
 func intentCompileWorkflowContext(workflow *protocolWorkflowContext) *IntentCompileWorkflowContext {
@@ -37,9 +59,47 @@ func intentCompileWorkflowContext(workflow *protocolWorkflowContext) *IntentComp
 		return nil
 	}
 	return &IntentCompileWorkflowContext{
-		Type:          workflow.Type,
-		MissingFields: append([]string(nil), workflow.MissingFields...),
+		Type:            workflow.Type,
+		State:           string(workflow.State),
+		MissingFields:   append([]string(nil), workflow.MissingFields...),
+		Candidates:      workflowCandidateLabels(workflow.Candidates),
+		CollectedLabels: cloneStringMap(workflow.CollectedLabels),
 	}
+}
+
+func workflowCandidateLabels(candidates map[string][]Candidate) map[string][]string {
+	if len(candidates) == 0 {
+		return nil
+	}
+	result := make(map[string][]string, len(candidates))
+	for field, fieldCandidates := range candidates {
+		labels := make([]string, 0, min(len(fieldCandidates), 10))
+		for _, candidate := range fieldCandidates {
+			if len(labels) == 10 {
+				break
+			}
+			if label := strings.TrimSpace(candidate.Label); label != "" {
+				labels = append(labels, label)
+			}
+		}
+		if len(labels) > 0 {
+			result[field] = labels
+		}
+	}
+	return result
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(source))
+	for key, value := range source {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			result[key] = truncateRunes(trimmed, 128)
+		}
+	}
+	return result
 }
 
 // compileProtocol classifies a user message into the current protocol draft.

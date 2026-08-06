@@ -10,11 +10,25 @@ const (
 	OperationCandidateSourceLegacy       OperationCandidateSource = "legacy_deterministic"
 )
 
+type CandidateMatchKind string
+
+const (
+	MatchExactAlias           CandidateMatchKind = "exact_alias"
+	MatchContainedAlias       CandidateMatchKind = "contained_alias"
+	MatchExactWorkflowControl CandidateMatchKind = "exact_workflow_control"
+	MatchExactCandidate       CandidateMatchKind = "exact_candidate"
+	MatchStructuredSlot       CandidateMatchKind = "structured_slot"
+	MatchLegacyRule           CandidateMatchKind = "legacy_rule"
+	MatchLLM                  CandidateMatchKind = "llm"
+)
+
 type OperationCandidate struct {
-	Draft      ProtocolDraft
-	Source     OperationCandidateSource
-	Confidence float64
-	Evidence   string
+	Draft        ProtocolDraft
+	Source       OperationCandidateSource
+	MatchKind    CandidateMatchKind
+	ShortCircuit bool
+	Confidence   float64
+	Evidence     string
 }
 
 type OperationArbiterDecisionKind string
@@ -25,6 +39,7 @@ const (
 	OperationArbiterDecisionWorkflowContinue  OperationArbiterDecisionKind = "workflow_continue"
 	OperationArbiterDecisionWorkflowAuxiliary OperationArbiterDecisionKind = "workflow_auxiliary"
 	OperationArbiterDecisionWorkflowCancel    OperationArbiterDecisionKind = "workflow_cancel"
+	OperationArbiterDecisionAmbiguous         OperationArbiterDecisionKind = "ambiguous"
 )
 
 type OperationArbiterInput struct {
@@ -53,6 +68,14 @@ func (operationArbiter) Decide(input OperationArbiterInput) OperationArbiterDeci
 			Kind:   OperationArbiterDecisionUnknown,
 			Draft:  ProtocolDraft{Act: ActUnknown, Domain: DomainUnknown, ClarifyReason: "unknown_intent"},
 			Reason: "no_candidates",
+		}
+	}
+
+	if ambiguousOperationCandidates(input.Candidates) {
+		return OperationArbiterDecision{
+			Kind:   OperationArbiterDecisionAmbiguous,
+			Draft:  unknownIntentDraft("ambiguous_intent"),
+			Reason: "ambiguous_candidates",
 		}
 	}
 
@@ -136,6 +159,18 @@ func bestCandidate(candidates []OperationCandidate, match func(OperationCandidat
 }
 
 func operationCandidateRank(candidate OperationCandidate) int {
+	switch candidate.MatchKind {
+	case MatchExactAlias, MatchExactWorkflowControl, MatchExactCandidate:
+		return 100
+	case MatchLLM:
+		return 80
+	case MatchStructuredSlot:
+		return 70
+	case MatchContainedAlias:
+		return 20
+	case MatchLegacyRule:
+		return 10
+	}
 	switch candidate.Source {
 	case OperationCandidateSourceCatalogAlias:
 		return 50
@@ -150,6 +185,30 @@ func operationCandidateRank(candidate OperationCandidate) int {
 	default:
 		return 0
 	}
+}
+
+func ambiguousOperationCandidates(candidates []OperationCandidate) bool {
+	topRank := -1
+	operations := make(map[string]struct{})
+	for _, candidate := range candidates {
+		if candidate.Draft.Act == ActUnknown {
+			continue
+		}
+		rank := operationCandidateRank(candidate)
+		if rank > topRank {
+			topRank = rank
+			operations = map[string]struct{}{candidateIdentity(candidate): {}}
+			continue
+		}
+		if rank == topRank {
+			operations[candidateIdentity(candidate)] = struct{}{}
+		}
+	}
+	return len(operations) > 1
+}
+
+func candidateIdentity(candidate OperationCandidate) string {
+	return string(candidate.Draft.Act) + "\x00" + candidate.Draft.Operation
 }
 
 func operationIsAuxiliaryForActiveWorkflow(operation string, workflow *protocolWorkflowContext) bool {

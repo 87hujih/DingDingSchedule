@@ -408,7 +408,7 @@ func TestReplayRunnerDryRunWriteRerunsPipelineWithoutCallingWritePort(t *testing
 			ResponseKind:     string(ResponseResult),
 			FailureLayer:     "",
 			LegacyCalled:     false,
-			WorkflowDecision: string(WorkflowCompletedDecision),
+			WorkflowDecision: string(WorkflowReadyToExecute),
 		},
 	})
 
@@ -487,7 +487,7 @@ func TestReplayRunnerReplaysWorkflowContinueFromCallLog(t *testing.T) {
 		ProtocolDomain:             string(DomainSubscription),
 		ProtocolOperation:          "subscription.start",
 		ResponseKind:               string(ResponseResult),
-		WorkflowDecision:           string(WorkflowCompletedDecision),
+		WorkflowDecision:           string(WorkflowReadyToExecute),
 		WorkflowTypeBefore:         string(WorkflowSubscriptionStart),
 		WorkflowStateBefore:        string(WorkflowCollectScope),
 		WorkflowIDBefore:           "wf-before",
@@ -505,8 +505,8 @@ func TestReplayRunnerReplaysWorkflowContinueFromCallLog(t *testing.T) {
 	if groupSub.subscribeCalls != 0 {
 		t.Fatalf("Subscribe calls = %d, want dry-run replay to avoid real write port", groupSub.subscribeCalls)
 	}
-	if result.Actual.WorkflowDecision != string(WorkflowCompletedDecision) {
-		t.Fatalf("WorkflowDecision = %q, want %q", result.Actual.WorkflowDecision, WorkflowCompletedDecision)
+	if result.Actual.WorkflowDecision != string(WorkflowReadyToExecute) {
+		t.Fatalf("WorkflowDecision = %q, want %q", result.Actual.WorkflowDecision, WorkflowReadyToExecute)
 	}
 }
 

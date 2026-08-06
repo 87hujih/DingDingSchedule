@@ -2,13 +2,200 @@ package repository
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"schedule_server/internal/model"
+	"schedule_server/internal/tenantctx"
 
+	mysqlDriver "gorm.io/driver/mysql"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestGroupAttendanceSubscriptionRepositoryMySQLConcurrentStart(t *testing.T) {
+	dsn := os.Getenv("AGENT_WORKFLOW_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("set AGENT_WORKFLOW_MYSQL_DSN to run MySQL subscription concurrency integration")
+	}
+	dbOne, err := gorm.Open(mysqlDriver.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbTwo, err := gorm.Open(mysqlDriver.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dbOne.AutoMigrate(&model.GroupAttendanceSubscription{}, &model.AgentWriteLedger{}); err != nil {
+		t.Fatal(err)
+	}
+	tenantID := uint(time.Now().UnixNano()%1_000_000 + 100_000)
+	conversationID := fmt.Sprintf("agent-p0-concurrent-%d", time.Now().UnixNano())
+	ctx := tenantctx.WithTenantID(context.Background(), tenantID)
+	key := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	defer func() {
+		_ = dbOne.WithContext(ctx).Unscoped().
+			Where("tenant_id = ? AND conversation_id = ?", tenantID, conversationID).
+			Delete(&model.GroupAttendanceSubscription{}).Error
+		_ = dbOne.WithContext(ctx).
+			Where("tenant_id = ? AND business_key = ?", tenantID, key).
+			Delete(&model.AgentWriteLedger{}).Error
+	}()
+
+	repos := []GroupAttendanceSubscriptionRepository{
+		NewGroupAttendanceSubscriptionRepository(dbOne),
+		NewGroupAttendanceSubscriptionRepository(dbTwo),
+	}
+	effects := make(chan GroupSubscriptionWriteEffect, 2)
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, repo := range repos {
+		wg.Add(1)
+		go func(candidate GroupAttendanceSubscriptionRepository) {
+			defer wg.Done()
+			result, err := candidate.ApplyStart(ctx, &model.GroupAttendanceSubscription{
+				TenantID:       tenantID,
+				ConversationID: conversationID,
+				DeptIDsJSON:    "[9,2,9]",
+			}, key)
+			if err != nil {
+				errs <- err
+				return
+			}
+			effects <- result.Effect
+		}(repo)
+	}
+	wg.Wait()
+	close(errs)
+	close(effects)
+	for err := range errs {
+		t.Errorf("ApplyStart() concurrent error = %v", err)
+	}
+	counts := map[GroupSubscriptionWriteEffect]int{}
+	for effect := range effects {
+		counts[effect]++
+	}
+	if counts[GroupSubscriptionCreated] != 1 || counts[GroupSubscriptionNoOp] != 1 {
+		t.Fatalf("concurrent effects = %+v, want one created and one no_op", counts)
+	}
+}
+
+func TestGroupAttendanceSubscriptionRepositoryApplyReturnsStableEffects(t *testing.T) {
+	db := openGroupSubRepoTestDB(t)
+	repo := NewGroupAttendanceSubscriptionRepository(db)
+	ctx := tenantctx.WithTenantID(context.Background(), 1)
+	const (
+		startBusinessKey  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		cancelBusinessKey = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+
+	created, err := repo.ApplyStart(ctx, &model.GroupAttendanceSubscription{
+		TenantID:       1,
+		ConversationID: "conv-effect",
+		GroupName:      "group",
+		EnabledByUID:   10,
+		DeptIDsJSON:    "[9,2,9]",
+	}, startBusinessKey)
+	if err != nil {
+		t.Fatalf("ApplyStart(created) error = %v", err)
+	}
+	if created.Effect != GroupSubscriptionCreated || created.Subscription == nil ||
+		created.Subscription.DeptIDsJSON != "[2,9]" {
+		t.Fatalf("created = %+v", created)
+	}
+	if err := db.Model(&model.GroupAttendanceSubscription{}).
+		Where("tenant_id = ? AND conversation_id = ?", 1, "conv-effect").
+		Update("push_enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	noOp, err := repo.ApplyStart(ctx, &model.GroupAttendanceSubscription{
+		TenantID:       1,
+		ConversationID: "conv-effect",
+		GroupName:      "ignored metadata",
+		EnabledByUID:   99,
+		DeptIDsJSON:    "[2,9]",
+	}, startBusinessKey)
+	if err != nil {
+		t.Fatalf("ApplyStart(no-op) error = %v", err)
+	}
+	if noOp.Effect != GroupSubscriptionNoOp || noOp.Subscription == nil || noOp.Subscription.PushEnabled {
+		t.Fatalf("no-op = %+v, want disabled switch preserved", noOp)
+	}
+
+	updated, err := repo.ApplyStart(ctx, &model.GroupAttendanceSubscription{
+		TenantID:       1,
+		ConversationID: "conv-effect",
+		GroupName:      "updated",
+		EnabledByUID:   11,
+		DeptIDsJSON:    "[3]",
+	}, startBusinessKey)
+	if err != nil {
+		t.Fatalf("ApplyStart(updated) error = %v", err)
+	}
+	if updated.Effect != GroupSubscriptionUpdated || updated.Subscription == nil || updated.Subscription.PushEnabled {
+		t.Fatalf("updated = %+v, want disabled switch preserved", updated)
+	}
+
+	cancelled, err := repo.ApplyCancel(ctx, 1, "conv-effect", cancelBusinessKey)
+	if err != nil || cancelled.Effect != GroupSubscriptionCancelled {
+		t.Fatalf("ApplyCancel(cancelled) = %+v, %v", cancelled, err)
+	}
+	cancelNoOp, err := repo.ApplyCancel(ctx, 1, "conv-effect", cancelBusinessKey)
+	if err != nil || cancelNoOp.Effect != GroupSubscriptionNoOp {
+		t.Fatalf("ApplyCancel(no-op) = %+v, %v", cancelNoOp, err)
+	}
+
+	resurrected, err := repo.ApplyStart(ctx, &model.GroupAttendanceSubscription{
+		TenantID:       1,
+		ConversationID: "conv-effect",
+		GroupName:      "resurrected",
+		EnabledByUID:   12,
+		DeptIDsJSON:    "[3]",
+	}, startBusinessKey)
+	if err != nil {
+		t.Fatalf("ApplyStart(resurrected) error = %v", err)
+	}
+	if resurrected.Effect != GroupSubscriptionCreated ||
+		resurrected.Subscription == nil ||
+		resurrected.Subscription.PushEnabled {
+		t.Fatalf("resurrected = %+v, want created with disabled switch preserved", resurrected)
+	}
+	var ledgers []model.AgentWriteLedger
+	if err := db.Order("business_key ASC").Find(&ledgers).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(ledgers) != 2 ||
+		ledgers[0].BusinessKey != startBusinessKey ||
+		ledgers[0].WriteEffect != string(GroupSubscriptionCreated) ||
+		ledgers[1].BusinessKey != cancelBusinessKey ||
+		ledgers[1].WriteEffect != string(GroupSubscriptionNoOp) {
+		t.Fatalf("ledgers = %+v, want transactionally updated start/cancel effects", ledgers)
+	}
+}
+
+func TestGroupAttendanceSubscriptionRepositoryApplyFailsClosedOnCorruptStoredScope(t *testing.T) {
+	db := openGroupSubRepoTestDB(t)
+	repo := NewGroupAttendanceSubscriptionRepository(db)
+	ctx := tenantctx.WithTenantID(context.Background(), 1)
+	if err := db.Create(&model.GroupAttendanceSubscription{
+		TenantID:       1,
+		ConversationID: "conv-corrupt",
+		DeptIDsJSON:    "{bad-json",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ApplyStart(ctx, &model.GroupAttendanceSubscription{
+		TenantID:       1,
+		ConversationID: "conv-corrupt",
+		DeptIDsJSON:    "[2]",
+	}, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err == nil {
+		t.Fatal("ApplyStart() error = nil, want corrupt stored scope failure")
+	}
+}
 
 func TestGroupAttendanceSubscriptionRepositoryListPushEnabledByTenantID(t *testing.T) {
 	db := openGroupSubRepoTestDB(t)
@@ -134,7 +321,7 @@ func openGroupSubRepoTestDB(t *testing.T) *gorm.DB {
 	if err := db.Migrator().DropTable(&model.GroupAttendanceSubscription{}); err != nil {
 		t.Fatalf("drop table: %v", err)
 	}
-	if err := db.AutoMigrate(&model.GroupAttendanceSubscription{}); err != nil {
+	if err := db.AutoMigrate(&model.GroupAttendanceSubscription{}, &model.AgentWriteLedger{}); err != nil {
 		t.Fatalf("auto migrate: %v", err)
 	}
 	return db

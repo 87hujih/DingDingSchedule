@@ -51,6 +51,29 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 			return outcome
 		}
 		outcome.WriteGuardResult = "allow"
+		businessKey, err := subscriptionBusinessKeyForRequest(req)
+		if err != nil {
+			outcome.FailureLayer = FailureWriteGuardBlocked
+			outcome.WriteGuardResult = "block:invalid_business_key"
+			outcome.BlockedReason = "invalid_business_key"
+			setProtocolOutcomeResponse(&outcome, ResponseModel{
+				Kind:    ResponseRefuse,
+				Message: "写操作参数校验失败，请重新发起请求。",
+			}, answerModeReject)
+			return outcome
+		}
+		req.IdempotencyKey = businessKey
+		outcome.IdempotencyKey = businessKey
+		outcome.PreparedWrite = &preparedWriteExecution{
+			Request:     req,
+			BusinessKey: businessKey,
+		}
+		setProtocolOutcomeResponse(&outcome, preparedWriteResponse(req.Operation), answerModeToolFirst)
+		outcome.ExecutorStatus = "prepared"
+		if len(req.TrustedParams) > 0 {
+			outcome.ResolvedSlots = mergeProtocolResolvedSlots(outcome.ResolvedSlots, protocolResolvedSlotsFromParams(req.TrustedParams))
+		}
+		return outcome
 	} else if outcome.WriteGuardResult == "" {
 		outcome.WriteGuardResult = "not_required"
 	}
@@ -62,6 +85,23 @@ func (p protocolLivePipeline) execute(ctx context.Context, uctx *tools.UserConte
 	outcome.ExecutionMetrics = result.Metrics
 	outcome.ExecutorStatus = protocolExecutorStatus(result.Response)
 	return outcome
+}
+
+func preparedWriteResponse(operation string) ResponseModel {
+	switch operation {
+	case "subscription.start":
+		return ResponseModel{
+			Kind:    ResponseResult,
+			Payload: OperationStatusPayload{Code: "subscription_started", Status: WriteStatusCreated},
+		}
+	case "subscription.cancel":
+		return ResponseModel{
+			Kind:    ResponseResult,
+			Payload: OperationStatusPayload{Code: "subscription_cancelled", Status: WriteStatusUpdated},
+		}
+	default:
+		return ResponseModel{Kind: ResponseRefuse, RefusalReason: "当前写操作暂不支持安全执行。"}
+	}
 }
 
 func resourceRefusalText(reason string) string {

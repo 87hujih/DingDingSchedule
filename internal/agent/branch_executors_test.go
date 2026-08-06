@@ -72,7 +72,7 @@ func TestRAGExecutorDoesNotExposeTools(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL: server.URL,
 		LLMAPIKey:  "test-key",
 		LLMModel:   "test-model",
@@ -87,6 +87,7 @@ func TestRAGExecutorDoesNotExposeTools(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	result, err := (ragExecutor{agent: a}).Execute(context.Background(), &tools.UserContext{
@@ -123,7 +124,7 @@ func TestToolQueryExecutorUsesRestrictedToolPool(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       server.URL,
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -143,6 +144,7 @@ func TestToolQueryExecutorUsesRestrictedToolPool(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	result, toolsCalled, err := (toolQueryExecutor{agent: a}).Execute(context.Background(), &tools.UserContext{
@@ -186,7 +188,7 @@ func TestToolQueryExecutorUsesRestrictedToolPool(t *testing.T) {
 func TestTaskMetaExecutorKeepsSubscriptionTaskOpenAndListsDepartments(t *testing.T) {
 	t.Parallel()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -198,6 +200,7 @@ func TestTaskMetaExecutorKeepsSubscriptionTaskOpenAndListsDepartments(t *testing
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	result, err := (taskMetaExecutor{agent: a}).Execute(context.Background(), &TaskInstance{
@@ -225,7 +228,7 @@ func TestTaskMetaExecutorKeepsSubscriptionTaskOpenAndListsDepartments(t *testing
 func TestTaskStartExecutorCreatesSubscriptionTask(t *testing.T) {
 	t.Parallel()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -237,6 +240,7 @@ func TestTaskStartExecutorCreatesSubscriptionTask(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	result, err := (taskStartExecutor{agent: a}).Execute(context.Background(), RouteDecision{
@@ -267,7 +271,7 @@ func TestTaskStartExecutorCreatesSubscriptionTask(t *testing.T) {
 func TestTaskStartExecutorAddsSoftSwitchNotice(t *testing.T) {
 	t.Parallel()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL: "http://127.0.0.1:0",
 		LLMAPIKey:  "test-key",
 		LLMModel:   "test-model",
@@ -281,6 +285,7 @@ func TestTaskStartExecutorAddsSoftSwitchNotice(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	result, err := (taskStartExecutor{agent: a}).Execute(context.Background(), RouteDecision{

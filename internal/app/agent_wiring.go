@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,8 +41,17 @@ func BuildAgent(
 	leaveSyncSrv *service.LeaveSyncService,
 	knowledgeSrv *service.AgentKnowledgeService,
 	customCallLog agent.CallLogPort,
-) *agent.Agent {
+) (*agent.Agent, error) {
 	cfg := global.AppConfig.LLM
+	runtimeCfg, err := ParseAgentRuntimeConfig(cfg, global.AppConfig.Env)
+	if err != nil {
+		return nil, fmt.Errorf("parse agent runtime config: %w", err)
+	}
+	workflowStore, err := buildWorkflowStore(runtimeCfg.WorkflowStore, repo)
+	if err != nil {
+		return nil, err
+	}
+
 	callLog := customCallLog
 	if callLog == nil {
 		callLog = &callLogAdapter{db: global.DB}
@@ -49,15 +60,25 @@ func BuildAgent(
 	attendance := &attendanceAdapter{srv: attendanceSrv, repo: repo.AttendanceRecordRepo}
 
 	return agent.NewAgent(agent.Deps{
-		LLMBaseURL:            cfg.BaseURL,
-		LLMAPIKey:             cfg.APIKey,
-		LLMModel:              cfg.Model,
-		RouterLLMBaseURL:      cfg.RouterBaseURL,
-		RouterLLMAPIKey:       cfg.RouterAPIKey,
-		RouterLLMModel:        cfg.RouterModel,
-		RouteMode:             cfg.RouteMode,
-		ProtocolMode:          cfg.ProtocolMode,
-		IntentCompilerTimeout: intentCompilerTimeoutFromConfig(cfg),
+		LLMBaseURL:                cfg.BaseURL,
+		LLMAPIKey:                 cfg.APIKey,
+		LLMModel:                  cfg.Model,
+		RouterLLMBaseURL:          cfg.RouterBaseURL,
+		RouterLLMAPIKey:           cfg.RouterAPIKey,
+		RouterLLMModel:            cfg.RouterModel,
+		RouteMode:                 cfg.RouteMode,
+		ProtocolMode:              cfg.ProtocolMode,
+		IntentCompilerTimeout:     runtimeCfg.IntentCompilerTimeout,
+		IntentContextEnabled:      runtimeCfg.IntentContextEnabled,
+		DeterministicCompilerMode: runtimeCfg.DeterministicCompilerMode,
+		IntentStructuredOutput: agent.StructuredOutputSpec{
+			Mode:                 runtimeCfg.IntentResponseFormat,
+			Temperature:          0,
+			MaxTokens:            512,
+			TransportMaxAttempts: 2,
+			ParseRepairAttempts:  0,
+		},
+		WorkflowStore: workflowStore,
 
 		Schedule:                &scheduleAdapter{srv: scheduleSrv, schedulePeriodSrv: schedulePeriodSrv},
 		Attendance:              attendance,
@@ -79,16 +100,66 @@ func BuildAgent(
 	})
 }
 
-func intentCompilerTimeoutFromConfig(cfg config.LLM) time.Duration {
-	value := strings.TrimSpace(cfg.IntentCompilerTimeout)
-	if value == "" {
-		return 0
+func buildWorkflowStore(mode string, repo *repository.Repository) (agent.WorkflowStore, error) {
+	switch mode {
+	case agentWorkflowStoreMemory:
+		return agent.NewMemoryWorkflowStore(), nil
+	case agentWorkflowStoreShadow:
+		if repo == nil || repo.AgentWorkflowRepo == nil {
+			return nil, errors.New("workflow_store shadow requires agent workflow repository")
+		}
+		mirror, err := newAgentWorkflowStore(repo.AgentWorkflowRepo)
+		if err != nil {
+			return nil, fmt.Errorf("build workflow DB mirror: %w", err)
+		}
+		configureWorkflowRecoveryDecodeObserver(mirror)
+		observer := agent.WorkflowShadowObserver(nil)
+		if global.Log != nil {
+			observer = func(event agent.WorkflowShadowEvent) {
+				global.Log.Warnw(
+					"workflow shadow observation",
+					"operation", event.Operation,
+					"code", event.Code,
+					"primaryVersion", event.PrimaryVersion,
+					"mirrorVersion", event.MirrorVersion,
+				)
+			}
+		}
+		store, err := agent.NewWorkflowShadowStore(agent.NewMemoryWorkflowStore(), mirror, observer)
+		if err != nil {
+			return nil, fmt.Errorf("build workflow shadow store: %w", err)
+		}
+		return store, nil
+	case agentWorkflowStoreDatabase:
+		if repo == nil || repo.AgentWorkflowRepo == nil {
+			return nil, errors.New("workflow_store database requires agent workflow repository")
+		}
+		store, err := newAgentWorkflowStore(repo.AgentWorkflowRepo)
+		if err != nil {
+			return nil, fmt.Errorf("build workflow database store: %w", err)
+		}
+		configureWorkflowRecoveryDecodeObserver(store)
+		return store, nil
+	default:
+		return nil, fmt.Errorf("unsupported workflow_store %q", mode)
 	}
-	timeout, err := time.ParseDuration(value)
-	if err != nil {
-		return 0
+}
+
+func configureWorkflowRecoveryDecodeObserver(store agent.WorkflowStore) {
+	databaseStore, ok := store.(*agentWorkflowStore)
+	if !ok || global.Log == nil {
+		return
 	}
-	return timeout
+	databaseStore.recoveryDecodeObserver = func(row model.AgentWorkflow, err error) {
+		global.Log.Errorw(
+			"skip invalid recoverable workflow",
+			"tenantID", row.TenantID,
+			"workflowID", row.WorkflowID,
+			"version", row.Version,
+			"executionStatus", row.ExecutionStatus,
+			"error", err,
+		)
+	}
 }
 
 // ────────────── scheduleAdapter ──────────────
@@ -586,28 +657,56 @@ type groupSubAdapter struct {
 	repo repository.GroupAttendanceSubscriptionRepository
 }
 
+const (
+	subscriptionStartOperationName  = "subscription.start"
+	subscriptionCancelOperationName = "subscription.cancel"
+)
+
 // Subscribe 为群会话创建或更新考勤订阅配置。
-func (a *groupSubAdapter) Subscribe(ctx context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64) error {
+func (a *groupSubAdapter) Subscribe(ctx context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64, businessKey string) (agenttool.GroupSubMutationResult, error) {
 	deptIDsJSON := ""
 	if len(deptIDs) > 0 {
 		b, err := json.Marshal(deptIDs)
 		if err != nil {
-			return err
+			return agenttool.GroupSubMutationResult{}, err
 		}
 		deptIDsJSON = string(b)
 	}
-	return a.repo.Upsert(ctx, &model.GroupAttendanceSubscription{
+	if businessKey == "" {
+		businessKey = legacySubscriptionBusinessKey(tenantID, conversationID, subscriptionStartOperationName, deptIDs)
+	}
+	result, err := a.repo.ApplyStart(ctx, &model.GroupAttendanceSubscription{
 		TenantID:       tenantID,
 		ConversationID: conversationID,
 		GroupName:      groupName,
 		EnabledByUID:   enabledByUID,
 		DeptIDsJSON:    deptIDsJSON,
-	})
+	}, businessKey)
+	if err != nil {
+		return agenttool.GroupSubMutationResult{}, err
+	}
+	info, err := groupSubInfoFromModel(result.Subscription)
+	if err != nil {
+		return agenttool.GroupSubMutationResult{}, err
+	}
+	return agenttool.GroupSubMutationResult{
+		Effect:       agenttool.GroupSubWriteEffect(result.Effect),
+		Subscription: info,
+	}, nil
 }
 
 // Unsubscribe 取消指定群会话的考勤订阅。
-func (a *groupSubAdapter) Unsubscribe(ctx context.Context, tenantID uint, conversationID string) error {
-	return a.repo.SoftDelete(ctx, tenantID, conversationID)
+func (a *groupSubAdapter) Unsubscribe(ctx context.Context, tenantID uint, conversationID, businessKey string) (agenttool.GroupSubMutationResult, error) {
+	if businessKey == "" {
+		businessKey = legacySubscriptionBusinessKey(tenantID, conversationID, subscriptionCancelOperationName, nil)
+	}
+	result, err := a.repo.ApplyCancel(ctx, tenantID, conversationID, businessKey)
+	if err != nil {
+		return agenttool.GroupSubMutationResult{}, err
+	}
+	return agenttool.GroupSubMutationResult{
+		Effect: agenttool.GroupSubWriteEffect(result.Effect),
+	}, nil
 }
 
 // GetSubscription 查询群会话当前的考勤订阅状态及配置。
@@ -620,6 +719,13 @@ func (a *groupSubAdapter) GetSubscription(ctx context.Context, tenantID uint, co
 		return &agenttool.GroupSubInfo{Subscribed: false}, nil
 	}
 
+	return groupSubInfoFromModel(sub)
+}
+
+func groupSubInfoFromModel(sub *model.GroupAttendanceSubscription) (*agenttool.GroupSubInfo, error) {
+	if sub == nil {
+		return &agenttool.GroupSubInfo{Subscribed: false}, nil
+	}
 	info := &agenttool.GroupSubInfo{
 		Subscribed:  true,
 		GroupName:   sub.GroupName,
@@ -628,11 +734,58 @@ func (a *groupSubAdapter) GetSubscription(ctx context.Context, tenantID uint, co
 	}
 	if sub.DeptIDsJSON != "" {
 		var deptIDs []int64
-		if err := json.Unmarshal([]byte(sub.DeptIDsJSON), &deptIDs); err == nil {
-			info.DeptIDs = deptIDs
+		if err := json.Unmarshal([]byte(sub.DeptIDsJSON), &deptIDs); err != nil {
+			return nil, fmt.Errorf("decode subscription department scope: %w", err)
 		}
+		info.DeptIDs = deptIDs
 	}
 	return info, nil
+}
+
+func legacySubscriptionBusinessKey(
+	tenantID uint,
+	conversationID string,
+	operation string,
+	deptIDs []int64,
+) string {
+	unique := make(map[int64]struct{}, len(deptIDs))
+	for _, id := range deptIDs {
+		if id > 0 {
+			unique[id] = struct{}{}
+		}
+	}
+	normalized := make([]int64, 0, len(unique))
+	for id := range unique {
+		normalized = append(normalized, id)
+	}
+	sort.Slice(normalized, func(i, j int) bool { return normalized[i] < normalized[j] })
+	scope := ""
+	if operation == subscriptionStartOperationName {
+		scope = "all"
+		if len(normalized) > 0 {
+			scope = "department"
+		}
+	}
+	payload, err := json.Marshal(struct {
+		Version        int     `json:"version"`
+		TenantID       uint    `json:"tenant_id"`
+		ConversationID string  `json:"conversation_id"`
+		Operation      string  `json:"operation"`
+		Scope          string  `json:"scope,omitempty"`
+		DeptIDs        []int64 `json:"dept_ids,omitempty"`
+	}{
+		Version:        1,
+		TenantID:       tenantID,
+		ConversationID: strings.TrimSpace(conversationID),
+		Operation:      operation,
+		Scope:          scope,
+		DeptIDs:        normalized,
+	})
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(append([]byte("v1\n"), payload...))
+	return hex.EncodeToString(digest[:])
 }
 
 // ────────────── deptAdapter ──────────────
@@ -777,6 +930,11 @@ func (a *callLogAdapter) Write(_ context.Context, log agenttool.CallLog) {
 		RequestID:                  boundedAgentCallLogCode(log.RequestID, agentCallLogMaxCodeRunes),
 		ConversationID:             boundedAgentCallLogCode(log.ConversationID, agentCallLogMaxKeyRunes),
 		CompilerStatus:             boundedAgentCallLogCode(log.CompilerStatus, 32),
+		CompilerSource:             boundedAgentCallLogCode(log.CompilerSource, 32),
+		CompilerFallbackReason:     boundedAgentCallLogCode(log.CompilerFallbackReason, 64),
+		CompilerCandidateCount:     log.CompilerCandidateCount,
+		LLMInvoked:                 log.LLMInvoked,
+		LLMAttempts:                log.LLMAttempts,
 		CompilerLatencyMs:          log.CompilerLatencyMs,
 		IntentDraftJSON:            boundedAgentCallLogJSON(log.IntentDraftJSON),
 		CatalogValidationCode:      boundedAgentCallLogCode(log.CatalogValidationCode, agentCallLogMaxCodeRunes),

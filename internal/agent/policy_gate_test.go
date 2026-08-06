@@ -675,13 +675,14 @@ func TestPolicyGateAllowsCompiledWorkflowCancelWithActiveWorkflow(t *testing.T) 
 		Type:          "subscription.start",
 		MissingFields: []string{"scope"},
 	}
-	draft, err := compileProtocolWithCompiler(context.Background(), protocolInput{
+	compileResult, err := compileProtocolWithCompiler(context.Background(), protocolInput{
 		Message:        "取消",
 		ActiveWorkflow: workflow,
 	}, &fakeProtocolIntentCompiler{})
 	if err != nil {
 		t.Fatalf("compileProtocolWithCompiler() error = %v", err)
 	}
+	draft := compileResult.Draft
 	if draft.Act != ActWorkflowCancel {
 		t.Fatalf("draft = %+v, want workflow_cancel", draft)
 	}

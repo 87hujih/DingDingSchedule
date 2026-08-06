@@ -19,10 +19,11 @@ func TestIntentCompilerParsesStrictJSONDraft(t *testing.T) {
 	}
 	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
 
-	draft, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询今天第二节考勤状态"})
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询今天第二节考勤状态"})
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
+	draft := result.Draft
 	if draft.Act != ActReadQuery || draft.Operation != "attendance.query_status" {
 		t.Fatalf("draft = %+v", draft)
 	}
@@ -40,10 +41,11 @@ func TestIntentCompilerReturnsUnknownForInvalidJSON(t *testing.T) {
 	client := &fakeIntentChatClient{content: `不是 JSON`}
 	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
 
-	draft, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询今天第二节考勤状态"})
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询今天第二节考勤状态"})
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
+	draft := result.Draft
 	if draft.Act != ActUnknown || draft.Reason != "intent_parse_failed" {
 		t.Fatalf("draft = %+v, want ActUnknown with intent_parse_failed", draft)
 	}
@@ -57,10 +59,11 @@ func TestIntentCompilerPreservesOperationOutsideCatalogForValidator(t *testing.T
 	}
 	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
 
-	draft, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "帮张三补签"})
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "帮张三补签"})
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
+	draft := result.Draft
 	if draft.Act != ActWriteRequest || draft.Domain != DomainManualSign || draft.Operation != "manual_sign.create" {
 		t.Fatalf("draft = %+v, want untrusted catalog-missing draft for validator", draft)
 	}
@@ -74,10 +77,11 @@ func TestIntentCompilerPreservesSchemaUnknownDraft(t *testing.T) {
 	}
 	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
 
-	draft, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "最近怎么样"})
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "最近怎么样"})
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
+	draft := result.Draft
 	if draft.Act != ActUnknown || draft.Domain != DomainUnknown || draft.Reason != "unknown_intent" {
 		t.Fatalf("draft = %+v, want schema-valid unknown draft", draft)
 	}
@@ -91,10 +95,11 @@ func TestIntentCompilerStripsOperationFromUnknownDraft(t *testing.T) {
 	}
 	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
 
-	draft, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "随便"})
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "随便"})
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
+	draft := result.Draft
 	if draft.Act != ActUnknown || draft.Operation != "" || draft.Reason != "unknown_intent" {
 		t.Fatalf("draft = %+v, want unknown draft with empty operation", draft)
 	}
@@ -108,10 +113,11 @@ func TestIntentCompilerStripsOperationFromUnknownDraftWithoutCatalogValidation(t
 	}
 	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
 
-	draft, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "帮张三补签"})
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "帮张三补签"})
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
+	draft := result.Draft
 	if draft.Act != ActUnknown || draft.Operation != "" || draft.Reason != "unknown_intent" {
 		t.Fatalf("draft = %+v, want unknown draft normalized without catalog validation", draft)
 	}
@@ -125,10 +131,11 @@ func TestIntentCompilerReturnsUnknownForDuplicateTopLevelKey(t *testing.T) {
 	}
 	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
 
-	draft, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询今天第二节考勤状态"})
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询今天第二节考勤状态"})
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
+	draft := result.Draft
 	if draft.Act != ActUnknown || draft.Reason != "intent_parse_failed" {
 		t.Fatalf("draft = %+v, want parse failure for duplicate top-level key", draft)
 	}
@@ -142,10 +149,11 @@ func TestIntentCompilerReturnsUnknownForDuplicateSlotField(t *testing.T) {
 	}
 	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
 
-	draft, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询今天第二节考勤状态"})
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询今天第二节考勤状态"})
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
+	draft := result.Draft
 	if draft.Act != ActUnknown || draft.Reason != "intent_parse_failed" {
 		t.Fatalf("draft = %+v, want parse failure for duplicate slot field", draft)
 	}
@@ -159,10 +167,11 @@ func TestIntentCompilerReturnsUnknownForMissingSlots(t *testing.T) {
 	}
 	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
 
-	draft, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询今天第二节考勤状态"})
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询今天第二节考勤状态"})
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
+	draft := result.Draft
 	if draft.Act != ActUnknown || draft.Reason != "intent_parse_failed" {
 		t.Fatalf("draft = %+v, want parse failure for missing slots", draft)
 	}
@@ -193,10 +202,11 @@ func TestIntentCompilerReturnsUnknownForTrustedIDSlots(t *testing.T) {
 			client := &fakeIntentChatClient{content: tt.content}
 			compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
 
-			draft, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "测试"})
+			result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "测试"})
 			if err != nil {
 				t.Fatalf("Compile() error = %v", err)
 			}
+			draft := result.Draft
 			if draft.Act != ActUnknown || draft.Reason != "intent_parse_failed" {
 				t.Fatalf("draft = %+v, want parse failure for trusted ID slot", draft)
 			}
@@ -212,10 +222,11 @@ func TestIntentCompilerKeepsLowConfidenceWriteDraft(t *testing.T) {
 	}
 	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
 
-	draft, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "好像开一下订阅"})
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "好像开一下订阅"})
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
+	draft := result.Draft
 	if draft.Act != ActWriteRequest || draft.Operation != "subscription.start" || draft.Confidence != 0.42 {
 		t.Fatalf("draft = %+v, want low-confidence write draft preserved", draft)
 	}
@@ -245,7 +256,7 @@ func TestIntentCompilerPromptIncludesCatalogAndUsesNoTools(t *testing.T) {
 	if client.messages[0].Role != "system" {
 		t.Fatalf("first message role = %q, want system", client.messages[0].Role)
 	}
-	if client.messages[1].Role != "user" || client.messages[1].Content != "你有什么功能" {
+	if client.messages[1].Role != "user" || !strings.Contains(client.messages[1].Content, `"current_message":"你有什么功能"`) {
 		t.Fatalf("user message = %+v", client.messages[1])
 	}
 
@@ -298,7 +309,7 @@ func TestIntentCompilerPromptIncludesActiveWorkflowContext(t *testing.T) {
 	}
 	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
 
-	draft, err := compiler.Compile(context.Background(), IntentCompileRequest{
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{
 		Message: "全部人员",
 		ActiveWorkflow: &IntentCompileWorkflowContext{
 			Type:          "subscription.start",
@@ -308,19 +319,20 @@ func TestIntentCompilerPromptIncludesActiveWorkflowContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
+	draft := result.Draft
 	if draft.Act != ActWorkflowContinue || draft.Operation != "subscription.start" {
 		t.Fatalf("draft = %+v, want workflow_continue subscription.start", draft)
 	}
-	if len(client.messages) < 3 {
-		t.Fatalf("messages = %#v, want workflow context message", client.messages)
+	if len(client.messages) != 2 {
+		t.Fatalf("messages = %#v, want system and user envelope", client.messages)
 	}
 	contextMessage := client.messages[1]
-	if contextMessage.Role != "system" || !strings.Contains(contextMessage.Content, "active_workflow_type=subscription.start") ||
-		!strings.Contains(contextMessage.Content, "missing_fields=scope") {
+	if contextMessage.Role != "user" || !strings.Contains(contextMessage.Content, `"type":"subscription.start"`) ||
+		!strings.Contains(contextMessage.Content, `"missing_fields":["scope"]`) {
 		t.Fatalf("workflow context message = %+v", contextMessage)
 	}
-	if client.messages[2].Role != "user" || client.messages[2].Content != "全部人员" {
-		t.Fatalf("user message = %+v", client.messages[2])
+	if !strings.Contains(contextMessage.Content, `"current_message":"全部人员"`) {
+		t.Fatalf("user message = %+v", contextMessage)
 	}
 }
 
@@ -331,9 +343,12 @@ func TestIntentCompilerPropagatesChatErrors(t *testing.T) {
 	client := &fakeIntentChatClient{err: wantErr}
 	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
 
-	_, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "你有什么功能"})
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("Compile() error = %v, want %v", err, wantErr)
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "你有什么功能"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v, want typed transport result", err)
+	}
+	if result.Status != IntentCompileTransportError {
+		t.Fatalf("Status = %q, want %q", result.Status, IntentCompileTransportError)
 	}
 }
 
@@ -344,9 +359,12 @@ func TestIntentCompilerUsesConfiguredTimeout(t *testing.T) {
 	compiler := newLLMIntentCompiler(client, intentCompilerOptions{Timeout: 10 * time.Millisecond})
 
 	start := time.Now()
-	_, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询今天第二节考勤"})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Compile() error = %v, want context deadline exceeded", err)
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询今天第二节考勤"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v, want typed child timeout", err)
+	}
+	if result.Status != IntentCompileTimeout {
+		t.Fatalf("Status = %q, want %q", result.Status, IntentCompileTimeout)
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("Compile() elapsed = %s, want configured timeout to bound the call", elapsed)
@@ -362,20 +380,31 @@ type fakeIntentChatClient struct {
 	toolDefsWereNil bool
 }
 
-func (c *fakeIntentChatClient) Chat(ctx context.Context, messages []tools.Message, toolDefs []tools.ToolDef) (tools.Message, error) {
+func (c *fakeIntentChatClient) ChatStructured(
+	ctx context.Context,
+	messages []tools.Message,
+	_ StructuredOutputSpec,
+) (StructuredChatResponse, error) {
 	c.calls++
 	c.messages = append([]tools.Message(nil), messages...)
-	c.toolDefs = append([]tools.ToolDef(nil), toolDefs...)
-	c.toolDefsWereNil = toolDefs == nil
+	c.toolDefs = nil
+	c.toolDefsWereNil = true
 	if c.err != nil {
-		return tools.Message{}, c.err
+		return StructuredChatResponse{Attempts: 1}, c.err
 	}
-	return tools.Message{Role: "assistant", Content: c.content}, nil
+	return StructuredChatResponse{
+		Message:  tools.Message{Role: "assistant", Content: c.content},
+		Attempts: 1,
+	}, nil
 }
 
 type blockingIntentChatClient struct{}
 
-func (blockingIntentChatClient) Chat(ctx context.Context, _ []tools.Message, _ []tools.ToolDef) (tools.Message, error) {
+func (blockingIntentChatClient) ChatStructured(
+	ctx context.Context,
+	_ []tools.Message,
+	_ StructuredOutputSpec,
+) (StructuredChatResponse, error) {
 	<-ctx.Done()
-	return tools.Message{}, ctx.Err()
+	return StructuredChatResponse{}, ctx.Err()
 }

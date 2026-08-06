@@ -22,15 +22,22 @@ type Config struct {
 
 // LLM OpenAI-compatible API 配置
 type LLM struct {
-	BaseURL               string `mapstructure:"base_url" yaml:"base_url"`
-	APIKey                string `mapstructure:"api_key" yaml:"api_key"`
-	Model                 string `mapstructure:"model" yaml:"model"`
-	RouterBaseURL         string `mapstructure:"router_base_url" yaml:"router_base_url"`
-	RouterAPIKey          string `mapstructure:"router_api_key" yaml:"router_api_key"`
-	RouterModel           string `mapstructure:"router_model" yaml:"router_model"`
-	RouteMode             string `mapstructure:"route_mode" yaml:"route_mode"`
-	ProtocolMode          string `mapstructure:"protocol_mode" yaml:"protocol_mode"`
-	IntentCompilerTimeout string `mapstructure:"intent_compiler_timeout" yaml:"intent_compiler_timeout"`
+	BaseURL                   string `mapstructure:"base_url" yaml:"base_url"`
+	APIKey                    string `mapstructure:"api_key" yaml:"api_key"`
+	Model                     string `mapstructure:"model" yaml:"model"`
+	RouterBaseURL             string `mapstructure:"router_base_url" yaml:"router_base_url"`
+	RouterAPIKey              string `mapstructure:"router_api_key" yaml:"router_api_key"`
+	RouterModel               string `mapstructure:"router_model" yaml:"router_model"`
+	RouteMode                 string `mapstructure:"route_mode" yaml:"route_mode"`
+	ProtocolMode              string `mapstructure:"protocol_mode" yaml:"protocol_mode"`
+	IntentCompilerTimeout     string `mapstructure:"intent_compiler_timeout" yaml:"intent_compiler_timeout"`
+	IntentResponseFormat      string `mapstructure:"intent_response_format" yaml:"intent_response_format"`
+	DeterministicCompilerMode string `mapstructure:"deterministic_compiler_mode" yaml:"deterministic_compiler_mode"`
+	IntentContextEnabled      bool   `mapstructure:"intent_context_enabled" yaml:"intent_context_enabled"`
+	WorkflowStore             string `mapstructure:"workflow_store" yaml:"workflow_store"`
+	WorkflowMigration         bool   `mapstructure:"workflow_migration" yaml:"workflow_migration"`
+	WorkflowMigrationDeadline string `mapstructure:"workflow_migration_deadline" yaml:"workflow_migration_deadline"`
+	LogPayloads               bool   `mapstructure:"log_payloads" yaml:"log_payloads"`
 }
 
 // Server 配置

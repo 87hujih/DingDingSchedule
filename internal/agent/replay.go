@@ -518,11 +518,11 @@ type replayCaseCompiler struct {
 	draft ProtocolDraft
 }
 
-func (c replayCaseCompiler) Compile(context.Context, IntentCompileRequest) (IntentDraft, error) {
+func (c replayCaseCompiler) Compile(context.Context, IntentCompileRequest) (IntentCompileResult, error) {
 	if strings.TrimSpace(c.draft.Operation) == "" && c.draft.Act == "" {
-		return unknownIntentDraft("intent_replay_missing_draft"), nil
+		return staticIntentCompileResult(unknownIntentDraft("intent_replay_missing_draft")), nil
 	}
-	return c.draft, nil
+	return staticIntentCompileResult(c.draft), nil
 }
 
 type replayDryRunExecutor struct {

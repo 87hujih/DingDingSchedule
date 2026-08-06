@@ -191,7 +191,7 @@ func newRouteGoldenAgent(t *testing.T) *Agent {
 	llmServer := newGoldenLLMServer(t)
 	t.Cleanup(llmServer.Close)
 
-	return NewAgent(Deps{
+	return mustNewTestAgent(Deps{
 		LLMBaseURL: llmServer.URL,
 		LLMAPIKey:  "test-key",
 		LLMModel:   "test-model",
@@ -210,6 +210,7 @@ func newRouteGoldenAgent(t *testing.T) *Agent {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 }
 
 func routeGoldenUserContext() *tools.UserContext {

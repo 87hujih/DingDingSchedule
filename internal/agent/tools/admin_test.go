@@ -68,14 +68,14 @@ type testGroupSubPort struct {
 	info           *GroupSubInfo
 }
 
-func (p *testGroupSubPort) Subscribe(_ context.Context, _ uint, _ string, _ string, _ uint, deptIDs []int64) error {
+func (p *testGroupSubPort) Subscribe(_ context.Context, _ uint, _ string, _ string, _ uint, deptIDs []int64, _ string) (GroupSubMutationResult, error) {
 	p.subscribeCalls++
 	p.lastDeptIDs = append([]int64(nil), deptIDs...)
-	return nil
+	return GroupSubMutationResult{Effect: GroupSubWriteCreated, Subscription: &GroupSubInfo{Subscribed: true, PushEnabled: true}}, nil
 }
 
-func (p *testGroupSubPort) Unsubscribe(context.Context, uint, string) error {
-	return nil
+func (p *testGroupSubPort) Unsubscribe(context.Context, uint, string, string) (GroupSubMutationResult, error) {
+	return GroupSubMutationResult{Effect: GroupSubWriteCancelled}, nil
 }
 
 func (p *testGroupSubPort) GetSubscription(context.Context, uint, string) (*GroupSubInfo, error) {

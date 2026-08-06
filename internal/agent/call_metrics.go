@@ -87,6 +87,11 @@ type protocolMetrics struct {
 	ExecutionAllowed        bool
 	RequestID               string
 	CompilerStatus          string
+	CompilerSource          string
+	CompilerFallbackReason  string
+	CompilerCandidateCount  int
+	LLMInvoked              bool
+	LLMAttempts             int
 	CompilerLatencyMs       int64
 	IntentDraftJSON         string
 	CatalogValidationCode   string

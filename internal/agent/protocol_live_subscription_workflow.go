@@ -118,13 +118,9 @@ func (p protocolLivePipeline) continueSubscription(ctx context.Context, input pr
 			ConversationID: userConversationID(input.User),
 			TrustedParams:  subscriptionStartTrustedParams(input.User, result.Workflow.Trusted, deptIDs),
 		}, outcome)
-		if executed.Response.Kind == ResponseResult {
-			completed := completeWorkflow(*result.Workflow)
-			executed.WorkflowDecision = completed.Decision
-			executed.ClearWorkflow = true
-			executed.WorkflowAfter = nil
-		} else {
-			executed.WorkflowAfter = result.Workflow
+		executed.WorkflowAfter = result.Workflow
+		if executed.PreparedWrite != nil {
+			executed.PreparedWrite.ClearWorkflowOnSuccess = true
 		}
 		return executed
 	default:

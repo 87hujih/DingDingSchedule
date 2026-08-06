@@ -45,7 +45,7 @@ func (p *testKnowledgePort) Search(_ context.Context, tenantID uint, query strin
 
 type deterministicProtocolLiveTestCompiler struct{}
 
-func (deterministicProtocolLiveTestCompiler) Compile(_ context.Context, req IntentCompileRequest) (IntentDraft, error) {
+func (deterministicProtocolLiveTestCompiler) Compile(_ context.Context, req IntentCompileRequest) (IntentCompileResult, error) {
 	var workflow *protocolWorkflowContext
 	if req.ActiveWorkflow != nil {
 		workflow = &protocolWorkflowContext{
@@ -53,10 +53,10 @@ func (deterministicProtocolLiveTestCompiler) Compile(_ context.Context, req Inte
 			MissingFields: append([]string(nil), req.ActiveWorkflow.MissingFields...),
 		}
 	}
-	return compileProtocol(protocolInput{
+	return staticIntentCompileResult(compileProtocol(protocolInput{
 		Message:        req.Message,
 		ActiveWorkflow: workflow,
-	}), nil
+	})), nil
 }
 
 type testCallLogPort struct {
@@ -101,7 +101,7 @@ type testGroupSubPort struct {
 	info              *agenttools.GroupSubInfo
 }
 
-func (p *testGroupSubPort) Subscribe(_ context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64) error {
+func (p *testGroupSubPort) Subscribe(_ context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64, _ string) (agenttools.GroupSubMutationResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.subscribeCalls++
@@ -111,17 +111,17 @@ func (p *testGroupSubPort) Subscribe(_ context.Context, tenantID uint, conversat
 	p.lastEnabledByUID = enabledByUID
 	p.lastSubscribedIDs = append([]int64(nil), deptIDs...)
 	if p.subscribeErr != nil {
-		return p.subscribeErr
+		return agenttools.GroupSubMutationResult{}, p.subscribeErr
 	}
-	return nil
+	return agenttools.GroupSubMutationResult{Effect: agenttools.GroupSubWriteCreated, Subscription: &agenttools.GroupSubInfo{Subscribed: true, PushEnabled: true}}, nil
 }
 
-func (p *testGroupSubPort) Unsubscribe(_ context.Context, _ uint, conversationID string) error {
+func (p *testGroupSubPort) Unsubscribe(_ context.Context, _ uint, conversationID string, _ string) (agenttools.GroupSubMutationResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.unsubscribeCalls++
 	p.lastConversation = conversationID
-	return nil
+	return agenttools.GroupSubMutationResult{Effect: agenttools.GroupSubWriteCancelled}, nil
 }
 
 func (p *testGroupSubPort) GetSubscription(_ context.Context, tenantID uint, conversationID string) (*agenttools.GroupSubInfo, error) {
@@ -168,12 +168,12 @@ type testClarifyGroupSubPort struct {
 	info *agenttools.GroupSubInfo
 }
 
-func (p testClarifyGroupSubPort) Subscribe(context.Context, uint, string, string, uint, []int64) error {
-	return nil
+func (p testClarifyGroupSubPort) Subscribe(context.Context, uint, string, string, uint, []int64, string) (agenttools.GroupSubMutationResult, error) {
+	return agenttools.GroupSubMutationResult{Effect: agenttools.GroupSubWriteCreated, Subscription: &agenttools.GroupSubInfo{Subscribed: true, PushEnabled: true}}, nil
 }
 
-func (p testClarifyGroupSubPort) Unsubscribe(context.Context, uint, string) error {
-	return nil
+func (p testClarifyGroupSubPort) Unsubscribe(context.Context, uint, string, string) (agenttools.GroupSubMutationResult, error) {
+	return agenttools.GroupSubMutationResult{Effect: agenttools.GroupSubWriteCancelled}, nil
 }
 
 func (p testClarifyGroupSubPort) GetSubscription(context.Context, uint, string) (*agenttools.GroupSubInfo, error) {
@@ -378,7 +378,7 @@ func TestAgentChatUsesKnowledgeOnlyForLeaveSyncFailureQuestion(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     server.URL,
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -390,6 +390,7 @@ func TestAgentChatUsesKnowledgeOnlyForLeaveSyncFailureQuestion(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -482,7 +483,7 @@ func TestAgentChatReturnsRealtimeResultOnlyForRealtimePlusRuleQuestion(t *testin
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       server.URL,
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -497,6 +498,7 @@ func TestAgentChatReturnsRealtimeResultOnlyForRealtimePlusRuleQuestion(t *testin
 		Tenant:           testTenantPort{},
 		Logger:           zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -545,7 +547,7 @@ func TestAgentChatRejectsOutOfDomainBeforeRetrieval(t *testing.T) {
 	}))
 	defer routerServer.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       "http://127.0.0.1:0",
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -560,6 +562,7 @@ func TestAgentChatRejectsOutOfDomainBeforeRetrieval(t *testing.T) {
 		Tenant:           testTenantPort{},
 		Logger:           zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -637,7 +640,7 @@ func TestAgentChatKeepsToolFirstForLiveQueryWithoutRuleSignal(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       server.URL,
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -652,6 +655,7 @@ func TestAgentChatKeepsToolFirstForLiveQueryWithoutRuleSignal(t *testing.T) {
 		Tenant:           testTenantPort{},
 		Logger:           zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -723,7 +727,7 @@ func TestAgentChatUsesKnowledgeOnlyPathForRuleQuestions(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     server.URL,
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -735,6 +739,7 @@ func TestAgentChatUsesKnowledgeOnlyPathForRuleQuestions(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -803,7 +808,7 @@ func TestAgentChatWritesKnowledgeMetricsToCallLog(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     server.URL,
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -816,6 +821,7 @@ func TestAgentChatWritesKnowledgeMetricsToCallLog(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -904,7 +910,7 @@ func TestAgentChatQueriesOtherUsersScheduleViaTool(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       server.URL,
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -921,6 +927,7 @@ func TestAgentChatQueriesOtherUsersScheduleViaTool(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -994,7 +1001,7 @@ func TestAgentChatClarifiesAmbiguousUserScheduleQuery(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       server.URL,
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -1014,6 +1021,7 @@ func TestAgentChatClarifiesAmbiguousUserScheduleQuery(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -1047,7 +1055,7 @@ func TestAgentChatWritesConversationTaskMetricsToCallLog(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     server.URL,
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1061,6 +1069,7 @@ func TestAgentChatWritesConversationTaskMetricsToCallLog(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -1181,7 +1190,7 @@ func TestAgentChatClassifiesManualSignCapabilityWithoutExecutionInShadow(t *test
 
 	callLog := newTestCallLogPort()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1193,6 +1202,7 @@ func TestAgentChatClassifiesManualSignCapabilityWithoutExecutionInShadow(t *test
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -1234,7 +1244,7 @@ func TestAgentChatClassifiesManualSignCapabilityWithoutExecutionInShadow(t *test
 func TestAgentClarifiesUnknownBusinessLikeMessageViaLiveRoute(t *testing.T) {
 	t.Parallel()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1245,6 +1255,7 @@ func TestAgentClarifiesUnknownBusinessLikeMessageViaLiveRoute(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -1278,7 +1289,7 @@ func TestAgentUsesRetrievalPrepassForNonObviousOutRequest(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1290,6 +1301,7 @@ func TestAgentUsesRetrievalPrepassForNonObviousOutRequest(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -1326,7 +1338,7 @@ func TestAgentClarifiesWeakKnowledgeMatchInsteadOfRejecting(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1337,6 +1349,7 @@ func TestAgentClarifiesWeakKnowledgeMatchInsteadOfRejecting(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -1401,7 +1414,7 @@ func TestAgentChatInjectsKnowledgeContextBeforeToolCallsForMixedQuestions(t *tes
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     server.URL,
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1413,6 +1426,7 @@ func TestAgentChatInjectsKnowledgeContextBeforeToolCallsForMixedQuestions(t *tes
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -1493,7 +1507,7 @@ func TestAgentChatPromptsForSubscriptionScopeBeforeExecuting(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     server.URL,
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1506,6 +1520,7 @@ func TestAgentChatPromptsForSubscriptionScopeBeforeExecuting(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -1553,7 +1568,7 @@ func TestAgentChatAnswersCapabilityQuestionWithoutKnowledgeLookup(t *testing.T) 
 	t.Parallel()
 
 	knowledge := &testKnowledgePort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1565,6 +1580,7 @@ func TestAgentChatAnswersCapabilityQuestionWithoutKnowledgeLookup(t *testing.T) 
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -1610,7 +1626,7 @@ func TestAgentChatProtocolLiveKeepsAttendanceQueryOutOfSubscriptionWorkflow(t *t
 		},
 	}
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1625,6 +1641,7 @@ func TestAgentChatProtocolLiveKeepsAttendanceQueryOutOfSubscriptionWorkflow(t *t
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	a.sessions.setActiveTask("42:conv-protocol-live-attendance:ding-user", &ActiveTask{
@@ -1677,7 +1694,7 @@ func TestAgentChatProtocolLiveAnswersManualSignCapabilityWithoutExecution(t *tes
 	t.Parallel()
 
 	attendance := &testTaskAttendancePort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1691,6 +1708,7 @@ func TestAgentChatProtocolLiveAnswersManualSignCapabilityWithoutExecution(t *tes
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	a.sessions.setActiveTask("42:conv-protocol-live-capability:ding-user", &ActiveTask{
@@ -1745,7 +1763,7 @@ func TestProtocolLiveReadQueryInterruptsActiveWorkflow(t *testing.T) {
 		},
 	}
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1758,6 +1776,7 @@ func TestProtocolLiveReadQueryInterruptsActiveWorkflow(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	a.sessions.setWorkflowState("42:conv-protocol-live-read-wins:ding-user", &WorkflowSnapshot{
@@ -1804,7 +1823,7 @@ func TestProtocolLiveCapabilityQuestionNeverCallsBusinessTool(t *testing.T) {
 	attendance := &testTaskAttendancePort{}
 	groupSub := &testGroupSubPort{}
 	callLog := newTestCallLogPort()
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1819,6 +1838,7 @@ func TestProtocolLiveCapabilityQuestionNeverCallsBusinessTool(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	a.sessions.setWorkflowState("42:conv-protocol-live-capability-guard:ding-user", &WorkflowSnapshot{
@@ -1878,7 +1898,7 @@ func TestProtocolLiveBlockedRequestsReturnSafeClarifyWithoutLegacyFallback(t *te
 
 	knowledge := &testKnowledgePort{}
 	callLog := newTestCallLogPort()
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1892,6 +1912,7 @@ func TestProtocolLiveBlockedRequestsReturnSafeClarifyWithoutLegacyFallback(t *te
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -1932,7 +1953,7 @@ func TestSubscriptionWorkflowStartsAndExecutesAllScopeInProtocolLive(t *testing.
 
 	callLog := newTestCallLogPort()
 	groupSub := &testGroupSubPort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -1946,6 +1967,7 @@ func TestSubscriptionWorkflowStartsAndExecutesAllScopeInProtocolLive(t *testing.
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2032,7 +2054,7 @@ func TestSubscriptionWorkflowKeepsWorkflowWhenExecutorStartFails(t *testing.T) {
 
 	callLog := newTestCallLogPort()
 	groupSub := &testGroupSubPort{subscribeErr: errors.New("temporary subscribe failure")}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2046,6 +2068,7 @@ func TestSubscriptionWorkflowKeepsWorkflowWhenExecutorStartFails(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2076,8 +2099,8 @@ func TestSubscriptionWorkflowKeepsWorkflowWhenExecutorStartFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Chat() error = %v", err)
 	}
-	if !strings.Contains(reply, "遇到问题") {
-		t.Fatalf("reply = %q, want operation error response", reply)
+	if !strings.Contains(reply, "确认中") {
+		t.Fatalf("reply = %q, want durable recovery pending response", reply)
 	}
 	_, workflow := a.sessions.getWorkflowState("42:conv-protocol-subscribe-fail:ding-user")
 	if workflow == nil {
@@ -2107,7 +2130,7 @@ func TestSubscriptionWorkflowRefusesOrdinaryUserStartInProtocolLive(t *testing.T
 
 	callLog := newTestCallLogPort()
 	groupSub := &testGroupSubPort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2121,6 +2144,7 @@ func TestSubscriptionWorkflowRefusesOrdinaryUserStartInProtocolLive(t *testing.T
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2168,7 +2192,7 @@ func TestSubscriptionWorkflowListsDepartmentsAndExecutesDepartmentScopeInProtoco
 
 	callLog := newTestCallLogPort()
 	groupSub := &testGroupSubPort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2183,6 +2207,7 @@ func TestSubscriptionWorkflowListsDepartmentsAndExecutesDepartmentScopeInProtoco
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2297,7 +2322,7 @@ func TestSubscriptionWorkflowListsDepartmentsAndExecutesDepartmentScopeInProtoco
 func TestSubscriptionWorkflowRejectsCapabilityQuestionDuringDeptCollection(t *testing.T) {
 	t.Parallel()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2310,6 +2335,7 @@ func TestSubscriptionWorkflowRejectsCapabilityQuestionDuringDeptCollection(t *te
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	a.sessions.setWorkflowState("42:conv-protocol-subscription-capability:ding-user", &WorkflowSnapshot{
@@ -2346,7 +2372,7 @@ func TestSubscriptionWorkflowCancelsOnExplicitWriteRequestInProtocolLive(t *test
 
 	callLog := newTestCallLogPort()
 	groupSub := &testGroupSubPort{info: &agenttools.GroupSubInfo{Subscribed: true, PushEnabled: true}}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2360,6 +2386,7 @@ func TestSubscriptionWorkflowCancelsOnExplicitWriteRequestInProtocolLive(t *test
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2401,7 +2428,7 @@ func TestProtocolLiveWorkflowCancelClearsActiveWorkflowWithoutUnsubscribe(t *tes
 
 	callLog := newTestCallLogPort()
 	groupSub := &testGroupSubPort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2415,6 +2442,7 @@ func TestProtocolLiveWorkflowCancelClearsActiveWorkflowWithoutUnsubscribe(t *tes
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	a.sessions.setWorkflowState("42:conv-protocol-workflow-cancel:ding-user", &WorkflowSnapshot{
@@ -2467,7 +2495,7 @@ func TestProtocolLiveWorkflowCancelAllowsOrdinaryUserToClearOwnWorkflow(t *testi
 
 	callLog := newTestCallLogPort()
 	groupSub := &testGroupSubPort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2481,6 +2509,7 @@ func TestProtocolLiveWorkflowCancelAllowsOrdinaryUserToClearOwnWorkflow(t *testi
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	a.sessions.setWorkflowState("42:conv-protocol-workflow-cancel-ordinary:ding-user", &WorkflowSnapshot{
@@ -2533,7 +2562,7 @@ func TestSubscriptionWorkflowRefusesOrdinaryUserCancelInProtocolLive(t *testing.
 
 	callLog := newTestCallLogPort()
 	groupSub := &testGroupSubPort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2547,6 +2576,7 @@ func TestSubscriptionWorkflowRefusesOrdinaryUserCancelInProtocolLive(t *testing.
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2590,7 +2620,7 @@ func TestProtocolLiveBlocksManualSignCreateBecauseCatalogMissing(t *testing.T) {
 
 	callLog := newTestCallLogPort()
 	attendance := &testTaskAttendancePort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2604,6 +2634,7 @@ func TestProtocolLiveBlocksManualSignCreateBecauseCatalogMissing(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2654,7 +2685,7 @@ func TestProtocolLiveBlocksAmbiguousManualSignCreateBecauseCatalogMissing(t *tes
 	t.Parallel()
 
 	attendance := &testTaskAttendancePort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2667,6 +2698,7 @@ func TestProtocolLiveBlocksAmbiguousManualSignCreateBecauseCatalogMissing(t *tes
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2702,7 +2734,7 @@ func TestManualSignWorkflowDoesNotTreatSentenceAsUserName(t *testing.T) {
 	t.Parallel()
 
 	attendance := &testTaskAttendancePort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2715,6 +2747,7 @@ func TestManualSignWorkflowDoesNotTreatSentenceAsUserName(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	a.sessions.setWorkflowState("42:ding-user", &WorkflowSnapshot{
@@ -2753,7 +2786,7 @@ func TestAgentChatClarifiesDepartmentScopedSubscriptionByListingDepartmentsFirst
 	t.Parallel()
 
 	knowledge := &testKnowledgePort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2767,6 +2800,7 @@ func TestAgentChatClarifiesDepartmentScopedSubscriptionByListingDepartmentsFirst
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2799,7 +2833,7 @@ func TestAgentChatChecksSubscriptionStatusDirectlyInGroup(t *testing.T) {
 	t.Parallel()
 
 	knowledge := &testKnowledgePort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2818,6 +2852,7 @@ func TestAgentChatChecksSubscriptionStatusDirectlyInGroup(t *testing.T) {
 		Tenant: testTenantPort{},
 		Logger: zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2855,7 +2890,7 @@ func TestProtocolLiveSubscriptionStatusAllowsOrdinaryGroupUser(t *testing.T) {
 			PushEnabled: true,
 		},
 	}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2869,6 +2904,7 @@ func TestProtocolLiveSubscriptionStatusAllowsOrdinaryGroupUser(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2930,7 +2966,7 @@ func TestProtocolLiveSubscriptionStatusInDMExplainsGroupOnly(t *testing.T) {
 	groupSub := &testGroupSubPort{
 		info: &agenttools.GroupSubInfo{Subscribed: true, PushEnabled: true},
 	}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2944,6 +2980,7 @@ func TestProtocolLiveSubscriptionStatusInDMExplainsGroupOnly(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -2983,7 +3020,7 @@ func TestAgentChatAcceptsChineseNumeralDepartmentAliasDuringSubscriptionFollowUp
 	t.Parallel()
 
 	groupSub := &testGroupSubPort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -2996,6 +3033,7 @@ func TestAgentChatAcceptsChineseNumeralDepartmentAliasDuringSubscriptionFollowUp
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -3041,7 +3079,7 @@ func TestAgentChatKeepsSubscriptionTaskAfterInvalidDepartmentAndListsDepartments
 	t.Parallel()
 
 	groupSub := &testGroupSubPort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -3054,6 +3092,7 @@ func TestAgentChatKeepsSubscriptionTaskAfterInvalidDepartmentAndListsDepartments
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -3131,7 +3170,7 @@ func TestAgentChatExplainsRetryableSubscriptionFailureAndKeepsTaskOpen(t *testin
 	t.Parallel()
 
 	groupSub := &testGroupSubPort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -3144,6 +3183,7 @@ func TestAgentChatExplainsRetryableSubscriptionFailureAndKeepsTaskOpen(t *testin
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -3216,7 +3256,7 @@ func TestAgentChatResumesManualSignTaskAcrossMultipleReplies(t *testing.T) {
 	)
 	defer routerServer.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       "http://127.0.0.1:0",
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -3231,6 +3271,7 @@ func TestAgentChatResumesManualSignTaskAcrossMultipleReplies(t *testing.T) {
 		Tenant:           testTenantPort{},
 		Logger:           zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	firstReply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -3301,7 +3342,7 @@ func TestAgentChatUsesPlannerPrimaryForLongManualSignFollowUp(t *testing.T) {
 	)
 	defer routerServer.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       "http://127.0.0.1:0",
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -3316,6 +3357,7 @@ func TestAgentChatUsesPlannerPrimaryForLongManualSignFollowUp(t *testing.T) {
 		Tenant:           testTenantPort{},
 		Logger:           zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -3367,7 +3409,7 @@ func TestAgentChatCancelsActiveTaskWhenUserSaysCancel(t *testing.T) {
 	)
 	defer routerServer.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       "http://127.0.0.1:0",
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -3383,6 +3425,7 @@ func TestAgentChatCancelsActiveTaskWhenUserSaysCancel(t *testing.T) {
 		Tenant:           testTenantPort{},
 		Logger:           zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -3434,7 +3477,7 @@ func TestAgentChatSwitchesToNewRequestWhenNewBusinessQuestionArrives(t *testing.
 	)
 	defer routerServer.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       "http://127.0.0.1:0",
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -3452,6 +3495,7 @@ func TestAgentChatSwitchesToNewRequestWhenNewBusinessQuestionArrives(t *testing.
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -3521,7 +3565,7 @@ func TestAgentChatUnsubscribesForExplicitClosePhrasesInLiveRoute(t *testing.T) {
 			defer routerServer.Close()
 
 			groupSub := &testGroupSubPort{}
-			a := NewAgent(Deps{
+			a := mustNewTestAgent(Deps{
 				LLMBaseURL:       "http://127.0.0.1:0",
 				LLMAPIKey:        "test-key",
 				LLMModel:         "test-model",
@@ -3536,6 +3580,7 @@ func TestAgentChatUnsubscribesForExplicitClosePhrasesInLiveRoute(t *testing.T) {
 				Tenant:           testTenantPort{},
 				Logger:           zap.NewNop().Sugar(),
 			})
+
 			defer a.Stop()
 
 			reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -3584,7 +3629,7 @@ func TestAgentChatUnsubscribesForExplicitClosePhrasesInLegacyMode(t *testing.T) 
 			t.Parallel()
 
 			groupSub := &testGroupSubPort{}
-			a := NewAgent(Deps{
+			a := mustNewTestAgent(Deps{
 				LLMBaseURL:     "http://127.0.0.1:0",
 				LLMAPIKey:      "test-key",
 				LLMModel:       "test-model",
@@ -3596,6 +3641,7 @@ func TestAgentChatUnsubscribesForExplicitClosePhrasesInLegacyMode(t *testing.T) 
 				Tenant:         testTenantPort{},
 				Logger:         zap.NewNop().Sugar(),
 			})
+
 			defer a.Stop()
 
 			reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -3632,7 +3678,7 @@ func TestAgentChatClarifiesTaskCancelWithoutActiveTaskInLiveRoute(t *testing.T) 
 	routerServer := newRouteDecisionServer(t, RouteDecision{Kind: RouteTaskCancel})
 	defer routerServer.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       "http://127.0.0.1:0",
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -3646,6 +3692,7 @@ func TestAgentChatClarifiesTaskCancelWithoutActiveTaskInLiveRoute(t *testing.T) 
 		Tenant:           testTenantPort{},
 		Logger:           zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -3677,7 +3724,7 @@ func TestAgentDoesNotRejectUnknownBusinessLikeMessageBeforeRetrieval(t *testing.
 	})
 	defer routerServer.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       "http://127.0.0.1:0",
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -3692,6 +3739,7 @@ func TestAgentDoesNotRejectUnknownBusinessLikeMessageBeforeRetrieval(t *testing.
 		Tenant:           testTenantPort{},
 		Logger:           zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -3722,7 +3770,7 @@ func TestAgentDoesNotRejectUnknownBusinessLikeMessageBeforeRetrieval(t *testing.
 func TestAgentChatRepliesPolitelyToGreetingWithoutDomainReject(t *testing.T) {
 	t.Parallel()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -3733,6 +3781,7 @@ func TestAgentChatRepliesPolitelyToGreetingWithoutDomainReject(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -3757,7 +3806,7 @@ func TestAgentChatRepliesPolitelyToGreetingWithoutDomainReject(t *testing.T) {
 func TestAgentChatPolitelyRefusesGenericSocialChatWithoutLLMFallback(t *testing.T) {
 	t.Parallel()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     "http://127.0.0.1:0",
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -3767,6 +3816,7 @@ func TestAgentChatPolitelyRefusesGenericSocialChatWithoutLLMFallback(t *testing.
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -3827,7 +3877,7 @@ func TestAgentSemanticRouterHandlesTaskMetaQuestion(t *testing.T) {
 	)
 	defer routerServer.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       "http://127.0.0.1:0",
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -3843,6 +3893,7 @@ func TestAgentSemanticRouterHandlesTaskMetaQuestion(t *testing.T) {
 		Tenant:           testTenantPort{},
 		Logger:           zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	chatMsg := func(content string) *dingtalk.ChatMessage {

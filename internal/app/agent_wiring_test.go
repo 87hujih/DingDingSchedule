@@ -83,10 +83,10 @@ func TestGroupSubAdapterIncludesPushEnabledInSubscriptionInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite db: %v", err)
 	}
-	if err := db.Migrator().DropTable(&model.GroupAttendanceSubscription{}); err != nil {
+	if err := db.Migrator().DropTable(&model.AgentWriteLedger{}, &model.GroupAttendanceSubscription{}); err != nil {
 		t.Fatalf("drop table: %v", err)
 	}
-	if err := db.AutoMigrate(&model.GroupAttendanceSubscription{}); err != nil {
+	if err := db.AutoMigrate(&model.GroupAttendanceSubscription{}, &model.AgentWriteLedger{}); err != nil {
 		t.Fatalf("auto migrate: %v", err)
 	}
 	sub := model.GroupAttendanceSubscription{
@@ -301,8 +301,6 @@ func TestScheduleAdapterListUserScheduleByWeekUsesViewerAndTargetIDs(t *testing.
 }
 
 func TestBuildAgentUsesConfiguredProtocolMode(t *testing.T) {
-	t.Parallel()
-
 	prevConfig := global.AppConfig
 	prevDB := global.DB
 	t.Cleanup(func() {
@@ -311,12 +309,22 @@ func TestBuildAgentUsesConfiguredProtocolMode(t *testing.T) {
 	})
 
 	global.AppConfig = config.Config{
+		Env: "dev",
 		LLM: config.LLM{
-			ProtocolMode: string(agentpkg.ProtocolModeLive),
+			BaseURL:                   "https://llm.example.test/v1/chat/completions",
+			APIKey:                    "test-credential",
+			Model:                     "test-model",
+			ProtocolMode:              string(agentpkg.ProtocolModeLive),
+			IntentResponseFormat:      "json_object",
+			DeterministicCompilerMode: "short_circuit",
+			WorkflowStore:             "memory",
 		},
 	}
 
-	a := BuildAgent(&repository.Repository{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	a, err := BuildAgent(&repository.Repository{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildAgent() error = %v", err)
+	}
 	if a == nil {
 		t.Fatalf("BuildAgent() = nil, want agent")
 	}
@@ -331,14 +339,13 @@ func TestBuildAgentUsesConfiguredProtocolMode(t *testing.T) {
 	}
 }
 
-func TestIntentCompilerTimeoutFromConfig(t *testing.T) {
-	t.Parallel()
+func TestBuildAgentPropagatesRuntimeConfigError(t *testing.T) {
+	prevConfig := global.AppConfig
+	t.Cleanup(func() { global.AppConfig = prevConfig })
+	global.AppConfig = config.Config{Env: "dev", LLM: config.LLM{ProtocolMode: "typo"}}
 
-	if got := intentCompilerTimeoutFromConfig(config.LLM{IntentCompilerTimeout: "4s"}); got != 4*time.Second {
-		t.Fatalf("intentCompilerTimeoutFromConfig(valid) = %s, want 4s", got)
-	}
-	if got := intentCompilerTimeoutFromConfig(config.LLM{IntentCompilerTimeout: "bad-value"}); got != 0 {
-		t.Fatalf("intentCompilerTimeoutFromConfig(invalid) = %s, want 0", got)
+	if got, err := BuildAgent(&repository.Repository{}, nil, nil, nil, nil, nil, nil, nil, nil); err == nil || got != nil {
+		t.Fatalf("BuildAgent() = %v, %v; want nil, error", got, err)
 	}
 }
 

@@ -39,9 +39,40 @@ func NewLLMClient(baseURL, apiKey, model string) *LLMClient {
 
 // chatRequest OpenAI chat completion 请求体
 type chatRequest struct {
-	Model    string          `json:"model"`
-	Messages []msgJSON       `json:"messages"`
-	Tools    []tools.ToolDef `json:"tools,omitempty"`
+	Model          string          `json:"model"`
+	Messages       []msgJSON       `json:"messages"`
+	Tools          []tools.ToolDef `json:"tools,omitempty"`
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+	Temperature    *float64        `json:"temperature,omitempty"`
+	MaxTokens      *int            `json:"max_tokens,omitempty"`
+}
+
+type responseFormat struct {
+	Type string `json:"type"`
+}
+
+// StructuredOutputSpec defines the bounded request contract used by the intent compiler.
+type StructuredOutputSpec struct {
+	Mode                 string
+	Temperature          float64
+	MaxTokens            int
+	TransportMaxAttempts int
+	ParseRepairAttempts  int
+}
+
+// StructuredChatResponse carries the completion and the exact number of HTTP attempts.
+type StructuredChatResponse struct {
+	Message  tools.Message
+	Attempts int
+}
+
+type llmHTTPStatusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *llmHTTPStatusError) Error() string {
+	return fmt.Sprintf("LLM API 返回 %d: %s", e.StatusCode, e.Body)
 }
 
 // msgJSON 发送给 API 的消息格式
@@ -69,20 +100,9 @@ type chatResponse struct {
 
 // Chat 发送对话请求，内置 3 次重试（429/5xx）
 func (c *LLMClient) Chat(ctx context.Context, messages []tools.Message, toolDefs []tools.ToolDef) (tools.Message, error) {
-	msgs := make([]msgJSON, 0, len(messages))
-	for _, m := range messages {
-		msg := msgJSON{
-			Role:       m.Role,
-			Content:    m.Content,
-			ToolCallID: m.ToolCallID,
-			ToolCalls:  m.ToolCalls,
-		}
-		msgs = append(msgs, msg)
-	}
-
 	reqBody := chatRequest{
 		Model:    c.model,
-		Messages: msgs,
+		Messages: chatMessagesJSON(messages),
 	}
 	if len(toolDefs) > 0 {
 		reqBody.Tools = toolDefs
@@ -110,6 +130,97 @@ func (c *LLMClient) Chat(ctx context.Context, messages []tools.Message, toolDefs
 	}
 
 	return tools.Message{}, fmt.Errorf("LLM 请求失败（已重试3次）: %w", lastErr)
+}
+
+// ChatStructured sends a bounded structured-output request for IntentCompiler only.
+// All attempts share the caller context; parsing/repair retries are intentionally unsupported.
+func (c *LLMClient) ChatStructured(
+	ctx context.Context,
+	messages []tools.Message,
+	spec StructuredOutputSpec,
+) (StructuredChatResponse, error) {
+	if spec.ParseRepairAttempts != 0 {
+		return StructuredChatResponse{}, errors.New("structured parse repair is not supported")
+	}
+	if spec.MaxTokens <= 0 {
+		return StructuredChatResponse{}, errors.New("structured max tokens must be positive")
+	}
+	maxAttempts := spec.TransportMaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+	if maxAttempts > 2 {
+		return StructuredChatResponse{}, errors.New("structured transport attempts must not exceed 2")
+	}
+
+	reqBody := chatRequest{
+		Model:       c.model,
+		Messages:    chatMessagesJSON(messages),
+		Temperature: &spec.Temperature,
+		MaxTokens:   &spec.MaxTokens,
+	}
+	switch strings.TrimSpace(spec.Mode) {
+	case "json_object":
+		reqBody.ResponseFormat = &responseFormat{Type: "json_object"}
+	case "prompt_only":
+		// Explicit compatibility mode. It is never selected implicitly.
+	default:
+		return StructuredChatResponse{}, fmt.Errorf("unsupported structured output mode %q", spec.Mode)
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return StructuredChatResponse{Attempts: attempt - 1}, ctx.Err()
+			case <-time.After(time.Second):
+			}
+		}
+
+		result, retryable, err := c.doChat(ctx, reqBody)
+		if err == nil {
+			return StructuredChatResponse{Message: result, Attempts: attempt}, nil
+		}
+		lastErr = err
+		if !structuredTransportRetryable(retryable, err) {
+			return StructuredChatResponse{Attempts: attempt}, err
+		}
+	}
+	return StructuredChatResponse{Attempts: maxAttempts}, fmt.Errorf(
+		"structured LLM request failed after %d attempts: %w",
+		maxAttempts,
+		lastErr,
+	)
+}
+
+func chatMessagesJSON(messages []tools.Message) []msgJSON {
+	result := make([]msgJSON, 0, len(messages))
+	for _, message := range messages {
+		result = append(result, msgJSON{
+			Role:       message.Role,
+			Content:    message.Content,
+			ToolCallID: message.ToolCallID,
+			ToolCalls:  message.ToolCalls,
+		})
+	}
+	return result
+}
+
+func structuredTransportRetryable(retryable bool, err error) bool {
+	if !retryable {
+		return false
+	}
+	var statusErr *llmHTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return true
+	}
+	switch statusErr.StatusCode {
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 // doChat sends a chat request to the configured LLM endpoint.
@@ -154,11 +265,11 @@ func (c *LLMClient) doChat(ctx context.Context, reqBody chatRequest) (tools.Mess
 
 	// 429 或 5xx 可重试
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return tools.Message{}, true, fmt.Errorf("LLM API 返回 %d: %s", resp.StatusCode, string(respBody))
+		return tools.Message{}, true, &llmHTTPStatusError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return tools.Message{}, false, fmt.Errorf("LLM API 返回 %d: %s", resp.StatusCode, string(respBody))
+		return tools.Message{}, false, &llmHTTPStatusError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var chatResp chatResponse

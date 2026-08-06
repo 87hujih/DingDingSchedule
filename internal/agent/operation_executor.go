@@ -33,6 +33,7 @@ type OperationExecutionMetrics struct {
 type OperationExecutionResult struct {
 	Response ResponseModel
 	Metrics  OperationExecutionMetrics
+	Effect   WriteEffect
 }
 
 type operationExecutor struct {
@@ -171,39 +172,22 @@ func (e operationExecutor) executeSubscriptionStart(ctx context.Context, req Ope
 	default:
 		return operationExecutionResult(ResponseModel{Kind: ResponseRefuse, RefusalReason: "订阅范围只能是全部人员或指定部门。请重新说明要订阅的范围。"}, answerModeReject)
 	}
-	current, err := e.deps.GroupSub.GetSubscription(ctx, req.TenantID, conversationID)
+	mutation, err := e.deps.GroupSub.Subscribe(ctx, req.TenantID, conversationID, operationRequestConversationTitle(req), req.ActorUserID, deptIDs, req.IdempotencyKey)
 	if err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
-	status := WriteStatusCreated
-	if current != nil && current.Subscribed {
-		if sameSubscriptionDeptScope(current.DeptIDs, deptIDs) {
-			return operationExecutionResult(ResponseModel{
-				Kind:    ResponseResult,
-				Payload: OperationStatusPayload{Code: "subscription_started", Status: WriteStatusAlreadyExists, PushEnabled: boolPtr(current.PushEnabled)},
-			}, answerModeToolFirst)
-		}
-		status = WriteStatusUpdated
-	}
-	if err := e.deps.GroupSub.Subscribe(ctx, req.TenantID, conversationID, operationRequestConversationTitle(req), req.ActorUserID, deptIDs); err != nil {
+	status, effect, ok := subscriptionStartMutationStatus(mutation.Effect)
+	if !ok {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
 	pushEnabled := true
-	if current != nil && current.Subscribed {
-		pushEnabled = current.PushEnabled
-	} else {
-		updated, err := e.deps.GroupSub.GetSubscription(ctx, req.TenantID, conversationID)
-		if err != nil {
-			return operationExecutionResult(operationErrorResponse(), answerModeReject)
-		}
-		if updated != nil && updated.Subscribed {
-			pushEnabled = updated.PushEnabled
-		}
+	if mutation.Subscription != nil {
+		pushEnabled = mutation.Subscription.PushEnabled
 	}
-	return operationExecutionResult(ResponseModel{
+	return operationWriteExecutionResult(ResponseModel{
 		Kind:    ResponseResult,
 		Payload: OperationStatusPayload{Code: "subscription_started", Status: status, PushEnabled: boolPtr(pushEnabled)},
-	}, answerModeToolFirst)
+	}, answerModeToolFirst, effect)
 }
 
 func (e operationExecutor) executeSubscriptionCancel(ctx context.Context, req OperationRequest) OperationExecutionResult {
@@ -220,23 +204,42 @@ func (e operationExecutor) executeSubscriptionCancel(ctx context.Context, req Op
 	if req.ConversationID != "" && conversationID != strings.TrimSpace(req.ConversationID) {
 		return operationExecutionResult(subscriptionConversationMismatchResponse(), answerModeReject)
 	}
-	current, err := e.deps.GroupSub.GetSubscription(ctx, req.TenantID, conversationID)
+	mutation, err := e.deps.GroupSub.Unsubscribe(ctx, req.TenantID, conversationID, req.IdempotencyKey)
 	if err != nil {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
-	if current == nil || !current.Subscribed {
-		return operationExecutionResult(ResponseModel{
-			Kind:    ResponseResult,
-			Payload: OperationStatusPayload{Code: "subscription_cancelled", Status: WriteStatusNoOp},
-		}, answerModeToolFirst)
-	}
-	if err := e.deps.GroupSub.Unsubscribe(ctx, req.TenantID, conversationID); err != nil {
+	status, effect, ok := subscriptionCancelMutationStatus(mutation.Effect)
+	if !ok {
 		return operationExecutionResult(operationErrorResponse(), answerModeReject)
 	}
-	return operationExecutionResult(ResponseModel{
+	return operationWriteExecutionResult(ResponseModel{
 		Kind:    ResponseResult,
-		Payload: OperationStatusPayload{Code: "subscription_cancelled", Status: WriteStatusUpdated},
-	}, answerModeToolFirst)
+		Payload: OperationStatusPayload{Code: "subscription_cancelled", Status: status},
+	}, answerModeToolFirst, effect)
+}
+
+func subscriptionStartMutationStatus(effect tools.GroupSubWriteEffect) (WriteStatus, WriteEffect, bool) {
+	switch effect {
+	case tools.GroupSubWriteCreated:
+		return WriteStatusCreated, WriteEffectCreated, true
+	case tools.GroupSubWriteUpdated:
+		return WriteStatusUpdated, WriteEffectUpdated, true
+	case tools.GroupSubWriteNoOp:
+		return WriteStatusAlreadyExists, WriteEffectNoOp, true
+	default:
+		return "", "", false
+	}
+}
+
+func subscriptionCancelMutationStatus(effect tools.GroupSubWriteEffect) (WriteStatus, WriteEffect, bool) {
+	switch effect {
+	case tools.GroupSubWriteCancelled:
+		return WriteStatusUpdated, WriteEffectCancelled, true
+	case tools.GroupSubWriteNoOp:
+		return WriteStatusNoOp, WriteEffectNoOp, true
+	default:
+		return "", "", false
+	}
 }
 
 func (e operationExecutor) executeSubscriptionStatus(ctx context.Context, req OperationRequest) OperationExecutionResult {
@@ -348,6 +351,12 @@ func operationExecutionResult(response ResponseModel, mode answerMode) Operation
 			AnswerMode:   mode,
 		},
 	}
+}
+
+func operationWriteExecutionResult(response ResponseModel, mode answerMode, effect WriteEffect) OperationExecutionResult {
+	result := operationExecutionResult(response, mode)
+	result.Effect = effect
+	return result
 }
 
 func extractParamInt64Slice(params map[string]TrustedParam, key string) ([]int64, bool) {

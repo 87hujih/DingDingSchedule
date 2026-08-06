@@ -1,6 +1,9 @@
 package inits
 
 import (
+	"log"
+	"os"
+	"strings"
 	"time"
 
 	"schedule_server/global"
@@ -16,7 +19,17 @@ func DBInit() {
 	cfg := global.AppConfig.Database
 
 	db, err := gorm.Open(mysql.Open(cfg.DSN()), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
+		// Workflow snapshots and execution payloads may contain tenant data.
+		// Keep Info-level SQL diagnostics without interpolating bound values.
+		Logger: logger.New(
+			log.New(os.Stdout, "\r\n", log.LstdFlags),
+			logger.Config{
+				SlowThreshold:        200 * time.Millisecond,
+				LogLevel:             logger.Info,
+				ParameterizedQueries: true,
+				Colorful:             true,
+			},
+		),
 	})
 	if err != nil {
 		global.Log.Fatalf("连接数据库失败: %v", err)
@@ -44,7 +57,13 @@ func DBInit() {
 
 // AutoMigrate 自动化迁移表
 func AutoMigrate() {
-	if err := global.DB.AutoMigrate(
+	if err := global.DB.AutoMigrate(autoMigrateModels(global.AppConfig.Env)...); err != nil {
+		global.Log.Fatalf("数据库迁移失败: %v", err)
+	}
+}
+
+func autoMigrateModels(env string) []any {
+	models := []any{
 		&model.Tenant{},
 		&model.User{},
 		&model.UserType{},
@@ -64,7 +83,10 @@ func AutoMigrate() {
 		&model.AgentCallLog{},
 		&model.AgentKnowledgeDocument{},
 		&model.AgentKnowledgeChunk{},
-	); err != nil {
-		global.Log.Fatalf("数据库迁移失败: %v", err)
 	}
+	env = strings.TrimSpace(env)
+	if !strings.EqualFold(env, "prod") && !strings.EqualFold(env, "production") {
+		models = append(models, &model.AgentWorkflow{}, &model.AgentWriteLedger{})
+	}
+	return models
 }

@@ -295,8 +295,8 @@ func TestOperationExecutorSubscriptionOperationsUseNarrowPorts(t *testing.T) {
 	if status.Response.Kind != ResponseResult || !strings.Contains(renderProtocolResponse(status.Response), "已订阅") {
 		t.Fatalf("status = %+v reply=%q, want subscribed result", status, renderProtocolResponse(status.Response))
 	}
-	if groupSub.getCalls != 3 {
-		t.Fatalf("GetSubscription calls = %d, want 3", groupSub.getCalls)
+	if groupSub.getCalls != 1 {
+		t.Fatalf("GetSubscription calls = %d, want 1", groupSub.getCalls)
 	}
 
 	options := executor.Execute(context.Background(), enrichOperationRequestFromUser(OperationRequest{Operation: "subscription.list_departments"}, uctx))
@@ -367,7 +367,7 @@ func TestOperationExecutorSubscriptionStartReturnsStableWriteStatuses(t *testing
 			existing:           &tools.GroupSubInfo{Subscribed: true, PushEnabled: true},
 			scope:              "all",
 			wantStatus:         WriteStatusAlreadyExists,
-			wantSubscribeCalls: 0,
+			wantSubscribeCalls: 1,
 		},
 		{
 			name:               "updates changed department scope",
@@ -450,7 +450,7 @@ func TestOperationExecutorSubscriptionCancelReturnsStableWriteStatuses(t *testin
 			name:                 "no active subscription is no op",
 			existing:             &tools.GroupSubInfo{Subscribed: false},
 			wantStatus:           WriteStatusNoOp,
-			wantUnsubscribeCalls: 0,
+			wantUnsubscribeCalls: 1,
 		},
 		{
 			name:                 "active subscription is updated",
@@ -784,21 +784,37 @@ type executorFakeGroupSubPort struct {
 	lastDeptIDs        []int64
 }
 
-func (p *executorFakeGroupSubPort) Subscribe(_ context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64) error {
+func (p *executorFakeGroupSubPort) Subscribe(_ context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64, _ string) (tools.GroupSubMutationResult, error) {
 	p.subscribeCalls++
 	p.lastTenantID = tenantID
 	p.lastConversationID = conversationID
 	p.lastGroupName = groupName
 	p.lastEnabledByUID = enabledByUID
 	p.lastDeptIDs = append([]int64(nil), deptIDs...)
-	return nil
+	effect := tools.GroupSubWriteCreated
+	if p.info != nil && p.info.Subscribed {
+		if sameSubscriptionDeptScope(p.info.DeptIDs, deptIDs) {
+			effect = tools.GroupSubWriteNoOp
+		} else {
+			effect = tools.GroupSubWriteUpdated
+		}
+	}
+	info := &tools.GroupSubInfo{Subscribed: true, DeptIDs: append([]int64(nil), deptIDs...), PushEnabled: true}
+	if p.info != nil {
+		info.PushEnabled = p.info.PushEnabled
+	}
+	return tools.GroupSubMutationResult{Effect: effect, Subscription: info}, nil
 }
 
-func (p *executorFakeGroupSubPort) Unsubscribe(_ context.Context, tenantID uint, conversationID string) error {
+func (p *executorFakeGroupSubPort) Unsubscribe(_ context.Context, tenantID uint, conversationID string, _ string) (tools.GroupSubMutationResult, error) {
 	p.unsubscribeCalls++
 	p.lastTenantID = tenantID
 	p.lastConversationID = conversationID
-	return nil
+	effect := tools.GroupSubWriteNoOp
+	if p.info != nil && p.info.Subscribed {
+		effect = tools.GroupSubWriteCancelled
+	}
+	return tools.GroupSubMutationResult{Effect: effect}, nil
 }
 
 func (p *executorFakeGroupSubPort) GetSubscription(_ context.Context, tenantID uint, conversationID string) (*tools.GroupSubInfo, error) {

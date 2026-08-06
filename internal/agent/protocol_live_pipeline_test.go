@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -326,11 +327,11 @@ func TestProtocolLivePipelineSubscriptionWorkflowClarifiesAndExecutesAllScope(t 
 	if done.Response.Kind != ResponseResult {
 		t.Fatalf("done response = %+v, want result", done.Response)
 	}
-	if done.WorkflowDecision != WorkflowCompletedDecision || !done.ClearWorkflow {
-		t.Fatalf("workflow decision=%q clear=%v, want completed and clear", done.WorkflowDecision, done.ClearWorkflow)
+	if done.WorkflowDecision != WorkflowReadyToExecute || done.ClearWorkflow || done.PreparedWrite == nil {
+		t.Fatalf("workflow decision=%q clear=%v prepared=%v, want prepared ready write", done.WorkflowDecision, done.ClearWorkflow, done.PreparedWrite != nil)
 	}
-	if groupSub.subscribeCalls != 1 {
-		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 before reservation", groupSub.subscribeCalls)
 	}
 }
 
@@ -359,11 +360,11 @@ func TestProtocolLivePipelineSubscriptionStartExecutesCompleteAllScopeFirstTurn(
 	if outcome.Response.Kind != ResponseResult {
 		t.Fatalf("Response = %+v, want result", outcome.Response)
 	}
-	if outcome.WorkflowAfter != nil || !outcome.ClearWorkflow {
-		t.Fatalf("WorkflowAfter=%+v ClearWorkflow=%v, want no retained workflow", outcome.WorkflowAfter, outcome.ClearWorkflow)
+	if outcome.WorkflowAfter == nil || outcome.WorkflowAfter.State != WorkflowReady || outcome.ClearWorkflow || outcome.PreparedWrite == nil {
+		t.Fatalf("WorkflowAfter=%+v ClearWorkflow=%v PreparedWrite=%v, want retained ready reservation snapshot", outcome.WorkflowAfter, outcome.ClearWorkflow, outcome.PreparedWrite != nil)
 	}
-	if groupSub.subscribeCalls != 1 || len(groupSub.lastDeptIDs) != 0 {
-		t.Fatalf("Subscribe calls=%d deptIDs=%v, want all scope execution", groupSub.subscribeCalls, groupSub.lastDeptIDs)
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls=%d, want 0 before reservation", groupSub.subscribeCalls)
 	}
 }
 
@@ -534,7 +535,10 @@ func TestProtocolLivePipelineCompilerTimeoutFailsClosed(t *testing.T) {
 
 	attendance := &executorFakeAttendancePort{detailResp: &tools.AttendanceResult{Date: "2026-06-06", Week: 10, Section: 2}}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
-		Compiler: pipelineFakeIntentCompiler{err: context.DeadlineExceeded},
+		Compiler: pipelineFakeIntentCompiler{result: &IntentCompileResult{
+			Draft:  unknownIntentDraft("intent_timeout"),
+			Status: IntentCompileTimeout,
+		}},
 		Executor: newOperationExecutor(operationExecutorDeps{Attendance: attendance, Semester: &executorFakeSemesterPort{week: 10}}),
 		Semester: &executorFakeSemesterPort{week: 10},
 	})
@@ -652,11 +656,11 @@ func TestProtocolLivePipelineCarriesWriteGuardIdempotencyKey(t *testing.T) {
 	if outcome.Response.Kind != ResponseResult {
 		t.Fatalf("Response = %+v, want result", outcome.Response)
 	}
-	if outcome.IdempotencyKey != "idem-subscription-cancel" {
-		t.Fatalf("IdempotencyKey = %q, want fake write guard key", outcome.IdempotencyKey)
+	if len(outcome.IdempotencyKey) != 64 || outcome.IdempotencyKey == "idem-subscription-cancel" {
+		t.Fatalf("IdempotencyKey = %q, want canonical business key", outcome.IdempotencyKey)
 	}
-	if groupSub.unsubscribeCalls != 1 {
-		t.Fatalf("Unsubscribe calls = %d, want 1", groupSub.unsubscribeCalls)
+	if outcome.PreparedWrite == nil || groupSub.unsubscribeCalls != 0 {
+		t.Fatalf("PreparedWrite=%v Unsubscribe calls=%d, want prepared write and no call before reservation", outcome.PreparedWrite != nil, groupSub.unsubscribeCalls)
 	}
 }
 
@@ -773,15 +777,13 @@ func TestProtocolLivePipelineDepartmentNameChoosesDepartmentScopeDuringScopeColl
 	if outcome.Response.Kind != ResponseResult {
 		t.Fatalf("Response = %+v, want result", outcome.Response)
 	}
-	if outcome.WorkflowDecision != WorkflowCompletedDecision || !outcome.ClearWorkflow {
-		t.Fatalf("WorkflowDecision=%q ClearWorkflow=%v, want completed and clear", outcome.WorkflowDecision, outcome.ClearWorkflow)
+	if outcome.WorkflowDecision != WorkflowReadyToExecute || outcome.ClearWorkflow || outcome.PreparedWrite == nil {
+		t.Fatalf("WorkflowDecision=%q ClearWorkflow=%v PreparedWrite=%v, want prepared ready write", outcome.WorkflowDecision, outcome.ClearWorkflow, outcome.PreparedWrite != nil)
 	}
-	if groupSub.subscribeCalls != 1 {
-		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 before reservation", groupSub.subscribeCalls)
 	}
-	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 125 {
-		t.Fatalf("lastDeptIDs = %v, want [125]", groupSub.lastDeptIDs)
-	}
+	requirePreparedSubscriptionDeptIDs(t, outcome, []int64{125})
 	if outcome.ResolvedSlots["scope"] != "department" {
 		t.Fatalf("ResolvedSlots = %#v, want department scope", outcome.ResolvedSlots)
 	}
@@ -817,15 +819,13 @@ func TestProtocolLivePipelineDepartmentNameContinuesDuringScopeCollectionWhenCom
 	if outcome.Response.Kind != ResponseResult {
 		t.Fatalf("Response = %+v, want result", outcome.Response)
 	}
-	if outcome.WorkflowDecision != WorkflowCompletedDecision || !outcome.ClearWorkflow {
-		t.Fatalf("WorkflowDecision=%q ClearWorkflow=%v, want completed and clear", outcome.WorkflowDecision, outcome.ClearWorkflow)
+	if outcome.WorkflowDecision != WorkflowReadyToExecute || outcome.ClearWorkflow || outcome.PreparedWrite == nil {
+		t.Fatalf("WorkflowDecision=%q ClearWorkflow=%v PreparedWrite=%v, want prepared ready write", outcome.WorkflowDecision, outcome.ClearWorkflow, outcome.PreparedWrite != nil)
 	}
-	if groupSub.subscribeCalls != 1 {
-		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 before reservation", groupSub.subscribeCalls)
 	}
-	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 201 {
-		t.Fatalf("lastDeptIDs = %v, want [201]", groupSub.lastDeptIDs)
-	}
+	requirePreparedSubscriptionDeptIDs(t, outcome, []int64{201})
 	if outcome.ResolvedSlots["scope"] != "department" {
 		t.Fatalf("ResolvedSlots = %#v, want department scope", outcome.ResolvedSlots)
 	}
@@ -932,12 +932,10 @@ func TestProtocolLivePipelineDepartmentOrdinalUsesCurrentWorkflowCandidates(t *t
 	if outcome.Response.Kind != ResponseResult {
 		t.Fatalf("Response = %+v, want result", outcome.Response)
 	}
-	if groupSub.subscribeCalls != 1 {
-		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 before reservation", groupSub.subscribeCalls)
 	}
-	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 125 {
-		t.Fatalf("lastDeptIDs = %v, want [125] from workflow candidates", groupSub.lastDeptIDs)
-	}
+	requirePreparedSubscriptionDeptIDs(t, outcome, []int64{125})
 }
 
 func TestProtocolLivePipelineDepartmentOrdinalContinuesWhenCompilerReturnsUnknown(t *testing.T) {
@@ -977,12 +975,10 @@ func TestProtocolLivePipelineDepartmentOrdinalContinuesWhenCompilerReturnsUnknow
 	if outcome.Response.Kind != ResponseResult {
 		t.Fatalf("Response = %+v, want result", outcome.Response)
 	}
-	if groupSub.subscribeCalls != 1 {
-		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 before reservation", groupSub.subscribeCalls)
 	}
-	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 101 {
-		t.Fatalf("lastDeptIDs = %v, want [101] from workflow candidates", groupSub.lastDeptIDs)
-	}
+	requirePreparedSubscriptionDeptIDs(t, outcome, []int64{101})
 }
 
 func TestProtocolLivePipelineDepartmentCandidateLabelAcceptsChineseNumeralAlias(t *testing.T) {
@@ -1025,12 +1021,10 @@ func TestProtocolLivePipelineDepartmentCandidateLabelAcceptsChineseNumeralAlias(
 	if outcome.Response.Kind != ResponseResult {
 		t.Fatalf("Response = %+v, want result", outcome.Response)
 	}
-	if groupSub.subscribeCalls != 1 {
-		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 before reservation", groupSub.subscribeCalls)
 	}
-	if len(groupSub.lastDeptIDs) != 1 || groupSub.lastDeptIDs[0] != 201 {
-		t.Fatalf("lastDeptIDs = %v, want [201] from workflow candidate label", groupSub.lastDeptIDs)
-	}
+	requirePreparedSubscriptionDeptIDs(t, outcome, []int64{201})
 }
 
 func TestProtocolLivePipelineDepartmentOrdinalRejectsCrossTenantWorkflowCandidate(t *testing.T) {
@@ -1174,12 +1168,19 @@ func TestProtocolLivePipelineDefaultsCurrentWeekForMySchedule(t *testing.T) {
 }
 
 type pipelineFakeIntentCompiler struct {
-	draft ProtocolDraft
-	err   error
+	draft  ProtocolDraft
+	result *IntentCompileResult
+	err    error
 }
 
-func (c pipelineFakeIntentCompiler) Compile(context.Context, IntentCompileRequest) (IntentDraft, error) {
-	return c.draft, c.err
+func (c pipelineFakeIntentCompiler) Compile(context.Context, IntentCompileRequest) (IntentCompileResult, error) {
+	if c.err != nil {
+		return IntentCompileResult{}, c.err
+	}
+	if c.result != nil {
+		return *c.result, nil
+	}
+	return staticIntentCompileResult(c.draft), nil
 }
 
 type pipelineFakeSchedulePeriodPort struct {
@@ -1225,5 +1226,16 @@ func (p pipelineAllowWriteGuard) Check(WriteGuardInput) WriteGuardResult {
 		Allow:          true,
 		ResponseKind:   ResponseResult,
 		IdempotencyKey: p.key,
+	}
+}
+
+func requirePreparedSubscriptionDeptIDs(t *testing.T, outcome protocolLiveOutcome, want []int64) {
+	t.Helper()
+	if outcome.PreparedWrite == nil {
+		t.Fatal("PreparedWrite = nil")
+	}
+	got, ok := extractParamInt64Slice(outcome.PreparedWrite.Request.TrustedParams, "dept_ids")
+	if !ok || !reflect.DeepEqual(got, want) {
+		t.Fatalf("prepared dept_ids = %v ok=%v, want %v", got, ok, want)
 	}
 }

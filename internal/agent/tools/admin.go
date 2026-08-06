@@ -148,7 +148,7 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 			}
 		}
 
-		if err := groupSub.Subscribe(ctx, uctx.TenantID, uctx.ConversationID, uctx.ConversationTitle, uctx.UserID, deptIDs); err != nil {
+		if _, err := groupSub.Subscribe(ctx, uctx.TenantID, uctx.ConversationID, uctx.ConversationTitle, uctx.UserID, deptIDs, ""); err != nil {
 			return "", err
 		}
 
@@ -184,7 +184,7 @@ func RegisterAdminTools(r *Registry, attendance AttendancePort, user UserPort, g
 			})
 		}
 
-		if err := groupSub.Unsubscribe(ctx, uctx.TenantID, uctx.ConversationID); err != nil {
+		if _, err := groupSub.Unsubscribe(ctx, uctx.TenantID, uctx.ConversationID, ""); err != nil {
 			return "", err
 		}
 

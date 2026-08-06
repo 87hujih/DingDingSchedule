@@ -94,9 +94,23 @@ type RestDayPort interface {
 
 // GroupSubPort 群订阅能力
 type GroupSubPort interface {
-	Subscribe(ctx context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64) error
-	Unsubscribe(ctx context.Context, tenantID uint, conversationID string) error
+	Subscribe(ctx context.Context, tenantID uint, conversationID, groupName string, enabledByUID uint, deptIDs []int64, businessKey string) (GroupSubMutationResult, error)
+	Unsubscribe(ctx context.Context, tenantID uint, conversationID, businessKey string) (GroupSubMutationResult, error)
 	GetSubscription(ctx context.Context, tenantID uint, conversationID string) (*GroupSubInfo, error)
+}
+
+type GroupSubWriteEffect string
+
+const (
+	GroupSubWriteCreated   GroupSubWriteEffect = "created"
+	GroupSubWriteUpdated   GroupSubWriteEffect = "updated"
+	GroupSubWriteNoOp      GroupSubWriteEffect = "no_op"
+	GroupSubWriteCancelled GroupSubWriteEffect = "cancelled"
+)
+
+type GroupSubMutationResult struct {
+	Effect       GroupSubWriteEffect
+	Subscription *GroupSubInfo
 }
 
 // GroupSubInfo 群订阅状态
@@ -289,6 +303,11 @@ type CallLog struct {
 	RequestID                  string
 	ConversationID             string
 	CompilerStatus             string
+	CompilerSource             string
+	CompilerFallbackReason     string
+	CompilerCandidateCount     int
+	LLMInvoked                 bool
+	LLMAttempts                int
 	CompilerLatencyMs          int64
 	IntentDraftJSON            string
 	CatalogValidationCode      string

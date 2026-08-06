@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"schedule_server/internal/agent/tools"
+	"schedule_server/internal/tenantctx"
 )
 
 const (
@@ -67,6 +68,16 @@ func (sm *sessionManager) getSessionState(key string) ([]tools.Message, *ActiveT
 	return msgs, cloneActiveTask(s.activeTask)
 }
 
+func (sm *sessionManager) recentMessages(key string) []tools.Message {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	session, ok := sm.sessions[key]
+	if !ok {
+		return nil
+	}
+	return append([]tools.Message(nil), session.messages...)
+}
+
 // getTaskState handles get task state.
 func (sm *sessionManager) getTaskState(key string) ([]tools.Message, *TaskInstance) {
 	sm.mu.Lock()
@@ -98,11 +109,15 @@ func (sm *sessionManager) getWorkflowState(key string) ([]tools.Message, *Workfl
 	s, ok := sm.sessions[key]
 	if !ok {
 		sm.mu.RUnlock()
-		workflow, err := sm.workflowStore.Load(context.Background(), workflowKeyFromSessionKey(key, nil))
+		workflowKey := workflowKeyFromSessionKey(key, nil)
+		workflow, err := sm.workflowStore.Load(workflowStoreContext(context.Background(), workflowKey), workflowKey)
 		if err != nil {
 			return nil, nil
 		}
-		return nil, workflow
+		if workflow == nil {
+			return nil, nil
+		}
+		return nil, workflow.Snapshot
 	}
 
 	msgs := make([]tools.Message, len(s.messages))
@@ -113,11 +128,14 @@ func (sm *sessionManager) getWorkflowState(key string) ([]tools.Message, *Workfl
 	}
 	sm.mu.RUnlock()
 
-	workflow, err := sm.workflowStore.Load(context.Background(), workflowKey)
+	workflow, err := sm.workflowStore.Load(workflowStoreContext(context.Background(), workflowKey), workflowKey)
 	if err != nil {
 		return msgs, nil
 	}
-	return msgs, workflow
+	if workflow == nil {
+		return msgs, nil
+	}
+	return msgs, workflow.Snapshot
 }
 
 // appendMessages 追加消息到 session，并裁剪超长历史
@@ -189,10 +207,29 @@ func (sm *sessionManager) setWorkflowState(key string, workflow *WorkflowSnapsho
 	next.TenantID = keyParts.TenantID
 	next.ConversationID = keyParts.ConversationID
 	next.ActorUserID = keyParts.ActorUserID
-	if err := sm.workflowStore.Save(context.Background(), next); err != nil {
+	ctx := workflowStoreContext(context.Background(), keyParts)
+	current, err := sm.workflowStore.Load(ctx, keyParts)
+	if err != nil {
+		return
+	}
+	if current == nil {
+		_, err = sm.workflowStore.Create(ctx, keyParts, next)
+	} else {
+		_, err = sm.workflowStore.CompareAndSwap(ctx, keyParts, current.Version, next)
+	}
+	if err != nil {
 		return
 	}
 
+	sm.cacheWorkflowBinding(key, next)
+}
+
+func (sm *sessionManager) cacheWorkflowBinding(key string, workflow *WorkflowSnapshot) {
+	if workflow == nil {
+		sm.clearWorkflowBinding(key)
+		return
+	}
+	keyParts := workflowKeyFromSessionKey(key, workflow)
 	sm.mu.Lock()
 	s, ok := sm.sessions[key]
 	if !ok {
@@ -262,16 +299,37 @@ func (sm *sessionManager) clearWorkflowState(key string) {
 	}
 	sm.mu.RUnlock()
 
-	if err := sm.workflowStore.Clear(context.Background(), workflowKey, "session_clear"); err != nil {
+	ctx := workflowStoreContext(context.Background(), workflowKey)
+	current, err := sm.workflowStore.Load(ctx, workflowKey)
+	if err != nil {
 		return
 	}
+	if current != nil {
+		if err := sm.workflowStore.DeleteIfVersion(ctx, workflowKey, current.Version, "session_clear"); err != nil {
+			return
+		}
+	}
 
+	sm.clearWorkflowBinding(key)
+}
+
+func (sm *sessionManager) clearWorkflowBinding(key string) {
 	sm.mu.Lock()
 	if s, ok := sm.sessions[key]; ok {
 		s.workflowKey = WorkflowKey{}
 		s.updatedAt = time.Now()
 	}
 	sm.mu.Unlock()
+}
+
+func workflowStoreContext(ctx context.Context, key WorkflowKey) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := tenantctx.TenantIDFrom(ctx); ok {
+		return ctx
+	}
+	return tenantctx.WithTenantID(ctx, key.TenantID)
 }
 
 // applyWorkflowResult applies workflow lifecycle result to session state.

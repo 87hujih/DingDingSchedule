@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -110,7 +111,7 @@ func TestAgentChatAllowsFollowUpToolCalls(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:     server.URL,
 		LLMAPIKey:      "test-key",
 		LLMModel:       "test-model",
@@ -121,6 +122,7 @@ func TestAgentChatAllowsFollowUpToolCalls(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -148,7 +150,7 @@ func TestAgentChatAllowsFollowUpToolCalls(t *testing.T) {
 func TestNewAgentUsesDedicatedRouterModelWhenConfigured(t *testing.T) {
 	t.Parallel()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       "http://main-llm",
 		LLMAPIKey:        "main-key",
 		LLMModel:         "main-model",
@@ -160,6 +162,7 @@ func TestNewAgentUsesDedicatedRouterModelWhenConfigured(t *testing.T) {
 		Tenant:           testTenantPort{},
 		Logger:           zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	if a.routerClient == nil {
@@ -179,11 +182,12 @@ func TestNewAgentUsesDedicatedRouterModelWhenConfigured(t *testing.T) {
 func TestNewAgentDefaultsToLegacyProtocolMode(t *testing.T) {
 	t.Parallel()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		User:   testUserPort{},
 		Tenant: testTenantPort{},
 		Logger: zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	if a.protocolMode != ProtocolModeLegacy {
@@ -194,11 +198,12 @@ func TestNewAgentDefaultsToLegacyProtocolMode(t *testing.T) {
 func TestNewAgentDefaultsToLiveRouteMode(t *testing.T) {
 	t.Parallel()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		User:   testUserPort{},
 		Tenant: testTenantPort{},
 		Logger: zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	if a.routeMode != string(RouteModeLive) {
@@ -209,7 +214,7 @@ func TestNewAgentDefaultsToLiveRouteMode(t *testing.T) {
 func TestNewAgentCreatesProtocolLiveIntentCompilerWhenLLMConfigured(t *testing.T) {
 	t.Parallel()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:   "http://llm.example.test/v1/chat/completions",
 		LLMModel:     "intent-model",
 		ProtocolMode: string(ProtocolModeLive),
@@ -217,6 +222,7 @@ func TestNewAgentCreatesProtocolLiveIntentCompilerWhenLLMConfigured(t *testing.T
 		Tenant:       testTenantPort{},
 		Logger:       zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	if a.intentCompiler == nil {
@@ -227,7 +233,7 @@ func TestNewAgentCreatesProtocolLiveIntentCompilerWhenLLMConfigured(t *testing.T
 func TestNewAgentAppliesConfiguredIntentCompilerTimeout(t *testing.T) {
 	t.Parallel()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:            "http://llm.example.test/v1/chat/completions",
 		LLMModel:              "intent-model",
 		ProtocolMode:          string(ProtocolModeLive),
@@ -236,6 +242,7 @@ func TestNewAgentAppliesConfiguredIntentCompilerTimeout(t *testing.T) {
 		Tenant:                testTenantPort{},
 		Logger:                zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	compiler, ok := a.intentCompiler.(*llmIntentCompiler)
@@ -247,21 +254,20 @@ func TestNewAgentAppliesConfiguredIntentCompilerTimeout(t *testing.T) {
 	}
 }
 
-func TestNewAgentDoesNotCreateProtocolLiveIntentCompilerForPortZeroURLWithPath(t *testing.T) {
+func TestNewAgentRejectsProtocolLiveWithoutAvailableIntentCompiler(t *testing.T) {
 	t.Parallel()
 
-	a := NewAgent(Deps{
-		LLMBaseURL:   "http://127.0.0.1:0/v1/chat/completions",
-		LLMModel:     "intent-model",
-		ProtocolMode: string(ProtocolModeLive),
-		User:         testUserPort{},
-		Tenant:       testTenantPort{},
-		Logger:       zap.NewNop().Sugar(),
+	a, err := NewAgent(Deps{
+		LLMBaseURL:    "http://127.0.0.1:0/v1/chat/completions",
+		LLMModel:      "intent-model",
+		ProtocolMode:  string(ProtocolModeLive),
+		WorkflowStore: newMemoryWorkflowStore(nil),
+		User:          testUserPort{},
+		Tenant:        testTenantPort{},
+		Logger:        zap.NewNop().Sugar(),
 	})
-	defer a.Stop()
-
-	if a.intentCompiler != nil {
-		t.Fatalf("intentCompiler = %T, want nil for port-zero LLM URL", a.intentCompiler)
+	if err == nil || a != nil {
+		t.Fatalf("NewAgent() = %v, %v; want nil, error", a, err)
 	}
 }
 
@@ -361,11 +367,11 @@ func TestApplyProtocolLiveOutcomeRecordsTerminalWorkflowState(t *testing.T) {
 	}
 }
 
-func TestProtocolLiveChatDoesNotUseWorkflowStoreLockAroundPipeline(t *testing.T) {
+func TestProtocolLiveChatDoesNotReserveWhileClarifyingWrite(t *testing.T) {
 	t.Parallel()
 
 	store := newRecordingWorkflowStore()
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:   "http://127.0.0.1:0",
 		LLMAPIKey:    "test-key",
 		LLMModel:     "test-model",
@@ -381,6 +387,7 @@ func TestProtocolLiveChatDoesNotUseWorkflowStoreLockAroundPipeline(t *testing.T)
 		Tenant:        testTenantPort{},
 		Logger:        zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -396,15 +403,58 @@ func TestProtocolLiveChatDoesNotUseWorkflowStoreLockAroundPipeline(t *testing.T)
 		t.Fatalf("Chat() error = %v", err)
 	}
 
-	if store.withLockCalls() != 0 {
-		t.Fatalf("WithLock calls = %d, want 0; protocol_live must not run pipeline under store lock", store.withLockCalls())
+	if store.reservationCalls() != 0 {
+		t.Fatalf("reservation calls = %d, want 0 before write is ready", store.reservationCalls())
 	}
 	workflow, err := store.Load(context.Background(), WorkflowKey{TenantID: 42, ConversationID: "conv-lock", ActorUserID: 7})
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if workflow == nil || workflow.State != WorkflowCollectScope {
+	if workflow == nil || workflow.Snapshot == nil || workflow.Snapshot.State != WorkflowCollectScope {
 		t.Fatalf("workflow = %+v, want collect_scope saved under structured key", workflow)
+	}
+}
+
+func TestProtocolLiveChatRetriesWorkflowConflictOnlyOnceWithFreshCompilation(t *testing.T) {
+	t.Parallel()
+
+	compiler := &workflowConflictCountingCompiler{draft: ProtocolDraft{
+		Act:        ActWriteRequest,
+		Domain:     DomainSubscription,
+		Operation:  "subscription.start",
+		Confidence: 0.96,
+	}}
+	store := &alwaysConflictingCreateStore{WorkflowStore: NewMemoryWorkflowStore()}
+	a := mustNewTestAgent(Deps{
+		LLMBaseURL:     "http://127.0.0.1:0",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		ProtocolMode:   string(ProtocolModeLive),
+		IntentCompiler: compiler,
+		WorkflowStore:  store,
+		User:           testUserPort{},
+		Tenant:         testTenantPort{},
+		Logger:         zap.NewNop().Sugar(),
+	})
+	defer a.Stop()
+
+	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
+		CorpID:            "corp-1",
+		SenderID:          "ding-user",
+		SenderNick:        "Alice",
+		Content:           "开启本群考勤订阅",
+		ConversationID:    "conv-conflict",
+		ConversationType:  "2",
+		ConversationTitle: "测试群",
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if store.createCalls != 2 {
+		t.Fatalf("compiler calls=%d create calls=%d, want one fresh retry", compiler.calls, store.createCalls)
+	}
+	if !strings.Contains(reply, "重新发送") {
+		t.Fatalf("reply = %q, want stable conflict retry response", reply)
 	}
 }
 
@@ -413,7 +463,7 @@ func TestProtocolLiveChatIgnoresSessionDerivedWorkflowState(t *testing.T) {
 
 	groupSub := &executorFakeGroupSubPort{}
 	store := newRecordingWorkflowStore()
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:   "http://127.0.0.1:0",
 		LLMAPIKey:    "test-key",
 		LLMModel:     "test-model",
@@ -430,6 +480,7 @@ func TestProtocolLiveChatIgnoresSessionDerivedWorkflowState(t *testing.T) {
 		Tenant:        testTenantPort{},
 		Logger:        zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	sessionKey := "42:conv-session-fallback:ding-user"
@@ -469,7 +520,7 @@ func TestProtocolLiveWorkflowStoreFailureRecordsV2Fields(t *testing.T) {
 	t.Parallel()
 
 	callLog := newTestCallLogPort()
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:   "http://127.0.0.1:0",
 		LLMAPIKey:    "test-key",
 		LLMModel:     "test-model",
@@ -486,6 +537,7 @@ func TestProtocolLiveWorkflowStoreFailureRecordsV2Fields(t *testing.T) {
 		Tenant:        testTenantPort{},
 		Logger:        zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -536,61 +588,67 @@ type fixedIntentCompiler struct {
 	draft ProtocolDraft
 }
 
-func (c fixedIntentCompiler) Compile(context.Context, IntentCompileRequest) (IntentDraft, error) {
-	return c.draft, nil
+type workflowConflictCountingCompiler struct {
+	draft ProtocolDraft
+	calls int
+}
+
+func (c *workflowConflictCountingCompiler) Compile(context.Context, IntentCompileRequest) (IntentCompileResult, error) {
+	c.calls++
+	return staticIntentCompileResult(c.draft), nil
+}
+
+type alwaysConflictingCreateStore struct {
+	WorkflowStore
+	createCalls int
+}
+
+func (s *alwaysConflictingCreateStore) Create(
+	context.Context,
+	WorkflowKey,
+	*WorkflowSnapshot,
+) (*VersionedWorkflow, error) {
+	s.createCalls++
+	return nil, ErrWorkflowConflict
+}
+
+func (c fixedIntentCompiler) Compile(context.Context, IntentCompileRequest) (IntentCompileResult, error) {
+	return staticIntentCompileResult(c.draft), nil
 }
 
 type recordingWorkflowStore struct {
-	inner *memoryWorkflowStore
-	mu    sync.Mutex
-	locks int
+	WorkflowStore
+	mu           sync.Mutex
+	reservations int
 }
 
 func newRecordingWorkflowStore() *recordingWorkflowStore {
-	return &recordingWorkflowStore{inner: newMemoryWorkflowStore(nil)}
+	return &recordingWorkflowStore{WorkflowStore: newMemoryWorkflowStore(nil)}
 }
 
-func (s *recordingWorkflowStore) Load(ctx context.Context, key WorkflowKey) (*WorkflowSnapshot, error) {
-	return s.inner.Load(ctx, key)
-}
-
-func (s *recordingWorkflowStore) Save(ctx context.Context, workflow *WorkflowSnapshot) error {
-	return s.inner.Save(ctx, workflow)
-}
-
-func (s *recordingWorkflowStore) Clear(ctx context.Context, key WorkflowKey, reason string) error {
-	return s.inner.Clear(ctx, key, reason)
-}
-
-func (s *recordingWorkflowStore) WithLock(ctx context.Context, key WorkflowKey, fn func(*WorkflowSnapshot) (*WorkflowSnapshot, error)) error {
+func (s *recordingWorkflowStore) ReserveExecution(
+	ctx context.Context,
+	key WorkflowKey,
+	expectedVersion uint64,
+	next *WorkflowSnapshot,
+	reservation ReservedExecutionV1,
+) (*VersionedWorkflow, error) {
 	s.mu.Lock()
-	s.locks++
+	s.reservations++
 	s.mu.Unlock()
-	return s.inner.WithLock(ctx, key, fn)
+	return s.WorkflowStore.ReserveExecution(ctx, key, expectedVersion, next, reservation)
 }
 
-func (s *recordingWorkflowStore) withLockCalls() int {
+func (s *recordingWorkflowStore) reservationCalls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.locks
+	return s.reservations
 }
 
-type failingWorkflowStore struct{}
+type failingWorkflowStore struct{ WorkflowStore }
 
-func (failingWorkflowStore) Load(context.Context, WorkflowKey) (*WorkflowSnapshot, error) {
-	return nil, nil
-}
-
-func (failingWorkflowStore) Save(context.Context, *WorkflowSnapshot) error {
-	return errors.New("workflow store unavailable")
-}
-
-func (failingWorkflowStore) Clear(context.Context, WorkflowKey, string) error {
-	return errors.New("workflow store unavailable")
-}
-
-func (failingWorkflowStore) WithLock(context.Context, WorkflowKey, func(*WorkflowSnapshot) (*WorkflowSnapshot, error)) error {
-	return errors.New("workflow store unavailable")
+func (failingWorkflowStore) Load(context.Context, WorkflowKey) (*VersionedWorkflow, error) {
+	return nil, errors.New("workflow store unavailable")
 }
 
 func TestChatUsesRouteAsSinglePrimaryChainWhenProtocolIsShadow(t *testing.T) {
@@ -621,7 +679,7 @@ func TestChatUsesRouteAsSinglePrimaryChainWhenProtocolIsShadow(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       "http://unused-main-llm",
 		LLMAPIKey:        "test-key",
 		LLMModel:         "main-model",
@@ -637,6 +695,7 @@ func TestChatUsesRouteAsSinglePrimaryChainWhenProtocolIsShadow(t *testing.T) {
 		Tenant:           testTenantPort{},
 		Logger:           zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{

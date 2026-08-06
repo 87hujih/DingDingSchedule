@@ -16,11 +16,18 @@ import (
 	"schedule_server/internal/scheduler"
 	"schedule_server/internal/service"
 	"schedule_server/pkg/dingtalk"
+
+	"github.com/spf13/viper"
 )
 
 // RunServer 启动 HTTP 服务器并支持优雅关闭
-func RunServer() {
-	cfg := global.AppConfig.Server
+func RunServer() error {
+	agentRuntimeCfg, err := ParseAgentRuntimeConfig(global.AppConfig.LLM, global.AppConfig.Env)
+	if err != nil {
+		return fmt.Errorf("parse agent runtime config: %w", err)
+	}
+	runtimeAgentReadiness.configure(agentRuntimeCfg)
+	logAgentRuntimeConfig(agentRuntimeCfg)
 
 	// 初始化路由
 	router := setupRouter()
@@ -28,36 +35,26 @@ func RunServer() {
 	// 创建可取消的 context 用于控制 Stream 客户端生命周期
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 
-	// 启动钉钉 Stream 客户端（如果启用）
-	var agentInstance *agent.Agent
+	agentInstance, err := initializeAgentRuntime(agentRuntimeCfg)
+	if err != nil {
+		streamCancel()
+		return err
+	}
 	if global.AppConfig.DingTalk.StreamMode {
-		agentInstance = initAgent()
 		go startDingTalkStream(streamCtx, agentInstance)
+	}
+	if agentRuntimeCfg.WorkflowStore == agentWorkflowStoreDatabase {
+		go monitorAgentWorkflowDatabase(streamCtx, global.DB, runtimeAgentReadiness, 10*time.Second)
 	}
 
 	// 启动考勤调度器
 	attendanceScheduler := startAttendanceScheduler()
 
-	// 解析超时配置
-	readTimeout, err := time.ParseDuration(cfg.ReadTimeout)
-	if err != nil {
-		readTimeout = 10 * time.Second
-	}
-	writeTimeout, err := time.ParseDuration(cfg.WriteTimeout)
-	if err != nil {
-		writeTimeout = 10 * time.Second
-	}
-
-	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      router,
-		ReadTimeout:  readTimeout,
-		WriteTimeout: writeTimeout,
-	}
+	srv := newHTTPServer(router)
 
 	// 启动服务
 	go func() {
-		global.Log.Infow("服务启动", "port", cfg.Port)
+		global.Log.Infow("服务启动", "port", global.AppConfig.Server.Port)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			global.Log.Fatalw("服务启动失败", "error", err)
 		}
@@ -105,6 +102,74 @@ func RunServer() {
 	}
 
 	global.Log.Infow("服务已退出")
+	return nil
+}
+
+func newHTTPServer(handler http.Handler) *http.Server {
+	cfg := global.AppConfig.Server
+	readTimeout, err := time.ParseDuration(cfg.ReadTimeout)
+	if err != nil {
+		readTimeout = 10 * time.Second
+	}
+	writeTimeout, err := time.ParseDuration(cfg.WriteTimeout)
+	if err != nil {
+		writeTimeout = 10 * time.Second
+	}
+	return &http.Server{
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
+		Handler:      handler,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout,
+	}
+}
+
+func initializeAgentRuntime(cfg AgentRuntimeConfig) (*agent.Agent, error) {
+	if cfg.WorkflowStore == agentWorkflowStoreDatabase {
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		probeErr := probeAgentWorkflowDatabase(probeCtx, global.DB)
+		probeCancel()
+		if probeErr != nil {
+			runtimeAgentReadiness.markWorkflowStoreUnavailable()
+			return nil, fmt.Errorf("agent workflow database readiness: %w", probeErr)
+		}
+	}
+	if !agentRuntimeMustStart(global.AppConfig.DingTalk.StreamMode, cfg) {
+		return nil, nil
+	}
+	instance, err := initAgent()
+	if err != nil {
+		return nil, fmt.Errorf("initialize agent: %w", err)
+	}
+	return instance, nil
+}
+
+func agentRuntimeMustStart(streamMode bool, cfg AgentRuntimeConfig) bool {
+	return streamMode || cfg.WorkflowStore == agentWorkflowStoreDatabase
+}
+
+func logAgentRuntimeConfig(cfg AgentRuntimeConfig) {
+	if global.Log == nil {
+		return
+	}
+	migrationDeadline := ""
+	if !cfg.WorkflowMigrationDeadline.IsZero() {
+		migrationDeadline = cfg.WorkflowMigrationDeadline.UTC().Format(time.RFC3339)
+	}
+	global.Log.Infow(
+		"agent_runtime_config",
+		"config_path", viper.ConfigFileUsed(),
+		"environment", global.AppConfig.Env,
+		"protocol_mode", cfg.ProtocolMode,
+		"compiler_timeout", cfg.IntentCompilerTimeout.String(),
+		"model", cfg.Model,
+		"workflow_store", cfg.WorkflowStore,
+		"workflow_migration", cfg.WorkflowMigration,
+		"workflow_migration_deadline", migrationDeadline,
+		"deterministic_compiler_mode", cfg.DeterministicCompilerMode,
+		"intent_context_enabled", cfg.IntentContextEnabled,
+		"log_payloads", cfg.LogPayloads,
+		"fingerprint", cfg.Fingerprint(),
+	)
 }
 
 // startDingTalkStream 启动钉钉 Stream 客户端（多租户模式）
@@ -131,7 +196,7 @@ func startDingTalkStream(ctx context.Context, agentInstance *agent.Agent) {
 
 	// 注册 Agent 聊天消息处理器
 	if agentInstance != nil {
-		streamMgr.SetChatMessageHandler(agentInstance.Chat)
+		streamMgr.SetChatMessageHandler(runtimeAgentReadiness.wrapChat(agentInstance.Chat))
 
 		// 构建群聊兜底推送处理器：SessionWebhook 失效时通过主动推送接口回复
 		asyncReplyHandler := func(ctx context.Context, msg *dingtalk.ChatMessage, reply string) {
@@ -168,7 +233,7 @@ func startDingTalkStream(ctx context.Context, agentInstance *agent.Agent) {
 }
 
 // initAgent 创建 Agent 及其依赖的 Service
-func initAgent() *agent.Agent {
+func initAgent() (*agent.Agent, error) {
 	repo := repository.NewRepository(global.DB)
 	dingMgr := service.NewDingTalkClientManager(repo.TenantRepo)
 

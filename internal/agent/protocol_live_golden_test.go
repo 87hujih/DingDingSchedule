@@ -19,7 +19,7 @@ func TestProtocolLiveGoldenHelpDoesNotCallBusinessTools(t *testing.T) {
 	callLog := newTestCallLogPort()
 	attendance := &testTaskAttendancePort{}
 	groupSub := &testGroupSubPort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:   "http://127.0.0.1:0",
 		LLMAPIKey:    "test-key",
 		LLMModel:     "test-model",
@@ -39,6 +39,7 @@ func TestProtocolLiveGoldenHelpDoesNotCallBusinessTools(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), protocolLiveGoldenMessage("你有什么功能", "conv-protocol-golden-help", "1"))
@@ -74,7 +75,7 @@ func TestProtocolLiveGoldenRuleExplainUsesKnowledgeOnly(t *testing.T) {
 		hits: []agenttools.KnowledgeHit{{Heading: "缺勤规则", Body: "超过上课时间未打卡会判为缺勤。", SourceRef: "attendance#absence"}},
 	}
 	groupSub := &testGroupSubPort{}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:   "http://127.0.0.1:0",
 		LLMAPIKey:    "test-key",
 		LLMModel:     "test-model",
@@ -97,6 +98,7 @@ func TestProtocolLiveGoldenRuleExplainUsesKnowledgeOnly(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), protocolLiveGoldenMessage("为什么判我缺勤", "conv-protocol-golden-rule", "1"))
@@ -130,7 +132,7 @@ func TestProtocolLiveGoldenMyScheduleUsesOperationExecutor(t *testing.T) {
 	schedule := &protocolLiveGoldenSchedulePort{
 		courses: []agenttools.CourseItem{{CourseName: "高等数学", DayOfWeek: 1, Section: 2, Location: "A101"}},
 	}
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:   "http://127.0.0.1:0",
 		LLMAPIKey:    "test-key",
 		LLMModel:     "test-model",
@@ -149,6 +151,7 @@ func TestProtocolLiveGoldenMyScheduleUsesOperationExecutor(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), protocolLiveGoldenMessage("查我的课表", "conv-protocol-golden-schedule", "1"))
@@ -176,7 +179,7 @@ func TestProtocolLiveGoldenUnknownIntentRecordsV2FailureFields(t *testing.T) {
 	t.Parallel()
 
 	callLog := newTestCallLogPort()
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:   "http://127.0.0.1:0",
 		LLMAPIKey:    "test-key",
 		LLMModel:     "test-model",
@@ -195,6 +198,7 @@ func TestProtocolLiveGoldenUnknownIntentRecordsV2FailureFields(t *testing.T) {
 		Tenant:         testTenantPort{},
 		Logger:         zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	if _, err := a.Chat(context.Background(), protocolLiveGoldenMessage("火星天气怎么样", "conv-protocol-golden-unknown", "1")); err != nil {
@@ -276,15 +280,15 @@ type protocolLiveGoldenCompiler struct {
 	drafts []ProtocolDraft
 }
 
-func (c *protocolLiveGoldenCompiler) Compile(context.Context, IntentCompileRequest) (IntentDraft, error) {
+func (c *protocolLiveGoldenCompiler) Compile(context.Context, IntentCompileRequest) (IntentCompileResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.drafts) == 0 {
-		return unknownIntentDraft("unknown_intent"), nil
+		return staticIntentCompileResult(unknownIntentDraft("unknown_intent")), nil
 	}
 	draft := c.drafts[0]
 	c.drafts = c.drafts[1:]
-	return draft, nil
+	return staticIntentCompileResult(draft), nil
 }
 
 type protocolLiveGoldenSchedulePort struct {

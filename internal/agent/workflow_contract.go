@@ -7,8 +7,9 @@ type WorkflowState string
 type WorkflowDecision string
 
 const (
-	WorkflowSubscriptionStart WorkflowType = "subscription.start"
-	WorkflowManualSignCreate  WorkflowType = "manual_sign.create"
+	WorkflowSubscriptionStart  WorkflowType = "subscription.start"
+	WorkflowSubscriptionCancel WorkflowType = "subscription.cancel"
+	WorkflowManualSignCreate   WorkflowType = "manual_sign.create"
 )
 
 const (
@@ -68,7 +69,7 @@ type WorkflowSnapshot struct {
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 	ExpiresAt       time.Time
-	Version         int64
+	Version         uint64
 
 	MissingSlots []string
 	Trusted      trustedEntities

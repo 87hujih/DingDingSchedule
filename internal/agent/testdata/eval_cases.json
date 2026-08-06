@@ -277,7 +277,7 @@
     "expected_protocol_act": "write_request",
     "expected_protocol_domain": "subscription",
     "expected_protocol_operation": "subscription.start",
-    "expected_workflow_decision": "completed",
+    "expected_workflow_decision": "ready_to_execute",
     "expected_tools": []
   },
   {
@@ -548,7 +548,7 @@
     "expected_protocol_operation": "subscription.start",
     "expected_response_kind": "result",
     "expected_failure_layer": "",
-    "expected_workflow_decision": "completed",
+    "expected_workflow_decision": "ready_to_execute",
     "expected_tools": []
   },
   {
@@ -594,7 +594,7 @@
     "expected_protocol_operation": "subscription.start",
     "expected_response_kind": "result",
     "expected_failure_layer": "",
-    "expected_workflow_decision": "completed",
+    "expected_workflow_decision": "ready_to_execute",
     "expected_tools": []
   },
   {

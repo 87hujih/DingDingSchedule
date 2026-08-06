@@ -428,22 +428,22 @@ type evalProtocolResult struct {
 
 type evalProtocolCompiler struct{}
 
-func (evalProtocolCompiler) Compile(_ context.Context, req IntentCompileRequest) (IntentDraft, error) {
+func (evalProtocolCompiler) Compile(_ context.Context, req IntentCompileRequest) (IntentCompileResult, error) {
 	normalized := normalizeQuery(req.Message)
 	if draft, ok := compileCapabilityQuestion(req.Message); ok {
-		return draft, nil
+		return staticIntentCompileResult(draft), nil
 	}
 	if hasHelpIntent(normalized) {
 		operation, ok := operationNameForActDomain(ActHelp, DomainSystem)
 		if !ok {
-			return unknownIntentDraft("operation_not_allowed"), nil
+			return staticIntentCompileResult(unknownIntentDraft("operation_not_allowed")), nil
 		}
-		return IntentDraft{
+		return staticIntentCompileResult(IntentDraft{
 			Act:        ActHelp,
 			Domain:     DomainSystem,
 			Operation:  operation,
 			Confidence: 1,
-		}, nil
+		}), nil
 	}
 	var workflow *protocolWorkflowContext
 	if req.ActiveWorkflow != nil {
@@ -452,10 +452,10 @@ func (evalProtocolCompiler) Compile(_ context.Context, req IntentCompileRequest)
 			MissingFields: append([]string(nil), req.ActiveWorkflow.MissingFields...),
 		}
 	}
-	return compileProtocol(protocolInput{
+	return staticIntentCompileResult(compileProtocol(protocolInput{
 		Message:        req.Message,
 		ActiveWorkflow: workflow,
-	}), nil
+	})), nil
 }
 
 func evaluateProtocolCase(ctx context.Context, tc EvalCase, knowledge KnowledgePort, tenantID uint) evalProtocolResult {
@@ -562,12 +562,12 @@ func (p evalUserPort) SearchByName(_ context.Context, name string) ([]tools.User
 
 type evalGroupSubPort struct{}
 
-func (evalGroupSubPort) Subscribe(context.Context, uint, string, string, uint, []int64) error {
-	return nil
+func (evalGroupSubPort) Subscribe(context.Context, uint, string, string, uint, []int64, string) (tools.GroupSubMutationResult, error) {
+	return tools.GroupSubMutationResult{Effect: tools.GroupSubWriteCreated, Subscription: &tools.GroupSubInfo{Subscribed: true, PushEnabled: true}}, nil
 }
 
-func (evalGroupSubPort) Unsubscribe(context.Context, uint, string) error {
-	return nil
+func (evalGroupSubPort) Unsubscribe(context.Context, uint, string, string) (tools.GroupSubMutationResult, error) {
+	return tools.GroupSubMutationResult{Effect: tools.GroupSubWriteCancelled}, nil
 }
 
 func (evalGroupSubPort) GetSubscription(context.Context, uint, string) (*tools.GroupSubInfo, error) {

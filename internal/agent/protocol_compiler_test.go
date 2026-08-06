@@ -118,12 +118,13 @@ func TestProtocolCompilerUsesInjectedIntentCompilerDraftContracts(t *testing.T) 
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			draft, err := compileProtocolWithCompiler(context.Background(), protocolInput{
+			compileResult, err := compileProtocolWithCompiler(context.Background(), protocolInput{
 				Message: tt.message,
 			}, fake)
 			if err != nil {
 				t.Fatalf("compileProtocolWithCompiler() error = %v", err)
 			}
+			draft := compileResult.Draft
 			if draft.Act != tt.wantAct || draft.Domain != tt.wantDomain || draft.Operation != tt.wantOp {
 				t.Fatalf("draft = %+v", draft)
 			}
@@ -133,12 +134,16 @@ func TestProtocolCompilerUsesInjectedIntentCompilerDraftContracts(t *testing.T) 
 		})
 	}
 
-	if len(fake.requests) != len(tests) {
-		t.Fatalf("compiler requests = %d, want %d", len(fake.requests), len(tests))
-	}
-	for i, req := range fake.requests {
-		if req.Message != tests[i].message {
-			t.Fatalf("request %d Message = %q, want %q", i, req.Message, tests[i].message)
+	for _, req := range fake.requests {
+		found := false
+		for _, tt := range tests {
+			if req.Message == tt.message {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("unexpected compiler request Message = %q", req.Message)
 		}
 	}
 }
@@ -148,7 +153,7 @@ func TestProtocolCompilerPassesWorkflowContextToInjectedCompiler(t *testing.T) {
 
 	fake := &fakeProtocolIntentCompiler{
 		draftsByMessage: map[string]IntentDraft{
-			"全部人员": {
+			"我想选全部人员": {
 				Act:       ActWorkflowContinue,
 				Domain:    DomainSubscription,
 				Operation: "subscription.start",
@@ -157,7 +162,7 @@ func TestProtocolCompilerPassesWorkflowContextToInjectedCompiler(t *testing.T) {
 	}
 
 	_, err := compileProtocolWithCompiler(context.Background(), protocolInput{
-		Message: "全部人员",
+		Message: "我想选全部人员",
 		ActiveWorkflow: &protocolWorkflowContext{
 			Type:          "subscription.start",
 			MissingFields: []string{"scope"},
@@ -194,7 +199,7 @@ func TestProtocolCompilerFallsBackToDeterministicWorkflowContinueWhenInjectedCom
 		},
 	}
 
-	draft, err := compileProtocolWithCompiler(context.Background(), protocolInput{
+	compileResult, err := compileProtocolWithCompiler(context.Background(), protocolInput{
 		Message: "1",
 		ActiveWorkflow: &protocolWorkflowContext{
 			Type:          "subscription.start",
@@ -204,6 +209,7 @@ func TestProtocolCompilerFallsBackToDeterministicWorkflowContinueWhenInjectedCom
 	if err != nil {
 		t.Fatalf("compileProtocolWithCompiler() error = %v", err)
 	}
+	draft := compileResult.Draft
 	if draft.Act != ActWorkflowContinue {
 		t.Fatalf("Act = %q, want %q", draft.Act, ActWorkflowContinue)
 	}
@@ -213,8 +219,8 @@ func TestProtocolCompilerFallsBackToDeterministicWorkflowContinueWhenInjectedCom
 	if draft.Operation != "subscription.start" {
 		t.Fatalf("Operation = %q, want subscription.start", draft.Operation)
 	}
-	if len(fake.requests) != 1 {
-		t.Fatalf("compiler requests = %d, want 1", len(fake.requests))
+	if len(fake.requests) != 0 {
+		t.Fatalf("compiler requests = %d, want exact candidate ordinal to skip LLM", len(fake.requests))
 	}
 }
 
@@ -231,7 +237,7 @@ func TestProtocolCompilerFallsBackToDepartmentWorkflowContinueDuringScopeCollect
 		},
 	}
 
-	draft, err := compileProtocolWithCompiler(context.Background(), protocolInput{
+	compileResult, err := compileProtocolWithCompiler(context.Background(), protocolInput{
 		Message: "家族七期",
 		ActiveWorkflow: &protocolWorkflowContext{
 			Type:          "subscription.start",
@@ -241,6 +247,7 @@ func TestProtocolCompilerFallsBackToDepartmentWorkflowContinueDuringScopeCollect
 	if err != nil {
 		t.Fatalf("compileProtocolWithCompiler() error = %v", err)
 	}
+	draft := compileResult.Draft
 	if draft.Act != ActWorkflowContinue {
 		t.Fatalf("Act = %q, want %q", draft.Act, ActWorkflowContinue)
 	}
@@ -268,12 +275,13 @@ func TestProtocolCompilerFallsBackToDeterministicDepartmentListWhenInjectedCompi
 		},
 	}
 
-	draft, err := compileProtocolWithCompiler(context.Background(), protocolInput{
+	compileResult, err := compileProtocolWithCompiler(context.Background(), protocolInput{
 		Message: "当前都有哪些部门",
 	}, fake)
 	if err != nil {
 		t.Fatalf("compileProtocolWithCompiler() error = %v", err)
 	}
+	draft := compileResult.Draft
 	if draft.Act != ActReadQuery {
 		t.Fatalf("Act = %q, want %q", draft.Act, ActReadQuery)
 	}
@@ -283,8 +291,8 @@ func TestProtocolCompilerFallsBackToDeterministicDepartmentListWhenInjectedCompi
 	if draft.Operation != "subscription.list_departments" {
 		t.Fatalf("Operation = %q, want subscription.list_departments", draft.Operation)
 	}
-	if len(fake.requests) != 1 {
-		t.Fatalf("compiler requests = %d, want 1", len(fake.requests))
+	if len(fake.requests) != 0 {
+		t.Fatalf("compiler requests = %d, want exact alias to skip LLM", len(fake.requests))
 	}
 }
 
@@ -471,10 +479,10 @@ type fakeProtocolIntentCompiler struct {
 	requests        []IntentCompileRequest
 }
 
-func (c *fakeProtocolIntentCompiler) Compile(ctx context.Context, req IntentCompileRequest) (IntentDraft, error) {
+func (c *fakeProtocolIntentCompiler) Compile(ctx context.Context, req IntentCompileRequest) (IntentCompileResult, error) {
 	c.requests = append(c.requests, req)
 	if draft, ok := c.draftsByMessage[req.Message]; ok {
-		return draft, nil
+		return staticIntentCompileResult(draft), nil
 	}
-	return IntentDraft{Act: ActUnknown, Domain: DomainUnknown, Reason: "missing_fake_draft"}, nil
+	return staticIntentCompileResult(IntentDraft{Act: ActUnknown, Domain: DomainUnknown, Reason: "missing_fake_draft"}), nil
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -27,17 +28,20 @@ const (
 
 // Deps Agent 依赖注入
 type Deps struct {
-	LLMBaseURL            string
-	LLMAPIKey             string
-	LLMModel              string
-	RouterLLMBaseURL      string
-	RouterLLMAPIKey       string
-	RouterLLMModel        string
-	RouteMode             string
-	ProtocolMode          string
-	IntentCompiler        IntentCompiler
-	IntentCompilerTimeout time.Duration
-	WorkflowStore         WorkflowStore
+	LLMBaseURL                string
+	LLMAPIKey                 string
+	LLMModel                  string
+	RouterLLMBaseURL          string
+	RouterLLMAPIKey           string
+	RouterLLMModel            string
+	RouteMode                 string
+	ProtocolMode              string
+	IntentCompiler            IntentCompiler
+	IntentCompilerTimeout     time.Duration
+	IntentStructuredOutput    StructuredOutputSpec
+	IntentContextEnabled      bool
+	DeterministicCompilerMode string
+	WorkflowStore             WorkflowStore
 
 	Schedule                SchedulePort
 	Attendance              AttendancePort
@@ -74,16 +78,23 @@ type Agent struct {
 	limiter        *rateLimiter
 	logWriter      *callLogWriter
 	stopCleanup    chan struct{}
+	recoveryDone   chan struct{}
 	once           sync.Once
 }
 
-// NewAgent 创建 Agent
-func NewAgent(deps Deps) *Agent {
+// NewAgent creates an Agent after validating lifecycle-critical dependencies.
+func NewAgent(deps Deps) (*Agent, error) {
 	routeMode := strings.TrimSpace(deps.RouteMode)
 	if routeMode == "" {
 		routeMode = string(RouteModeLive)
 	}
-	protocolMode := normalizeProtocolMode(strings.TrimSpace(deps.ProtocolMode))
+	protocolMode, err := strictProtocolMode(deps.ProtocolMode)
+	if err != nil {
+		return nil, err
+	}
+	if deps.WorkflowStore == nil {
+		return nil, fmt.Errorf("workflow store is required")
+	}
 
 	mainClient := NewLLMClient(deps.LLMBaseURL, deps.LLMAPIKey, deps.LLMModel)
 	routerClient := mainClient
@@ -104,13 +115,16 @@ func NewAgent(deps Deps) *Agent {
 	}
 	intentCompiler := deps.IntentCompiler
 	if intentCompiler == nil && protocolMode == ProtocolModeLive && protocolLLMCompilerAvailable(mainClient) {
-		intentCompiler = newLLMIntentCompiler(mainClient, intentCompilerOptions{Timeout: deps.IntentCompilerTimeout})
+		intentCompiler = newLLMIntentCompiler(mainClient, intentCompilerOptions{
+			Timeout:          deps.IntentCompilerTimeout,
+			StructuredOutput: deps.IntentStructuredOutput,
+		})
+	}
+	if protocolMode == ProtocolModeLive && intentCompiler == nil {
+		return nil, fmt.Errorf("protocol_live intent compiler is unavailable")
 	}
 
 	workflowStore := deps.WorkflowStore
-	if workflowStore == nil {
-		workflowStore = newMemoryWorkflowStore(nil)
-	}
 
 	a := &Agent{
 		deps:           deps,
@@ -123,6 +137,7 @@ func NewAgent(deps Deps) *Agent {
 		sessions:       newSessionManager(workflowStore),
 		limiter:        newRateLimiter(),
 		stopCleanup:    make(chan struct{}),
+		recoveryDone:   make(chan struct{}),
 	}
 
 	handlers := []TaskHandler{
@@ -143,19 +158,33 @@ func NewAgent(deps Deps) *Agent {
 
 	// 启动 Session 过期清理
 	go a.cleanupLoop()
+	go a.workflowRecoveryLoop()
 
 	// 启动异步日志写入 worker
 	if deps.CallLog != nil {
 		a.logWriter = newCallLogWriter(deps.CallLog, deps.Logger)
 	}
 
-	return a
+	return a, nil
+}
+
+func strictProtocolMode(value string) (ProtocolMode, error) {
+	mode := ProtocolMode(strings.TrimSpace(value))
+	for _, allowed := range protocolModes() {
+		if mode == allowed {
+			return mode, nil
+		}
+	}
+	return "", fmt.Errorf("invalid protocol mode %q", value)
 }
 
 // Stop 停止 Agent（清理 goroutine），在优雅关闭时调用
 func (a *Agent) Stop() {
 	a.once.Do(func() {
 		close(a.stopCleanup)
+		if a.recoveryDone != nil {
+			<-a.recoveryDone
+		}
 		if a.logWriter != nil {
 			a.logWriter.Stop()
 		}
@@ -218,25 +247,78 @@ func (a *Agent) chat(ctx context.Context, msg *dingtalk.ChatMessage) (string, er
 		workflowKey := workflowKeyFromUserContext(uctx)
 		var workflowBefore *WorkflowSnapshot
 		var outcome protocolLiveOutcome
-
-		activeWorkflow, workflowErr := a.workflowStore.Load(ctx, workflowKey)
-		if workflowErr != nil {
-			a.deps.Logger.Warnw("读取 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", workflowErr)
-			outcome = workflowStoreFailureOutcome()
-		} else {
+		var recentMessages []tools.Message
+		if a.deps.IntentContextEnabled && a.sessions != nil {
+			recentMessages = a.sessions.recentMessages(sessionKey)
+		}
+		for attempt := 0; attempt < 2; attempt++ {
+			versionedWorkflow, workflowErr := a.workflowStore.Load(workflowStoreContext(ctx, workflowKey), workflowKey)
+			if workflowErr != nil {
+				a.deps.Logger.Warnw("读取 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", workflowErr)
+				outcome = workflowStoreFailureOutcome()
+				break
+			}
+			var activeWorkflow *WorkflowSnapshot
+			if versionedWorkflow != nil {
+				activeWorkflow = versionedWorkflow.Snapshot
+			}
 			workflowBefore = cloneWorkflowSnapshot(activeWorkflow)
 			if activeWorkflow != nil {
 				metrics.Wf.IDBefore = activeWorkflow.ID
 			}
+			if workflowHasActiveExecution(versionedWorkflow) {
+				outcome = workflowExecutionPendingOutcome(protocolLiveOutcome{})
+				finalizeProtocolLiveOutcome(&outcome)
+				break
+			}
+
 			outcome = a.protocolLivePipeline().Handle(ctx, protocolLiveInput{
 				Message:        msg.Content,
+				RecentMessages: recentMessages,
 				User:           uctx,
 				ActiveWorkflow: activeWorkflow,
 			})
-			if persistErr := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, outcome); persistErr != nil {
-				a.deps.Logger.Warnw("更新 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", persistErr)
-				outcome = workflowStoreFailureOutcome()
+
+			var (
+				persisted    *VersionedWorkflow
+				persistErr   error
+				writeStarted bool
+			)
+			if outcome.PreparedWrite != nil {
+				outcome, persisted, writeStarted, persistErr = a.coordinatePreparedWrite(
+					ctx,
+					workflowKey,
+					versionedWorkflow,
+					outcome,
+				)
+			} else {
+				persisted, persistErr = a.persistProtocolLiveWorkflowOutcome(
+					workflowStoreContext(ctx, workflowKey),
+					workflowKey,
+					versionedWorkflow,
+					outcome,
+				)
 			}
+			if persistErr != nil {
+				if errors.Is(persistErr, ErrWorkflowConflict) && !writeStarted && attempt == 0 {
+					continue
+				}
+				a.deps.Logger.Warnw("更新 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "writeStarted", writeStarted, "err", persistErr)
+				if !writeStarted {
+					if errors.Is(persistErr, ErrWorkflowConflict) {
+						outcome = workflowConflictRetryOutcome()
+					} else if errors.Is(persistErr, ErrExecutionInProgress) {
+						outcome = workflowExecutionPendingOutcome(outcome)
+					} else {
+						outcome = workflowStoreFailureOutcome()
+					}
+				}
+				break
+			}
+			if persisted != nil && outcome.WorkflowAfter != nil {
+				outcome.WorkflowAfter = cloneWorkflowSnapshot(persisted.Snapshot)
+			}
+			break
 		}
 		if a.sessions != nil {
 			a.sessions.bindWorkflowKey(sessionKey, workflowKey)
@@ -1262,6 +1344,11 @@ func (a *Agent) writeCallLog(_ context.Context, uctx *tools.UserContext, questio
 		RequestID:                  metrics.Proto.RequestID,
 		ConversationID:             uctx.ConversationID,
 		CompilerStatus:             metrics.Proto.CompilerStatus,
+		CompilerSource:             metrics.Proto.CompilerSource,
+		CompilerFallbackReason:     metrics.Proto.CompilerFallbackReason,
+		CompilerCandidateCount:     metrics.Proto.CompilerCandidateCount,
+		LLMInvoked:                 metrics.Proto.LLMInvoked,
+		LLMAttempts:                metrics.Proto.LLMAttempts,
 		CompilerLatencyMs:          metrics.Proto.CompilerLatencyMs,
 		IntentDraftJSON:            metrics.Proto.IntentDraftJSON,
 		CatalogValidationCode:      metrics.Proto.CatalogValidationCode,
@@ -1376,6 +1463,7 @@ func (a *Agent) operationExecutor() operationExecutor {
 func (a *Agent) protocolLivePipeline() protocolLivePipeline {
 	return newProtocolLivePipeline(protocolLivePipelineDeps{
 		Compiler:       a.intentCompiler,
+		CompilerMode:   a.deps.DeterministicCompilerMode,
 		Executor:       a.operationExecutor(),
 		User:           a.deps.User,
 		Dept:           a.deps.Dept,
@@ -1390,9 +1478,13 @@ func (a *Agent) applyProtocolLiveOutcome(sessionKey string, metrics *callMetrics
 
 func (a *Agent) applyProtocolLiveOutcomeForKey(ctx context.Context, workflowKey WorkflowKey, sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome) {
 	var workflowBefore *WorkflowSnapshot
+	var versionedBefore *VersionedWorkflow
 	if a != nil && a.workflowStore != nil {
-		if loaded, err := a.workflowStore.Load(ctx, workflowKey); err == nil {
-			workflowBefore = loaded
+		if loaded, err := a.workflowStore.Load(workflowStoreContext(ctx, workflowKey), workflowKey); err == nil {
+			versionedBefore = loaded
+			if loaded != nil {
+				workflowBefore = loaded.Snapshot
+			}
 		} else if a.deps.Logger != nil {
 			a.deps.Logger.Warnw("读取 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", err)
 		}
@@ -1402,37 +1494,60 @@ func (a *Agent) applyProtocolLiveOutcomeForKey(ctx context.Context, workflowKey 
 	}
 
 	if a != nil {
-		if err := a.persistProtocolLiveWorkflowOutcome(ctx, workflowKey, outcome); err != nil && a.deps.Logger != nil {
+		persisted, err := a.persistProtocolLiveWorkflowOutcome(workflowStoreContext(ctx, workflowKey), workflowKey, versionedBefore, outcome)
+		if err != nil && a.deps.Logger != nil {
 			a.deps.Logger.Warnw("更新 workflow 失败", "tenantID", workflowKey.TenantID, "conversationID", workflowKey.ConversationID, "actorUserID", workflowKey.ActorUserID, "err", err)
+		} else if persisted != nil && outcome.WorkflowAfter != nil {
+			outcome.WorkflowAfter = cloneWorkflowSnapshot(persisted.Snapshot)
 		}
 	}
 	a.applyProtocolLiveOutcomeAfterStore(sessionKey, metrics, outcome, workflowBefore)
 }
 
-func (a *Agent) persistProtocolLiveWorkflowOutcome(ctx context.Context, workflowKey WorkflowKey, outcome protocolLiveOutcome) error {
+func (a *Agent) persistProtocolLiveWorkflowOutcome(
+	ctx context.Context,
+	workflowKey WorkflowKey,
+	current *VersionedWorkflow,
+	outcome protocolLiveOutcome,
+) (*VersionedWorkflow, error) {
 	if a == nil || a.workflowStore == nil {
-		return nil
+		return nil, nil
 	}
 	if outcome.ClearWorkflow {
-		return a.workflowStore.Clear(ctx, workflowKey, string(outcome.WorkflowDecision))
+		if current == nil {
+			return nil, nil
+		}
+		return nil, a.workflowStore.DeleteIfVersion(ctx, workflowKey, current.Version, string(outcome.WorkflowDecision))
 	}
 	if outcome.WorkflowAfter == nil {
-		return nil
+		return current, nil
 	}
 	next := cloneWorkflowSnapshot(outcome.WorkflowAfter)
 	next.TenantID = workflowKey.TenantID
 	next.ConversationID = workflowKey.ConversationID
 	next.ActorUserID = workflowKey.ActorUserID
-	return a.workflowStore.Save(ctx, next)
+	if current == nil {
+		return a.workflowStore.Create(ctx, workflowKey, next)
+	}
+	return a.workflowStore.CompareAndSwap(ctx, workflowKey, current.Version, next)
 }
 
 func (a *Agent) applyProtocolLiveOutcomeAfterStore(sessionKey string, metrics *callMetrics, outcome protocolLiveOutcome, workflowBefore *WorkflowSnapshot) {
 	if a != nil && a.sessions != nil {
+		persistThroughSession := a.workflowStore == nil
 		if outcome.ClearWorkflow {
-			a.sessions.clearWorkflowState(sessionKey)
+			if persistThroughSession {
+				a.sessions.clearWorkflowState(sessionKey)
+			} else {
+				a.sessions.clearWorkflowBinding(sessionKey)
+			}
 		}
 		if outcome.WorkflowAfter != nil {
-			a.sessions.setWorkflowState(sessionKey, outcome.WorkflowAfter)
+			if persistThroughSession {
+				a.sessions.setWorkflowState(sessionKey, outcome.WorkflowAfter)
+			} else {
+				a.sessions.cacheWorkflowBinding(sessionKey, outcome.WorkflowAfter)
+			}
 		}
 	}
 
@@ -1458,6 +1573,11 @@ func (a *Agent) applyProtocolLiveOutcomeMetrics(metrics *callMetrics, outcome pr
 	metrics.Proto.CandidateCount = outcome.CandidateCount
 	metrics.Proto.RequestID = outcome.RequestID
 	metrics.Proto.CompilerStatus = outcome.CompilerStatus
+	metrics.Proto.CompilerSource = outcome.CompilerSource
+	metrics.Proto.CompilerFallbackReason = outcome.CompilerFallbackReason
+	metrics.Proto.CompilerCandidateCount = outcome.CompilerCandidateCount
+	metrics.Proto.LLMInvoked = outcome.LLMInvoked
+	metrics.Proto.LLMAttempts = outcome.LLMAttempts
 	metrics.Proto.CompilerLatencyMs = outcome.CompilerLatencyMs
 	metrics.Proto.IntentDraftJSON = outcome.IntentDraftJSON
 	metrics.Proto.CatalogValidationCode = firstNonEmpty(outcome.CatalogValidationCode, outcome.Validation.ValidationCode)
@@ -1655,9 +1775,25 @@ func protocolWorkflowContextFromWorkflowSnapshot(workflow *WorkflowSnapshot) *pr
 		return nil
 	}
 	return &protocolWorkflowContext{
-		Type:          string(workflow.Type),
-		MissingFields: cloneStringSlice(workflowMissingFields(workflow)),
+		Type:            string(workflow.Type),
+		State:           workflow.State,
+		MissingFields:   cloneStringSlice(workflowMissingFields(workflow)),
+		Candidates:      cloneWorkflowCandidates(workflow.Candidates),
+		CollectedLabels: workflowCollectedLabels(workflow),
 	}
+}
+
+func workflowCollectedLabels(workflow *WorkflowSnapshot) map[string]string {
+	if workflow == nil || len(workflow.TrustedEntities) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(workflow.TrustedEntities))
+	for field, entity := range workflow.TrustedEntities {
+		if label := strings.TrimSpace(entity.Label); label != "" {
+			result[field] = label
+		}
+	}
+	return result
 }
 
 // resolveAttendanceTrustedEntities extracts trusted attendance fields from a user message.

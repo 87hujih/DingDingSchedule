@@ -10,6 +10,7 @@ import (
 
 type protocolLivePipelineDeps struct {
 	Compiler       IntentCompiler
+	CompilerMode   string
 	Validator      CatalogValidator
 	PrePolicy      PrePolicyGate
 	ResourcePolicy ResourcePolicyGate
@@ -32,6 +33,7 @@ type protocolLivePipeline struct {
 
 type protocolLiveInput struct {
 	Message        string
+	RecentMessages []tools.Message
 	User           *tools.UserContext
 	ActiveWorkflow *WorkflowSnapshot
 }
@@ -45,6 +47,11 @@ type protocolLiveOutcome struct {
 	AnswerMode              answerMode
 	BlockedReason           string
 	CompilerStatus          string
+	CompilerSource          string
+	CompilerFallbackReason  string
+	CompilerCandidateCount  int
+	LLMInvoked              bool
+	LLMAttempts             int
 	CompilerLatencyMs       int64
 	IntentDraftJSON         string
 	CatalogValidationCode   string
@@ -63,6 +70,13 @@ type protocolLiveOutcome struct {
 	WorkflowInterruptReason string
 	WorkflowAfter           *WorkflowSnapshot
 	ClearWorkflow           bool
+	PreparedWrite           *preparedWriteExecution
+}
+
+type preparedWriteExecution struct {
+	Request                OperationRequest
+	BusinessKey            string
+	ClearWorkflowOnSuccess bool
 }
 
 func newProtocolLivePipeline(deps protocolLivePipelineDeps) protocolLivePipeline {
@@ -116,22 +130,39 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 	}
 	workflowCtx := protocolWorkflowContextFromWorkflowSnapshot(activeWorkflow)
 	compileStart := time.Now()
-	draft, err := compileProtocolWithCompiler(ctx, protocolInput{
+	compileResult, err := compileProtocolWithCompilerMode(ctx, protocolInput{
 		Message:        input.Message,
+		RecentMessages: input.RecentMessages,
 		ActiveWorkflow: workflowCtx,
-	}, p.deps.Compiler)
+	}, p.deps.Compiler, p.deps.CompilerMode)
 	outcome.CompilerLatencyMs = elapsedMs(compileStart)
-	outcome.CompilerStatus = "ok"
+	outcome.CompilerStatus = string(compileResult.LLMStatus)
+	outcome.CompilerSource = string(compileResult.Source)
+	outcome.CompilerFallbackReason = compileResult.FallbackReason
+	outcome.CompilerCandidateCount = len(compileResult.Candidates)
+	outcome.LLMInvoked = compileResult.LLMInvoked
+	outcome.LLMAttempts = compileResult.LLMAttempts
 	if err != nil {
-		reason := "intent_parse_failed"
-		if errors.Is(err, context.DeadlineExceeded) {
-			reason = "intent_timeout"
-			outcome.CompilerStatus = "timeout"
-		} else {
-			outcome.CompilerStatus = "error"
+		outcome.CompilerStatus = string(IntentCompileSkipped)
+		draft := unknownIntentDraft("intent_compile_failed")
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			draft = unknownIntentDraft("request_canceled")
+			outcome.BlockedReason = "request_canceled"
 		}
-		draft = unknownIntentDraft(reason)
+		outcome.Draft = draft
+		outcome.IntentDraftJSON = compactIntentDraft(draft)
+		outcome.Validation = ProtocolValidationResult{
+			ValidationCode: "intent_compile_failed",
+			ResponseKind:   ResponseRefuse,
+		}
+		outcome.FailureLayer = FailureIntent
+		setProtocolOutcomeResponse(&outcome, ResponseModel{
+			Kind:          ResponseRefuse,
+			RefusalReason: "本次请求已终止，请稍后重试。",
+		}, answerModeReject)
+		return outcome
 	}
+	draft := compileResult.Draft
 	outcome.IntentDraftJSON = compactIntentDraft(draft)
 
 	validation := p.prePolicyGate().Validate(PrePolicyGateInput{
@@ -194,6 +225,15 @@ func (p protocolLivePipeline) Handle(ctx context.Context, input protocolLiveInpu
 	}
 
 	if manifest, ok := lookupOperation(draft.Operation); ok {
+		if ctx.Err() != nil {
+			outcome.BlockedReason = "request_canceled"
+			outcome.FailureLayer = FailureIntent
+			setProtocolOutcomeResponse(&outcome, ResponseModel{
+				Kind:          ResponseRefuse,
+				RefusalReason: "本次请求已终止，请稍后重试。",
+			}, answerModeReject)
+			return outcome
+		}
 		if manifest.Renderer.Name != "" {
 			outcome.RendererName = manifest.Renderer.Name
 		}

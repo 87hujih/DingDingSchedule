@@ -9,6 +9,7 @@ import (
 	"schedule_server/config"
 	"schedule_server/internal/dto"
 	"schedule_server/internal/model"
+	"schedule_server/internal/repository"
 
 	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
@@ -83,6 +84,14 @@ func (r *pushEnabledOnlyGroupSubRepo) Upsert(context.Context, *model.GroupAttend
 
 func (r *pushEnabledOnlyGroupSubRepo) SoftDelete(context.Context, uint, string) error {
 	return nil
+}
+
+func (r *pushEnabledOnlyGroupSubRepo) ApplyStart(context.Context, *model.GroupAttendanceSubscription, string) (repository.GroupSubscriptionMutationResult, error) {
+	panic("ApplyStart should not be used by push flow")
+}
+
+func (r *pushEnabledOnlyGroupSubRepo) ApplyCancel(context.Context, uint, string, string) (repository.GroupSubscriptionMutationResult, error) {
+	panic("ApplyCancel should not be used by push flow")
 }
 
 func (r *pushEnabledOnlyGroupSubRepo) ListByTenantID(context.Context, uint) ([]model.GroupAttendanceSubscription, error) {

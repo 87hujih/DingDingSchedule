@@ -154,7 +154,7 @@ func main() {
 		// observer 将每条评测样本委托给独立 Agent，避免共享限流器和历史会话。
 		observer = newCaseScopedObserver(func() (evalChatRunner, *recordingCallLog, error) {
 			recorder := newRecordingCallLog()
-			runner := app.BuildAgent(
+			runner, err := app.BuildAgent(
 				repo,
 				scheduleSrv,
 				attendanceSrv,
@@ -165,6 +165,9 @@ func main() {
 				knowledgeSrv,
 				recorder,
 			)
+			if err != nil {
+				return nil, nil, err
+			}
 			return runner, recorder, nil
 		}, *corpID, *senderID, *senderName)
 	}

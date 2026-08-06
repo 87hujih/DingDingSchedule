@@ -22,7 +22,7 @@ func TestAgentChatClarifiesLowConfidenceTaskStartInLiveRoute(t *testing.T) {
 	})
 	defer routerServer.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       "http://127.0.0.1:0",
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -37,6 +37,7 @@ func TestAgentChatClarifiesLowConfidenceTaskStartInLiveRoute(t *testing.T) {
 		Tenant:           testTenantPort{},
 		Logger:           zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	reply, err := a.Chat(context.Background(), &dingtalk.ChatMessage{
@@ -90,7 +91,7 @@ func TestAgentChatClarifiesLowConfidenceTaskContinueInLiveRoute(t *testing.T) {
 	)
 	defer routerServer.Close()
 
-	a := NewAgent(Deps{
+	a := mustNewTestAgent(Deps{
 		LLMBaseURL:       "http://127.0.0.1:0",
 		LLMAPIKey:        "test-key",
 		LLMModel:         "test-model",
@@ -105,6 +106,7 @@ func TestAgentChatClarifiesLowConfidenceTaskContinueInLiveRoute(t *testing.T) {
 		Tenant:           testTenantPort{},
 		Logger:           zap.NewNop().Sugar(),
 	})
+
 	defer a.Stop()
 
 	_, err := a.Chat(context.Background(), &dingtalk.ChatMessage{

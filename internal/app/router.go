@@ -1,6 +1,8 @@
 package app
 
 import (
+	"net/http"
+
 	"schedule_server/global"
 	"schedule_server/internal/adminui"
 	"schedule_server/internal/handler"
@@ -57,6 +59,7 @@ func registerRoutes(r *gin.Engine, h *handler.Handler, auditSvc *service.AuditLo
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
+	registerReadinessRoutes(r, runtimeAgentReadiness)
 
 	// 公开路由（无需鉴权）
 	public := r.Group("/api")
@@ -71,6 +74,28 @@ func registerRoutes(r *gin.Engine, h *handler.Handler, auditSvc *service.AuditLo
 	registerSemesterRoutes(protected, h)        // 学期相关
 	registerScheduleSettingRoutes(protected, h) // 作息设置相关
 	registerRestDayRoutes(protected, h)         // 休息日相关
+}
+
+func registerReadinessRoutes(r *gin.Engine, state *agentReadinessState) {
+	r.GET("/ready", func(c *gin.Context) {
+		snapshot := state.get()
+		status := http.StatusOK
+		if !snapshot.Ready {
+			status = http.StatusServiceUnavailable
+		}
+		c.JSON(status, gin.H{"ready": snapshot.Ready})
+	})
+	r.GET("/internal/readiness", func(c *gin.Context) {
+		snapshot := state.get()
+		status := http.StatusOK
+		if !snapshot.Ready {
+			status = http.StatusServiceUnavailable
+		}
+		c.JSON(status, gin.H{
+			"ready": snapshot.Ready,
+			"agent": snapshot,
+		})
+	})
 }
 
 // registerSemesterRoutes 学期相关路由
