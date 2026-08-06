@@ -220,6 +220,11 @@ func TestDeployWorkflowChecksHealthViaSSHOnTargetHost(t *testing.T) {
 
 	requiredFragments := []string{
 		"- name: Deploy through SSH master connection",
+		"GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+		"docker login ghcr.io --username '${GITHUB_ACTOR}' --password-stdin",
+		"docker pull '${IMAGE_REPO}:${IMAGE_TAG}'",
+		"rm -f -- '${REMOTE_DOCKER_CONFIG}/config.json' && rmdir -- '${REMOTE_DOCKER_CONFIG}'",
+		"Remote GHCR pull failed; falling back to compressed SSH image transfer",
 		"docker save \"${IMAGE_REPO}:${IMAGE_TAG}\" | gzip -1 |",
 		"\"${SSH_CMD[@]}\" \"${SSH_AUTH_OPTS[@]}\" \"${SSH_OPTS[@]}\" \"${REMOTE}\" \"docker load\"",
 		"curl -fsS http://localhost:26665/health",
@@ -230,6 +235,9 @@ func TestDeployWorkflowChecksHealthViaSSHOnTargetHost(t *testing.T) {
 		if !strings.Contains(workflow, fragment) {
 			t.Fatalf("deploy workflow missing remote health check fragment: %s", fragment)
 		}
+	}
+	if strings.Contains(workflow, "--password \"${GHCR_TOKEN}\"") {
+		t.Fatal("deploy workflow must pass the GHCR token through stdin")
 	}
 
 	healthRetryPattern := regexp.MustCompile(`for attempt in \\\$\(seq 1 12\)`)
