@@ -220,7 +220,8 @@ func TestDeployWorkflowChecksHealthViaSSHOnTargetHost(t *testing.T) {
 
 	requiredFragments := []string{
 		"- name: Deploy through SSH master connection",
-		"docker save \"${IMAGE_REPO}:${IMAGE_TAG}\" | \"${SSH_CMD[@]}\"",
+		"docker save \"${IMAGE_REPO}:${IMAGE_TAG}\" | gzip -1 |",
+		"\"${SSH_CMD[@]}\" \"${SSH_AUTH_OPTS[@]}\" \"${SSH_OPTS[@]}\" \"${REMOTE}\" \"docker load\"",
 		"curl -fsS http://localhost:26665/health",
 		"sleep 5",
 	}

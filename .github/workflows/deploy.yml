@@ -192,7 +192,8 @@ jobs:
           # 同步监控配置文件到服务器
           "${SCP_CMD[@]}" "${SCP_AUTH_OPTS[@]}" "${SCP_OPTS[@]}" -r deploy/ "${REMOTE}:/opt/schedule_server/"
 
-          docker save "${IMAGE_REPO}:${IMAGE_TAG}" | "${SSH_CMD[@]}" "${SSH_AUTH_OPTS[@]}" "${SSH_OPTS[@]}" "${REMOTE}" "docker load"
+          docker save "${IMAGE_REPO}:${IMAGE_TAG}" | gzip -1 | \
+            "${SSH_CMD[@]}" "${SSH_AUTH_OPTS[@]}" "${SSH_OPTS[@]}" "${REMOTE}" "docker load"
 
           "${SSH_CMD[@]}" "${SSH_AUTH_OPTS[@]}" "${SSH_OPTS[@]}" "${REMOTE}" /bin/bash <<EOF
           set -euo pipefail
