@@ -46,7 +46,7 @@ docker exec schedule-server /app/schedule_server agent-config-check
 /app/schedule_server agent-release-check
 ```
 
-`agent-release-prepare` 只补充缺失的保守灰度值（compiler `observe`、context 关闭、workflow `shadow`），保留显式配置，并执行仓库内两份 `CREATE TABLE IF NOT EXISTS` 评审 DDL。配置发生变化时会在同目录保留 `prod.yaml.pre-agent-p0-<run-id>.bak`；任一配置校验、数据库连接、DDL 或表权限检查失败时自动恢复该备份，旧容器不会被替换。此自动准备流程仅由本次明确授权的 P0 发布使用，不代表后续可绕过 DDL 或配置评审。
+`agent-release-prepare` 只补充缺失的保守灰度值（compiler `observe`、context 关闭、workflow `shadow`），保留显式配置，并执行仓库内两份 `CREATE TABLE IF NOT EXISTS` 评审 DDL。若发现旧版 AutoMigrate 创建的 `agent_workflows.state`，还会原地增加 P0 列、回填 `workflow_state` 并将旧 `state` 改为可空，使旧容器在替换前仍可写、新容器也可安全插入；旧列和旧数据不会在本次发布中删除。配置发生变化时会在同目录保留 `prod.yaml.pre-agent-p0-<run-id>.bak`；任一配置校验、数据库连接、DDL 或表权限检查失败时自动恢复该备份，旧容器不会被替换。此自动准备流程仅由本次明确授权的 P0 发布使用，不代表后续可绕过 DDL 或配置评审。
 
 输出只能包含 environment、mode、timeout、model、store、context flag 和 fingerprint。不得出现 API key、DingTalk secret 或带 credential 的 URL。
 

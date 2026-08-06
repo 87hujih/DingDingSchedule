@@ -14,6 +14,8 @@ import (
 	"schedule_server/global"
 	"schedule_server/inits"
 	"schedule_server/internal/app"
+
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -93,11 +95,8 @@ func runAgentReleasePrepare() (err error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := app.ApplyAgentP0Migrations(ctx, db); err != nil {
-		return err
-	}
-	if err := app.CheckAgentWorkflowDatabase(ctx, db); err != nil {
-		return fmt.Errorf("check agent workflow database: %w", err)
+	if err := prepareAgentReleaseDatabase(ctx, db); err != nil {
+		return fmt.Errorf("prepare agent workflow database: %w", err)
 	}
 
 	return json.NewEncoder(os.Stdout).Encode(struct {
@@ -115,6 +114,16 @@ func runAgentReleasePrepare() (err error) {
 		DatabaseReady:     true,
 		ConfigFingerprint: cfg.Fingerprint(),
 	})
+}
+
+func prepareAgentReleaseDatabase(ctx context.Context, db *gorm.DB) error {
+	if err := app.ApplyAgentP0Migrations(ctx, db); err != nil {
+		return err
+	}
+	if err := app.UpgradeLegacyAgentWorkflowSchema(ctx, db); err != nil {
+		return err
+	}
+	return app.CheckAgentWorkflowDatabase(ctx, db)
 }
 
 func agentReleaseConfigPaths(now time.Time) (string, string, error) {
