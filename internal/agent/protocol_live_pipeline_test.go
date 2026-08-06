@@ -939,7 +939,7 @@ func TestProtocolLivePipelineDepartmentOrdinalUsesCurrentWorkflowCandidates(t *t
 	requirePreparedSubscriptionDeptIDs(t, outcome, []int64{125})
 }
 
-func TestProtocolLivePipelineSubscriptionExecutesRenderedDepartmentSelection(t *testing.T) {
+func TestProtocolLivePipelineSubscriptionPreparesRenderedDepartmentSelection(t *testing.T) {
 	t.Parallel()
 
 	groupSub := &executorFakeGroupSubPort{}
@@ -976,17 +976,15 @@ func TestProtocolLivePipelineSubscriptionExecutesRenderedDepartmentSelection(t *
 		ActiveWorkflow: workflow,
 	})
 
-	if groupSub.subscribeCalls != 1 {
-		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 before reservation", groupSub.subscribeCalls)
 	}
-	if !slices.Equal(groupSub.lastDeptIDs, []int64{1083420327}) {
-		t.Fatalf("lastDeptIDs = %v, want [1083420327]", groupSub.lastDeptIDs)
-	}
+	requirePreparedSubscriptionDeptIDs(t, outcome, []int64{1083420327})
 	if outcome.Response.Kind != ResponseResult {
 		t.Fatalf("Response = %+v, want result", outcome.Response)
 	}
-	if !outcome.ClearWorkflow {
-		t.Fatalf("ClearWorkflow = false, want true")
+	if outcome.ClearWorkflow || outcome.PreparedWrite == nil || !outcome.PreparedWrite.ClearWorkflowOnSuccess {
+		t.Fatalf("ClearWorkflow=%v PreparedWrite=%+v, want retained workflow until prepared write succeeds", outcome.ClearWorkflow, outcome.PreparedWrite)
 	}
 }
 
@@ -1041,7 +1039,7 @@ func TestProtocolLivePipelineRejectsRenderedDepartmentSelectionMismatch(t *testi
 	}
 }
 
-func TestProtocolLivePipelineTimeoutExecutesRenderedDepartmentSelection(t *testing.T) {
+func TestProtocolLivePipelineTimeoutPreparesRenderedDepartmentSelection(t *testing.T) {
 	t.Parallel()
 
 	groupSub := &executorFakeGroupSubPort{}
@@ -1073,18 +1071,17 @@ func TestProtocolLivePipelineTimeoutExecutesRenderedDepartmentSelection(t *testi
 		ActiveWorkflow: workflow,
 	})
 
-	if groupSub.subscribeCalls != 1 {
-		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 before reservation", groupSub.subscribeCalls)
 	}
-	if !slices.Equal(groupSub.lastDeptIDs, []int64{1083420327}) {
-		t.Fatalf("lastDeptIDs = %v, want [1083420327]", groupSub.lastDeptIDs)
-	}
-	if outcome.Response.Kind != ResponseResult || !outcome.ClearWorkflow {
-		t.Fatalf("Response=%+v ClearWorkflow=%v, want result and cleared workflow", outcome.Response, outcome.ClearWorkflow)
+	requirePreparedSubscriptionDeptIDs(t, outcome, []int64{1083420327})
+	if outcome.Response.Kind != ResponseResult || outcome.ClearWorkflow ||
+		outcome.PreparedWrite == nil || !outcome.PreparedWrite.ClearWorkflowOnSuccess {
+		t.Fatalf("Response=%+v ClearWorkflow=%v PreparedWrite=%+v, want prepared result retaining workflow", outcome.Response, outcome.ClearWorkflow, outcome.PreparedWrite)
 	}
 }
 
-func TestProtocolLivePipelineSubscriptionSwitchesDepartmentSelectionToAllScope(t *testing.T) {
+func TestProtocolLivePipelineSubscriptionPreparesSwitchFromDepartmentSelectionToAllScope(t *testing.T) {
 	t.Parallel()
 
 	groupSub := &executorFakeGroupSubPort{}
@@ -1130,23 +1127,31 @@ func TestProtocolLivePipelineSubscriptionSwitchesDepartmentSelectionToAllScope(t
 		ActiveWorkflow: workflow,
 	})
 
-	if groupSub.subscribeCalls != 1 {
-		t.Fatalf("Subscribe calls = %d, want 1", groupSub.subscribeCalls)
+	if groupSub.subscribeCalls != 0 {
+		t.Fatalf("Subscribe calls = %d, want 0 before reservation", groupSub.subscribeCalls)
 	}
-	if len(groupSub.lastDeptIDs) != 0 {
-		t.Fatalf("lastDeptIDs = %v, want all scope with no department IDs", groupSub.lastDeptIDs)
+	if outcome.PreparedWrite == nil {
+		t.Fatal("PreparedWrite = nil")
 	}
-	if groupSub.lastTenantID != 42 || groupSub.lastConversationID != "conv-1" || groupSub.lastEnabledByUID != 7 {
-		t.Fatalf("executor context = tenant:%d conversation:%q actor:%d, want tenant-scoped workflow context", groupSub.lastTenantID, groupSub.lastConversationID, groupSub.lastEnabledByUID)
+	if _, ok := outcome.PreparedWrite.Request.TrustedParams["dept_ids"]; ok {
+		t.Fatalf("prepared params = %+v, want all scope without department IDs", outcome.PreparedWrite.Request.TrustedParams)
+	}
+	scopeParam, ok := outcome.PreparedWrite.Request.TrustedParams["scope"]
+	scope, valueOK := scopeParam.Value.(string)
+	if !ok || !valueOK || scope != "all" {
+		t.Fatalf("prepared scope = %q ok=%v, want all", scope, ok && valueOK)
+	}
+	if outcome.PreparedWrite.Request.TenantID != 42 || outcome.PreparedWrite.Request.ConversationID != "conv-1" || outcome.PreparedWrite.Request.ActorUserID != 7 {
+		t.Fatalf("prepared context = tenant:%d conversation:%q actor:%d, want tenant-scoped workflow context", outcome.PreparedWrite.Request.TenantID, outcome.PreparedWrite.Request.ConversationID, outcome.PreparedWrite.Request.ActorUserID)
 	}
 	if outcome.Response.Kind != ResponseResult {
 		t.Fatalf("Response = %+v, want result", outcome.Response)
 	}
-	if !outcome.ClearWorkflow {
-		t.Fatalf("ClearWorkflow = false, want true")
+	if outcome.ClearWorkflow || !outcome.PreparedWrite.ClearWorkflowOnSuccess {
+		t.Fatalf("ClearWorkflow=%v ClearWorkflowOnSuccess=%v, want workflow cleared only after success", outcome.ClearWorkflow, outcome.PreparedWrite.ClearWorkflowOnSuccess)
 	}
-	if outcome.WorkflowAfter != nil {
-		t.Fatalf("WorkflowAfter = %+v, want nil after successful completion", outcome.WorkflowAfter)
+	if outcome.WorkflowAfter == nil || outcome.WorkflowAfter.State != WorkflowReady {
+		t.Fatalf("WorkflowAfter = %+v, want retained ready workflow before reservation", outcome.WorkflowAfter)
 	}
 }
 
