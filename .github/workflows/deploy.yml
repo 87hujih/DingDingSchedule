@@ -205,6 +205,27 @@ jobs:
             exit 1
           fi
 
+          CONFIG_DIR_VALUE=""
+          while IFS='=' read -r key value; do
+            case "\${key}" in
+              CONFIG_DIR)
+                value="\${value%$'\r'}"
+                value="\${value%\"}"
+                value="\${value#\"}"
+                CONFIG_DIR_VALUE="\${value}"
+                ;;
+            esac
+          done < .env.prod
+          CONFIG_DIR_VALUE="\${CONFIG_DIR_VALUE:-./configs}"
+
+          echo "Running Agent production config preflight against \${CONFIG_DIR_VALUE}/prod.yaml"
+          docker run --rm \
+            -e CONFIG_ENV=prod \
+            -e CONFIG_PATH=/app/configs \
+            -v "\${CONFIG_DIR_VALUE}:/app/configs:ro" \
+            "${IMAGE_REPO}:${IMAGE_TAG}" \
+            agent-config-check
+
           chmod +x deploy.sh
           IMAGE_REPO="${IMAGE_REPO}" IMAGE_TAG="${IMAGE_TAG}" SKIP_IMAGE_PULL=1 ./deploy.sh deploy
 
