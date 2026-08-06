@@ -36,6 +36,12 @@ type AgentRuntimeConfig struct {
 	LogPayloads               bool
 }
 
+// UsesWorkflowDatabase reports whether the configured workflow store depends
+// on the database either as the primary store or as a shadow mirror.
+func (c AgentRuntimeConfig) UsesWorkflowDatabase() bool {
+	return c.WorkflowStore == agentWorkflowStoreShadow || c.WorkflowStore == agentWorkflowStoreDatabase
+}
+
 func ParseAgentRuntimeConfig(cfg config.LLM, env string) (AgentRuntimeConfig, error) { //nolint:gocyclo // Startup fail-fast validation keeps all coupled Agent settings in one audit point.
 	result := AgentRuntimeConfig{
 		ProtocolMode:              strings.TrimSpace(cfg.ProtocolMode),

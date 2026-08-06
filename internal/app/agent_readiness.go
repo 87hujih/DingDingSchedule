@@ -143,6 +143,14 @@ func probeAgentWorkflowDatabase(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// CheckAgentWorkflowDatabase verifies that the Agent workflow database is
+// reachable, has the reviewed schema, and grants the runtime read/write access.
+// It is exported for the release preflight command so deployment can fail
+// before replacing the currently running container.
+func CheckAgentWorkflowDatabase(ctx context.Context, db *gorm.DB) error {
+	return probeAgentWorkflowDatabase(ctx, db)
+}
+
 func probeAgentWorkflowDatabaseAccess(ctx context.Context, db *gorm.DB) error {
 	if db == nil {
 		return errors.New("agent workflow database is nil")

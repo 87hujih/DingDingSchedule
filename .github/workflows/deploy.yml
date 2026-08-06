@@ -218,13 +218,19 @@ jobs:
           done < .env.prod
           CONFIG_DIR_VALUE="\${CONFIG_DIR_VALUE:-./configs}"
 
-          echo "Running Agent production config preflight against \${CONFIG_DIR_VALUE}/prod.yaml"
+          PRECHECK_NETWORK_ARGS=()
+          if [ "\$(docker inspect -f '{{.State.Running}}' schedule-server 2>/dev/null || true)" = "true" ]; then
+            PRECHECK_NETWORK_ARGS=(--network container:schedule-server)
+          fi
+
+          echo "Running Agent production config and database preflight against \${CONFIG_DIR_VALUE}/prod.yaml"
           docker run --rm \
+            "\${PRECHECK_NETWORK_ARGS[@]}" \
             -e CONFIG_ENV=prod \
             -e CONFIG_PATH=/app/configs \
             -v "\${CONFIG_DIR_VALUE}:/app/configs:ro" \
             "${IMAGE_REPO}:${IMAGE_TAG}" \
-            agent-config-check
+            agent-release-check
 
           chmod +x deploy.sh
           IMAGE_REPO="${IMAGE_REPO}" IMAGE_TAG="${IMAGE_TAG}" SKIP_IMAGE_PULL=1 ./deploy.sh deploy

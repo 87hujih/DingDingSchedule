@@ -241,14 +241,15 @@ func TestDeployWorkflowChecksHealthViaSSHOnTargetHost(t *testing.T) {
 	}
 }
 
-func TestDeployWorkflowValidatesProductionAgentConfigBeforeReplacingContainer(t *testing.T) {
+func TestDeployWorkflowValidatesProductionAgentReleaseBeforeReplacingContainer(t *testing.T) {
 	workflow := readDeployWorkflow(t)
 
 	requiredFragments := []string{
-		"Running Agent production config preflight",
+		"Running Agent production config and database preflight",
+		"--network container:schedule-server",
 		"-e CONFIG_ENV=prod",
 		"-e CONFIG_PATH=/app/configs",
-		"agent-config-check",
+		"agent-release-check",
 	}
 	for _, fragment := range requiredFragments {
 		if !strings.Contains(workflow, fragment) {
@@ -256,7 +257,7 @@ func TestDeployWorkflowValidatesProductionAgentConfigBeforeReplacingContainer(t 
 		}
 	}
 
-	preflightIndex := strings.Index(workflow, "agent-config-check")
+	preflightIndex := strings.Index(workflow, "agent-release-check")
 	deployIndex := strings.Index(workflow, "SKIP_IMAGE_PULL=1 ./deploy.sh deploy")
 	if preflightIndex == -1 || deployIndex == -1 || preflightIndex > deployIndex {
 		t.Fatal("Agent config preflight must run before replacing the production container")

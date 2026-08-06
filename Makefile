@@ -1,4 +1,4 @@
-.PHONY: help build run test ci-test ci-build ci-lint agent-config-check clean docker-build docker-build-prod docker-run docker-stop deploy
+.PHONY: help build run test ci-test ci-build ci-lint agent-config-check agent-release-check clean docker-build docker-build-prod docker-run docker-stop deploy
 
 # 默认目标
 help:
@@ -10,6 +10,7 @@ help:
 	@echo "  make ci-build     - 运行 CI 构建"
 	@echo "  make ci-lint      - 运行 CI lint"
 	@echo "  make agent-config-check - 校验 Agent 运行时配置并输出安全指纹"
+	@echo "  make agent-release-check - 校验 Agent 生产配置和数据库发布门禁"
 	@echo "  make clean        - 清理构建产物"
 	@echo "  make docker-build - 构建 Docker 镜像"
 	@echo "  make docker-build-prod - 以 CI 标签到构建 Docker 镜像"
@@ -47,6 +48,9 @@ ci-lint:
 
 agent-config-check:
 	go run ./cmd/main.go agent-config-check
+
+agent-release-check:
+	go run ./cmd/main.go agent-release-check
 
 # 清理构建产物
 clean:
