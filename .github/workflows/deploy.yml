@@ -248,7 +248,7 @@ jobs:
             -e CONFIG_PATH=/app/configs \
             -v "\${CONFIG_DIR_VALUE}:/app/configs:ro" \
             "${IMAGE_REPO}:${IMAGE_TAG}" \
-            agent-release-check
+            /app/schedule_server agent-release-check
 
           chmod +x deploy.sh
           IMAGE_REPO="${IMAGE_REPO}" IMAGE_TAG="${IMAGE_TAG}" SKIP_IMAGE_PULL=1 ./deploy.sh deploy

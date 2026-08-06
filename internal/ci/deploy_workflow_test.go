@@ -258,7 +258,7 @@ func TestDeployWorkflowValidatesProductionAgentReleaseBeforeReplacingContainer(t
 		"--network container:schedule-server",
 		"-e CONFIG_ENV=prod",
 		"-e CONFIG_PATH=/app/configs",
-		"agent-release-check",
+		"/app/schedule_server agent-release-check",
 	}
 	for _, fragment := range requiredFragments {
 		if !strings.Contains(workflow, fragment) {
