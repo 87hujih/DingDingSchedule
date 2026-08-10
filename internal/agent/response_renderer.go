@@ -94,6 +94,12 @@ func renderProtocolResponse(model ResponseModel) string {
 			return text
 		}
 		switch strings.TrimSpace(model.ClarifyReason) {
+		case "intent_timeout":
+			return "意图理解服务响应超时，请稍后重试。"
+		case "intent_parse_failed":
+			return "意图理解服务返回异常，请稍后重试。"
+		case "intent_compiler_unavailable":
+			return "意图理解服务暂时不可用，请稍后重试。"
 		case "unknown_intent":
 			return "请再明确一下你的问题。你可以说：查询今天第二节考勤状态、查我的课表、开启本群考勤订阅。"
 		case "subscription_missing_fields":
@@ -390,6 +396,9 @@ func weekdayName(day int) string {
 func renderMissingFieldsClarify(operation string, fields []string) string {
 	if len(fields) == 0 {
 		return ""
+	}
+	if operation == "schedule.query_user_schedule" && containsField(fields, "user_id") {
+		return "请告诉我要查询哪位用户的课程信息，例如：查询杨思见的课程信息。"
 	}
 	if operation == "attendance.query_status" && containsField(fields, "date") && containsField(fields, "section") {
 		return "请补充要查询哪一天和第几节。"

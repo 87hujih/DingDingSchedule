@@ -359,7 +359,7 @@ func BuildFailureLayerReport(rows []model.AgentCallLog) FailureLayerReport {
 		switch strings.TrimSpace(row.CompilerStatus) {
 		case "timeout":
 			report.CompilerTimeoutCount++
-		case "invalid_json":
+		case "invalid_output", "invalid_json":
 			report.InvalidJSONCount++
 		}
 		for _, reason := range []string{row.BlockedReason, row.ProtocolBlockedReason, row.PrePolicyResult, row.ResourcePolicyResult} {
@@ -387,7 +387,7 @@ func BuildFailureLayerReport(rows []model.AgentCallLog) FailureLayerReport {
 
 func isCommonFailureReason(reason string) bool {
 	switch reason {
-	case "invalid_json", "entity_ambiguous", "policy_denied", "pre_policy_denied", "resource_policy_denied", "write_guard_blocked":
+	case "invalid_output", "invalid_json", "entity_ambiguous", "policy_denied", "pre_policy_denied", "resource_policy_denied", "write_guard_blocked":
 		return true
 	default:
 		return strings.Contains(reason, "denied") || strings.Contains(reason, "ambiguous")

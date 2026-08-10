@@ -130,8 +130,26 @@ func TestOperationRequiresTrustedParamIgnoresOptionalParams(t *testing.T) {
 func TestExtractScheduleUserNamePrefersLongQueryPrefix(t *testing.T) {
 	t.Parallel()
 
-	if got := extractScheduleUserName("查询张三的课表"); got != "张三" {
-		t.Fatalf("extractScheduleUserName() = %q, want 张三", got)
+	tests := []struct {
+		message string
+		want    string
+	}{
+		{message: "查询张三的课表", want: "张三"},
+		{message: "查询一下杨思见的课程信息", want: "杨思见"},
+		{message: "麻烦帮我看一下李四本周的课程安排", want: "李四"},
+		{message: "帮我查一下杨思见的课程", want: "杨思见"},
+		{message: "请看下杨思见课表", want: "杨思见"},
+		{message: "我想知道杨思见这周上什么课", want: "杨思见"},
+		{message: "查我的本周课表", want: ""},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.message, func(t *testing.T) {
+			t.Parallel()
+			if got := extractScheduleUserName(tt.message); got != tt.want {
+				t.Fatalf("extractScheduleUserName() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -282,6 +300,34 @@ func TestProtocolLivePipelineIgnoresTrustedIDSlotFromDraft(t *testing.T) {
 	}
 }
 
+func TestProtocolLivePipelineDoesNotExtractMissingUserSlotFromMessage(t *testing.T) {
+	t.Parallel()
+
+	user := &pipelineSearchUserPort{users: []tools.UserInfo{{ID: 42, TenantID: 42, Name: "杨思见"}}}
+	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
+		Compiler: pipelineFakeIntentCompiler{draft: ProtocolDraft{
+			Act:        ActReadQuery,
+			Domain:     DomainSchedule,
+			Operation:  "schedule.query_user_schedule",
+			Confidence: 0.9,
+		}},
+		User:     user,
+		Semester: &executorFakeSemesterPort{week: 10},
+	})
+
+	outcome := pipeline.Handle(context.Background(), protocolLiveInput{
+		Message: "查询一下杨思见的课程信息",
+		User:    executorUserContext(),
+	})
+
+	if outcome.Response.Kind != ResponseClarify || outcome.Response.Operation != "schedule.query_user_schedule" {
+		t.Fatalf("Response = %+v, want missing user clarification", outcome.Response)
+	}
+	if user.searchCalls != 0 {
+		t.Fatalf("SearchByName calls = %d, want 0 without semantic raw slot", user.searchCalls)
+	}
+}
+
 func TestProtocolLivePipelineSubscriptionWorkflowClarifiesAndExecutesAllScope(t *testing.T) {
 	t.Parallel()
 
@@ -316,6 +362,9 @@ func TestProtocolLivePipelineSubscriptionWorkflowClarifiesAndExecutesAllScope(t 
 			Domain:     DomainSubscription,
 			Operation:  "subscription.start",
 			Confidence: 0.95,
+			Slots: map[string]SlotDraft{
+				"scope": {Field: "scope", Raw: "全部人员"},
+			},
 		}},
 		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
 	})
@@ -402,7 +451,7 @@ func TestProtocolLivePipelineListsDepartmentsWithoutActiveWorkflow(t *testing.T)
 	}
 }
 
-func TestProtocolLivePipelineListsDepartmentsWhenCompilerReturnsUnknown(t *testing.T) {
+func TestProtocolLivePipelineDoesNotGuessDepartmentListWhenCompilerReturnsUnknown(t *testing.T) {
 	t.Parallel()
 
 	dept := executorFakeDeptPort{depts: []tools.DeptItem{{TenantID: 42, DeptID: 101, Name: "家族7期"}}}
@@ -420,17 +469,11 @@ func TestProtocolLivePipelineListsDepartmentsWhenCompilerReturnsUnknown(t *testi
 		User:    executorUserContext(),
 	})
 
-	if outcome.Response.Kind != ResponseSelectOptions {
-		t.Fatalf("Response = %+v, want select options", outcome.Response)
+	if outcome.Response.Kind != ResponseClarify || outcome.Draft.Act != ActUnknown {
+		t.Fatalf("outcome = %+v, want semantic compiler failure to clarify", outcome)
 	}
-	if !strings.Contains(renderProtocolResponse(outcome.Response), "家族7期") {
-		t.Fatalf("reply = %q, want department option", renderProtocolResponse(outcome.Response))
-	}
-	if outcome.Draft.Act != ActReadQuery || outcome.Draft.Operation != "subscription.list_departments" {
-		t.Fatalf("Draft = %+v, want deterministic department list read query", outcome.Draft)
-	}
-	if outcome.CandidateCount != 1 {
-		t.Fatalf("CandidateCount = %d, want 1", outcome.CandidateCount)
+	if outcome.CandidateCount != 0 {
+		t.Fatalf("CandidateCount = %d, want 0", outcome.CandidateCount)
 	}
 }
 
@@ -758,6 +801,9 @@ func TestProtocolLivePipelineDepartmentNameChoosesDepartmentScopeDuringScopeColl
 			Domain:     DomainSubscription,
 			Operation:  "subscription.start",
 			Confidence: 0.9,
+			Slots: map[string]SlotDraft{
+				"department": {Field: "department", Raw: "信工25级"},
+			},
 		}},
 		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
 		Dept:     dept,
@@ -790,7 +836,7 @@ func TestProtocolLivePipelineDepartmentNameChoosesDepartmentScopeDuringScopeColl
 	}
 }
 
-func TestProtocolLivePipelineDepartmentNameContinuesDuringScopeCollectionWhenCompilerReturnsUnknown(t *testing.T) {
+func TestProtocolLivePipelineDoesNotGuessDepartmentNameWhenCompilerReturnsUnknown(t *testing.T) {
 	t.Parallel()
 
 	groupSub := &executorFakeGroupSubPort{}
@@ -817,18 +863,8 @@ func TestProtocolLivePipelineDepartmentNameContinuesDuringScopeCollectionWhenCom
 		ActiveWorkflow: workflow,
 	})
 
-	if outcome.Response.Kind != ResponseResult {
-		t.Fatalf("Response = %+v, want result", outcome.Response)
-	}
-	if outcome.WorkflowDecision != WorkflowReadyToExecute || outcome.ClearWorkflow || outcome.PreparedWrite == nil {
-		t.Fatalf("WorkflowDecision=%q ClearWorkflow=%v PreparedWrite=%v, want prepared ready write", outcome.WorkflowDecision, outcome.ClearWorkflow, outcome.PreparedWrite != nil)
-	}
-	if groupSub.subscribeCalls != 0 {
-		t.Fatalf("Subscribe calls = %d, want 0 before reservation", groupSub.subscribeCalls)
-	}
-	requirePreparedSubscriptionDeptIDs(t, outcome, []int64{201})
-	if outcome.ResolvedSlots["scope"] != "department" {
-		t.Fatalf("ResolvedSlots = %#v, want department scope", outcome.ResolvedSlots)
+	if outcome.Response.Kind != ResponseClarify || outcome.Draft.Act != ActUnknown {
+		t.Fatalf("outcome = %+v, want clarification without semantic slot", outcome)
 	}
 }
 
@@ -846,6 +882,9 @@ func TestProtocolLivePipelineDepartmentAmbiguitySelectsCandidatesForWrite(t *tes
 			Domain:     DomainSubscription,
 			Operation:  "subscription.start",
 			Confidence: 0.9,
+			Slots: map[string]SlotDraft{
+				"department": {Field: "department", Raw: "信工"},
+			},
 		}},
 		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
 		Dept:     dept,
@@ -1091,6 +1130,9 @@ func TestProtocolLivePipelineSubscriptionPreparesSwitchFromDepartmentSelectionTo
 			Domain:     DomainSubscription,
 			Operation:  "subscription.start",
 			Confidence: 0.9,
+			Slots: map[string]SlotDraft{
+				"scope": {Field: "scope", Raw: "全部人员"},
+			},
 		}},
 		Executor: newOperationExecutor(operationExecutorDeps{GroupSub: groupSub}),
 	})
@@ -1168,7 +1210,15 @@ func TestResolveSubscriptionTrustedEntitiesDoesNotTreatDepartmentNameContainingA
 		State: WorkflowCollectDepartments,
 	}
 
-	trusted, _, ok := pipeline.resolveSubscriptionTrustedEntities(context.Background(), "全部门店运营部", workflow, 42)
+	draft := ProtocolDraft{
+		Act:       ActWorkflowContinue,
+		Domain:    DomainSubscription,
+		Operation: "subscription.start",
+		Slots: map[string]SlotDraft{
+			"department": {Field: "department", Raw: "全部门店运营部"},
+		},
+	}
+	trusted, _, ok := pipeline.resolveSubscriptionTrustedEntities(context.Background(), "全部门店运营部", draft, workflow, 42)
 	if !ok {
 		t.Fatalf("resolveSubscriptionTrustedEntities() ok = false, want department resolution")
 	}

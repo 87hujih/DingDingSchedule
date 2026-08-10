@@ -224,7 +224,7 @@ func TestProtocolCompilerFallsBackToDeterministicWorkflowContinueWhenInjectedCom
 	}
 }
 
-func TestProtocolCompilerFallsBackToDepartmentWorkflowContinueDuringScopeCollection(t *testing.T) {
+func TestProtocolCompilerDoesNotGuessFreeFormDepartmentWorkflowSlot(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeProtocolIntentCompiler{
@@ -248,21 +248,21 @@ func TestProtocolCompilerFallsBackToDepartmentWorkflowContinueDuringScopeCollect
 		t.Fatalf("compileProtocolWithCompiler() error = %v", err)
 	}
 	draft := compileResult.Draft
-	if draft.Act != ActWorkflowContinue {
-		t.Fatalf("Act = %q, want %q", draft.Act, ActWorkflowContinue)
+	if draft.Act != ActUnknown {
+		t.Fatalf("Act = %q, want %q", draft.Act, ActUnknown)
 	}
-	if draft.Domain != DomainSubscription {
-		t.Fatalf("Domain = %q, want %q", draft.Domain, DomainSubscription)
+	if draft.Domain != DomainUnknown {
+		t.Fatalf("Domain = %q, want %q", draft.Domain, DomainUnknown)
 	}
-	if draft.Operation != "subscription.start" {
-		t.Fatalf("Operation = %q, want subscription.start", draft.Operation)
+	if draft.Operation != "" {
+		t.Fatalf("Operation = %q, want empty", draft.Operation)
 	}
 	if len(fake.requests) != 1 {
 		t.Fatalf("compiler requests = %d, want 1", len(fake.requests))
 	}
 }
 
-func TestProtocolCompilerFallsBackToDeterministicDepartmentListWhenInjectedCompilerReturnsUnknown(t *testing.T) {
+func TestProtocolCompilerDoesNotGuessDepartmentListWhenSemanticCompilerReturnsUnknown(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeProtocolIntentCompiler{
@@ -282,17 +282,17 @@ func TestProtocolCompilerFallsBackToDeterministicDepartmentListWhenInjectedCompi
 		t.Fatalf("compileProtocolWithCompiler() error = %v", err)
 	}
 	draft := compileResult.Draft
-	if draft.Act != ActReadQuery {
-		t.Fatalf("Act = %q, want %q", draft.Act, ActReadQuery)
+	if draft.Act != ActUnknown {
+		t.Fatalf("Act = %q, want %q", draft.Act, ActUnknown)
 	}
-	if draft.Domain != DomainSubscription {
-		t.Fatalf("Domain = %q, want %q", draft.Domain, DomainSubscription)
+	if draft.Domain != DomainUnknown {
+		t.Fatalf("Domain = %q, want %q", draft.Domain, DomainUnknown)
 	}
-	if draft.Operation != "subscription.list_departments" {
-		t.Fatalf("Operation = %q, want subscription.list_departments", draft.Operation)
+	if draft.Operation != "" {
+		t.Fatalf("Operation = %q, want empty", draft.Operation)
 	}
-	if len(fake.requests) != 0 {
-		t.Fatalf("compiler requests = %d, want exact alias to skip LLM", len(fake.requests))
+	if len(fake.requests) != 1 {
+		t.Fatalf("compiler requests = %d, want semantic compiler invoked", len(fake.requests))
 	}
 }
 

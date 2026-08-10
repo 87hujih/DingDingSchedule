@@ -68,6 +68,24 @@ func TestProtocolLiveImplementationDoesNotReferenceLegacyDispatchers(t *testing.
 	}
 }
 
+func TestProtocolLiveBusinessIntentCompilerDoesNotUseKeywordRouters(t *testing.T) {
+	t.Parallel()
+
+	source := readAgentSourceForBoundaryTest(t, "operation_compiler.go")
+	for _, symbol := range []string{
+		"catalogAliasCandidates",
+		"catalogDetectorCandidates",
+		"compileScheduleReadQuery",
+		"looksLikeAttendanceReadQuery",
+		"looksLikeSubscriptionStatusQuery",
+		"looksLikeSubscriptionWriteRequest",
+	} {
+		if strings.Contains(source, symbol) {
+			t.Fatalf("operation_compiler.go references %q; protocol_live business intent must come from the semantic compiler", symbol)
+		}
+	}
+}
+
 func TestRetainedBoundaryFilesDeclareTheirScope(t *testing.T) {
 	t.Parallel()
 

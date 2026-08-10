@@ -53,9 +53,11 @@ func (c operationCompiler) Compile(ctx context.Context, input protocolInput) (Op
 			LLMStatus: IntentCompileSkipped,
 		}, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return OperationCompileResult{}, err
+	}
 
-	candidates := catalogAliasCandidates(message)
-	candidates = append(candidates, workflowControlCandidates(message, input.ActiveWorkflow)...)
+	candidates := workflowControlCandidates(message, input.ActiveWorkflow)
 	if !hasExactOperationCandidate(candidates) {
 		candidates = append(candidates, workflowSlotCandidates(message, input.ActiveWorkflow)...)
 	}
@@ -210,7 +212,7 @@ func uniqueSafeDeterministicCandidates(candidates []OperationCandidate, requireS
 
 func safeDeterministicMatch(kind CandidateMatchKind) bool {
 	switch kind {
-	case MatchExactAlias, MatchExactWorkflowControl, MatchExactCandidate, MatchStructuredSlot:
+	case MatchExactWorkflowControl, MatchExactCandidate:
 		return true
 	default:
 		return false
@@ -240,35 +242,6 @@ func compilerSourceFromDecision(decision OperationArbiterDecision) CompilerSourc
 		return CompilerSourceDeterministic
 	}
 	return ""
-}
-
-func catalogAliasCandidates(message string) []OperationCandidate {
-	candidates := []OperationCandidate{}
-	for _, manifest := range operationManifests() {
-		for _, alias := range manifest.Recognition.Aliases {
-			if !recognitionAliasMatches(message, alias) {
-				continue
-			}
-			act := primaryRecognitionAct(manifest)
-			confidence := recognitionAliasConfidence(message, alias)
-			matchKind := recognitionAliasMatchKind(message, alias)
-			candidates = append(candidates, OperationCandidate{
-				Draft: ProtocolDraft{
-					Act:        act,
-					Domain:     manifest.Domain,
-					Operation:  manifest.Name,
-					Confidence: confidence,
-					Reason:     "catalog_alias",
-				},
-				Source:       OperationCandidateSourceCatalogAlias,
-				MatchKind:    matchKind,
-				ShortCircuit: matchKind == MatchExactAlias,
-				Confidence:   confidence,
-				Evidence:     alias,
-			})
-		}
-	}
-	return candidates
 }
 
 func workflowControlCandidates(message string, workflow *protocolWorkflowContext) []OperationCandidate {
@@ -315,18 +288,7 @@ func workflowSlotCandidates(message string, workflow *protocolWorkflowContext) [
 }
 
 func workflowSlotCanShortCircuit(message string, kind CandidateMatchKind) bool {
-	if kind == MatchExactCandidate {
-		return true
-	}
-	if kind != MatchStructuredSlot {
-		return false
-	}
-	switch normalizeQuery(message) {
-	case "全部人员", "全部", "指定部门", "部分部门":
-		return true
-	default:
-		return false
-	}
+	return kind == MatchExactCandidate
 }
 
 func workflowSlotMatchKind(message string, workflow *protocolWorkflowContext) CandidateMatchKind {
@@ -363,13 +325,6 @@ func plainWorkflowSlotValue(normalized string) bool {
 	})
 }
 
-func recognitionAliasMatchKind(message, alias string) CandidateMatchKind {
-	if normalizeQuery(message) == normalizeQuery(alias) {
-		return MatchExactAlias
-	}
-	return MatchContainedAlias
-}
-
 func workflowControlMatchKind(message string) CandidateMatchKind {
 	switch normalizeQuery(message) {
 	case "取消", "算了", "不用了", "停止", "退出":
@@ -380,11 +335,11 @@ func workflowControlMatchKind(message string) CandidateMatchKind {
 }
 
 func messageMatchesWorkflowSlotShape(message string, workflow *protocolWorkflowContext, manifest OperationManifest) bool {
-	for _, hint := range manifest.Recognition.SlotHints {
-		if !workflowHasMissingParam(workflow.MissingFields, hint.Field) {
+	for _, slot := range manifest.Recognition.RawSlots {
+		if slot.Shape == "" || !workflowHasMissingParam(workflow.MissingFields, slot.TargetParam) {
 			continue
 		}
-		switch hint.Shape {
+		switch slot.Shape {
 		case "subscription_scope":
 			if containsAny(normalizeQuery(message), []string{"全部人员", "全部", "指定部门", "部分部门"}) || looksLikeEntityInput(message) {
 				return true
@@ -409,16 +364,4 @@ func deterministicFallbackSource(draft ProtocolDraft) OperationCandidateSource {
 		return OperationCandidateSourceWorkflowCtrl
 	}
 	return OperationCandidateSourceLegacy
-}
-
-func primaryRecognitionAct(manifest OperationManifest) UserAct {
-	for _, act := range manifest.AllowedActs {
-		if act != ActWorkflowContinue {
-			return act
-		}
-	}
-	if len(manifest.AllowedActs) == 0 {
-		return ActUnknown
-	}
-	return manifest.AllowedActs[0]
 }

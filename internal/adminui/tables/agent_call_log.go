@@ -119,6 +119,25 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 	info.AddField("影子路由", "shadow_route_kind", db.Varchar)
 	info.AddField("协议模式", "protocol_mode", db.Varchar).
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
+	info.AddField("编译状态", "compiler_status", db.Varchar).
+		FieldFilterable(types.FilterType{FormType: form.SelectSingle}).
+		FieldFilterOptions(types.FieldOptions{
+			{Text: "成功", Value: "ok"},
+			{Text: "未识别", Value: "unknown"},
+			{Text: "未调用", Value: "skipped"},
+			{Text: "超时", Value: "timeout"},
+			{Text: "传输异常", Value: "transport_error"},
+			{Text: "输出异常", Value: "invalid_output"},
+		})
+	info.AddField("编译来源", "compiler_source", db.Varchar).
+		FieldFilterable(types.FilterType{FormType: form.SelectSingle}).
+		FieldFilterOptions(types.FieldOptions{
+			{Text: "确定性识别", Value: "deterministic"},
+			{Text: "LLM", Value: "llm"},
+			{Text: "降级", Value: "fallback"},
+		})
+	info.AddField("编译降级原因", "compiler_fallback_reason", db.Varchar).
+		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
 	info.AddField("协议动作", "protocol_act", db.Varchar).
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
 	info.AddField("协议域", "protocol_domain", db.Varchar).
@@ -176,6 +195,14 @@ func GetAgentCallLogTable(ctx *context.Context) (t table.Table) {
 			return truncateAgentCallLogAdminText(m.Value, 80)
 		})
 	info.AddField("协议候选数", "protocol_candidate_count", db.Int).FieldSortable()
+	info.AddField("实体解析状态", "entity_resolution_status", db.Varchar).
+		FieldFilterable(types.FilterType{FormType: form.SelectSingle}).
+		FieldFilterOptions(types.FieldOptions{
+			{Text: "已解析", Value: "resolved"},
+			{Text: "有歧义", Value: "ambiguous"},
+			{Text: "未找到", Value: "not_found"},
+			{Text: "无需解析", Value: "not_required"},
+		})
 	info.AddField("前置 workflow", "workflow_id_before", db.Varchar).
 		FieldFilterable(types.FilterType{Operator: types.FilterOperatorLike})
 	info.AddField("后置 workflow", "workflow_id_after", db.Varchar).

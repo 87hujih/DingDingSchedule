@@ -267,7 +267,7 @@ type weekProvider interface {
 // resolveWeekSlot resolves teaching week slot with catalog defaults.
 func resolveWeekSlot(ctx context.Context, raw string, defaultValue SlotDefault, semester weekProvider) ResolveResult {
 	value := strings.TrimSpace(raw)
-	if value == "" || value == "本周" {
+	if value == "" || value == "本周" || value == "这周" || value == "下周" {
 		if defaultValue != SlotDefaultCurrentWeek {
 			if value == "" {
 				return ResolveResult{Field: "week", Status: ResolveNotFound, Reason: "missing_week"}
@@ -276,9 +276,15 @@ func resolveWeekSlot(ctx context.Context, raw string, defaultValue SlotDefault, 
 		if semester == nil {
 			return ResolveResult{Field: "week", Status: ResolveNotFound, Reason: "missing_semester_provider"}
 		}
-		week, _, err := semester.GetCurrentWeek(ctx)
+		week, totalWeeks, err := semester.GetCurrentWeek(ctx)
 		if err != nil || week <= 0 {
 			return ResolveResult{Field: "week", Status: ResolveNotFound, Reason: "current_week_unavailable"}
+		}
+		if value == "下周" {
+			week++
+			if totalWeeks > 0 && week > totalWeeks {
+				return ResolveResult{Field: "week", Status: ResolveNotFound, Reason: "next_week_unavailable"}
+			}
 		}
 		return ResolveResult{Field: "week", Status: ResolveResolved, Value: week}
 	}

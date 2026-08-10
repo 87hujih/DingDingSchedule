@@ -214,6 +214,57 @@ func TestIntentCompilerReturnsUnknownForTrustedIDSlots(t *testing.T) {
 	}
 }
 
+func TestIntentCompilerReturnsUnknownForUndeclaredCatalogSlot(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeIntentChatClient{
+		content: `{"act":"help","domain":"system","operation":"system.describe_capability","confidence":0.9,"slots":[{"field":"topic","raw":"课表"}],"reason":"用户询问功能"}`,
+	}
+	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
+
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "你能做什么"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if result.Status != IntentCompileInvalidOutput || result.Draft.Reason != "intent_parse_failed" {
+		t.Fatalf("result = %+v, want invalid output for undeclared catalog slot", result)
+	}
+}
+
+func TestIntentCompilerRejectsConflictingRawAliasesForSameTrustedParam(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeIntentChatClient{
+		content: `{"act":"write_request","domain":"subscription","operation":"subscription.start","confidence":0.95,"slots":[{"field":"scope","raw":"指定部门"},{"field":"dept_names","raw":"信工25级"},{"field":"department","raw":"信工24级"}],"reason":"用户开启部门订阅"}`,
+	}
+	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
+
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "开启部门订阅"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if result.Status != IntentCompileInvalidOutput || result.Draft.Act != ActUnknown {
+		t.Fatalf("result = %+v, want conflicting raw aliases to fail closed", result)
+	}
+}
+
+func TestIntentCompilerAcceptsLegacyRawAliasWhenUnambiguous(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeIntentChatClient{
+		content: `{"act":"read_query","domain":"schedule","operation":"schedule.query_user_schedule","confidence":0.95,"slots":[{"field":"user","raw":"杨思见"}],"reason":"用户查询他人课表"}`,
+	}
+	compiler := newLLMIntentCompiler(client, intentCompilerOptions{})
+
+	result, err := compiler.Compile(context.Background(), IntentCompileRequest{Message: "查询杨思见的课表"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if result.Status != IntentCompileOK || draftSlotRaw(result.Draft, "user") != "杨思见" {
+		t.Fatalf("result = %+v, want unambiguous legacy raw alias accepted", result)
+	}
+}
+
 func TestIntentCompilerKeepsLowConfidenceWriteDraft(t *testing.T) {
 	t.Parallel()
 
@@ -298,6 +349,36 @@ func TestPromptOperationEntriesAreDerivedFromOperationCatalog(t *testing.T) {
 		if !reflect.DeepEqual(entry.AllowedActs, manifest.AllowedActs) {
 			t.Fatalf("%s AllowedActs = %v, want %v", entry.Name, entry.AllowedActs, manifest.AllowedActs)
 		}
+	}
+}
+
+func TestIntentCompilerPromptIncludesLanguageAndRawSlotContract(t *testing.T) {
+	t.Parallel()
+
+	prompt := buildIntentCompilerSystemPrompt()
+	for _, fragment := range []string{
+		"根据整句话的语义目标分类",
+		"不要求用户出现相同关键词",
+		"查询指定用户在指定教学周的课程安排",
+		"user_name->user_id(user_resolver)",
+		"查询一下杨思见的课程信息",
+		"negative_examples=查我的课表",
+	} {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("system prompt missing %q: %s", fragment, prompt)
+		}
+	}
+}
+
+func TestIntentCompilerUsesSemanticTimeoutBudgetByDefault(t *testing.T) {
+	t.Parallel()
+
+	compiler, ok := newLLMIntentCompiler(&fakeIntentChatClient{}, intentCompilerOptions{}).(*llmIntentCompiler)
+	if !ok {
+		t.Fatalf("compiler type = %T, want *llmIntentCompiler", compiler)
+	}
+	if compiler.timeout != 12*time.Second {
+		t.Fatalf("timeout = %s, want 12s", compiler.timeout)
 	}
 }
 

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestOperationCompilerProducesCatalogAliasCandidateWhenLLMReturnsUnknown(t *testing.T) {
+func TestOperationCompilerDoesNotUseCatalogAliasAsBusinessFallback(t *testing.T) {
 	t.Parallel()
 
 	compiler := newOperationCompiler(&fakeProtocolIntentCompiler{
@@ -22,27 +22,24 @@ func TestOperationCompilerProducesCatalogAliasCandidateWhenLLMReturnsUnknown(t *
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if result.Draft.Act != ActWriteRequest || result.Draft.Operation != "subscription.cancel" {
-		t.Fatalf("Draft = %+v, want subscription.cancel write request", result.Draft)
+	if result.Draft.Act != ActUnknown || result.Draft.Operation != "" {
+		t.Fatalf("Draft = %+v, want unknown semantic result", result.Draft)
 	}
-	if !operationCandidatesContain(result.Candidates, "subscription.cancel", OperationCandidateSourceCatalogAlias) {
-		t.Fatalf("Candidates = %+v, want catalog alias candidate for subscription.cancel", result.Candidates)
-	}
-	if result.Decision.Source != OperationCandidateSourceCatalogAlias {
-		t.Fatalf("Decision.Source = %q, want catalog alias", result.Decision.Source)
+	if operationCandidatesContain(result.Candidates, "subscription.cancel", OperationCandidateSourceCatalogAlias) {
+		t.Fatalf("Candidates = %+v, business aliases must not participate in runtime routing", result.Candidates)
 	}
 }
 
-func TestOperationCompilerBusinessCancelBeatsWorkflowCancel(t *testing.T) {
+func TestOperationCompilerSemanticBusinessCancelInterruptsWorkflow(t *testing.T) {
 	t.Parallel()
 
 	compiler := newOperationCompiler(&fakeProtocolIntentCompiler{
 		draftsByMessage: map[string]IntentDraft{
 			"取消考勤推送": {
-				Act:       ActWorkflowCancel,
+				Act:       ActWriteRequest,
 				Domain:    DomainSubscription,
-				Operation: "subscription.start",
-				Reason:    "llm_confused_business_cancel_with_workflow_cancel",
+				Operation: "subscription.cancel",
+				Reason:    "semantic_business_cancel",
 			},
 		},
 	})
@@ -63,9 +60,12 @@ func TestOperationCompilerBusinessCancelBeatsWorkflowCancel(t *testing.T) {
 	if result.Decision.Kind != OperationArbiterDecisionNewOperation {
 		t.Fatalf("Decision.Kind = %q, want new operation", result.Decision.Kind)
 	}
+	if result.Source != CompilerSourceLLM {
+		t.Fatalf("Source = %q, want LLM", result.Source)
+	}
 }
 
-func TestOperationCompilerProducesWorkflowSlotCandidateForActiveWorkflowInput(t *testing.T) {
+func TestOperationCompilerDoesNotUseFreeFormWorkflowSlotAsSemanticFallback(t *testing.T) {
 	t.Parallel()
 
 	compiler := newOperationCompiler(&fakeProtocolIntentCompiler{
@@ -88,8 +88,8 @@ func TestOperationCompilerProducesWorkflowSlotCandidateForActiveWorkflowInput(t 
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	if result.Draft.Act != ActWorkflowContinue || result.Draft.Operation != "subscription.start" {
-		t.Fatalf("Draft = %+v, want subscription.start workflow continue", result.Draft)
+	if result.Draft.Act != ActUnknown || result.Draft.Operation != "" {
+		t.Fatalf("Draft = %+v, want unknown without semantic compiler result", result.Draft)
 	}
 	candidate, ok := findOperationCandidate(result.Candidates, "subscription.start", OperationCandidateSourceWorkflowSlot)
 	if !ok {
@@ -98,8 +98,8 @@ func TestOperationCompilerProducesWorkflowSlotCandidateForActiveWorkflowInput(t 
 	if candidate.Evidence != "workflow_slot_shape" {
 		t.Fatalf("workflow slot candidate evidence = %q, want workflow_slot_shape", candidate.Evidence)
 	}
-	if result.Decision.Kind != OperationArbiterDecisionWorkflowContinue {
-		t.Fatalf("Decision.Kind = %q, want workflow continue", result.Decision.Kind)
+	if result.Decision.Kind != OperationArbiterDecisionUnknown {
+		t.Fatalf("Decision.Kind = %q, want unknown", result.Decision.Kind)
 	}
 }
 
