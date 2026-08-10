@@ -845,33 +845,49 @@ func lintRawSlotContract(manifest OperationManifest) []string {
 		if _, ok := seen[slot.RawName]; ok {
 			errs = append(errs, fmt.Sprintf("%s: duplicate raw slot %q", manifest.Name, slot.RawName))
 		}
-		if trustedIDSlotField(slot.RawName) {
-			errs = append(errs, fmt.Sprintf("%s: raw slot %q must not be a trusted id", manifest.Name, slot.RawName))
-		}
 		seen[slot.RawName] = struct{}{}
-		if !paramSpecListContains(manifest.RequiredTrustedParams, slot.TargetParam) &&
-			!paramSpecListContains(manifest.OptionalTrustedParams, slot.TargetParam) &&
-			!queryShapesRequireTrustedParam(manifest.QueryShapes, slot.TargetParam) {
-			errs = append(errs, fmt.Sprintf("%s: raw slot %q targets undeclared param %q", manifest.Name, slot.RawName, slot.TargetParam))
-		}
-		if slot.Required && !paramSpecListContains(manifest.RequiredTrustedParams, slot.TargetParam) {
-			errs = append(errs, fmt.Sprintf("%s: required raw slot %q must target a required trusted param", manifest.Name, slot.RawName))
-		}
-		resolverFound := false
-		for _, resolver := range manifest.Resolvers {
-			if resolver.Param == slot.TargetParam && resolver.Name == slot.Resolver {
-				resolverFound = true
-				break
-			}
-		}
-		if !resolverFound {
-			errs = append(errs, fmt.Sprintf("%s: raw slot %q resolver %q does not match target param %q", manifest.Name, slot.RawName, slot.Resolver, slot.TargetParam))
-		}
-		if slot.Shape != "" && slot.Shape != "subscription_scope" && slot.Shape != "department_name_or_candidate" {
-			errs = append(errs, fmt.Sprintf("%s: raw slot %q has unknown workflow shape %q", manifest.Name, slot.RawName, slot.Shape))
-		}
+		errs = append(errs, lintRawSlotDefinition(manifest, slot)...)
 	}
 	return errs
+}
+
+func lintRawSlotDefinition(manifest OperationManifest, slot RawSlotSpec) []string {
+	var errs []string
+	if trustedIDSlotField(slot.RawName) {
+		errs = append(errs, fmt.Sprintf("%s: raw slot %q must not be a trusted id", manifest.Name, slot.RawName))
+	}
+	if !rawSlotTargetDeclared(manifest, slot.TargetParam) {
+		errs = append(errs, fmt.Sprintf("%s: raw slot %q targets undeclared param %q", manifest.Name, slot.RawName, slot.TargetParam))
+	}
+	if slot.Required && !paramSpecListContains(manifest.RequiredTrustedParams, slot.TargetParam) {
+		errs = append(errs, fmt.Sprintf("%s: required raw slot %q must target a required trusted param", manifest.Name, slot.RawName))
+	}
+	if !rawSlotResolverDeclared(manifest, slot) {
+		errs = append(errs, fmt.Sprintf("%s: raw slot %q resolver %q does not match target param %q", manifest.Name, slot.RawName, slot.Resolver, slot.TargetParam))
+	}
+	if !knownRawSlotShape(slot.Shape) {
+		errs = append(errs, fmt.Sprintf("%s: raw slot %q has unknown workflow shape %q", manifest.Name, slot.RawName, slot.Shape))
+	}
+	return errs
+}
+
+func rawSlotTargetDeclared(manifest OperationManifest, target string) bool {
+	return paramSpecListContains(manifest.RequiredTrustedParams, target) ||
+		paramSpecListContains(manifest.OptionalTrustedParams, target) ||
+		queryShapesRequireTrustedParam(manifest.QueryShapes, target)
+}
+
+func rawSlotResolverDeclared(manifest OperationManifest, slot RawSlotSpec) bool {
+	for _, resolver := range manifest.Resolvers {
+		if resolver.Param == slot.TargetParam && resolver.Name == slot.Resolver {
+			return true
+		}
+	}
+	return false
+}
+
+func knownRawSlotShape(shape string) bool {
+	return shape == "" || shape == "subscription_scope" || shape == "department_name_or_candidate"
 }
 
 func lintWriteManifest(manifest OperationManifest) []string {

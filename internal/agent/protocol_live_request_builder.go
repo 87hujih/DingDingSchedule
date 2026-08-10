@@ -270,31 +270,7 @@ func parseScheduleSubject(message string) (scheduleSubjectKind, string) {
 		return scheduleSubjectUnspecified, ""
 	}
 	explicitSelf := containsAny(value, []string{"我的", "我这周", "我本周", "给我查", "帮我查下自己"})
-	for _, week := range []string{extractWeekToken(value), "本周", "这周", "下周"} {
-		if week != "" {
-			value = strings.ReplaceAll(value, week, "")
-		}
-	}
-	cut := len(value)
-	for _, token := range []string{"课程信息", "课程安排", "上什么课", "有哪些课", "课表", "课程"} {
-		if index := strings.Index(value, token); index >= 0 && index < cut {
-			cut = index
-		}
-	}
-	value = strings.TrimSuffix(value[:cut], "的")
-	lastActionEnd := -1
-	for _, action := range []string{"查询", "查看", "看看", "想知道", "知道", "了解", "查", "看"} {
-		if index := strings.LastIndex(value, action); index >= 0 && index+len(action) > lastActionEnd {
-			lastActionEnd = index + len(action)
-		}
-	}
-	if lastActionEnd >= 0 {
-		value = value[lastActionEnd:]
-	}
-	for _, filler := range []string{"一下", "下", "一查", "一看"} {
-		value = strings.TrimPrefix(value, filler)
-	}
-	value = strings.Trim(value, "，。！？,.!?：: ")
+	value = trimScheduleSubjectContext(value)
 	if value == "" {
 		if explicitSelf {
 			return scheduleSubjectSelf, ""
@@ -304,12 +280,55 @@ func parseScheduleSubject(message string) (scheduleSubjectKind, string) {
 	if value == "我" || value == "本人" || value == "自己" {
 		return scheduleSubjectSelf, ""
 	}
-	if containsAny(value, []string{"你", "他", "她", "他们", "她们", "对方", "谁", "某人"}) ||
-		containsAny(value, []string{"查询", "查看", "看看", "课程", "课表", "规则", "什么", "如何", "怎么"}) || len([]rune(value)) > 32 {
+	if unresolvedScheduleSubject(value) {
 		return scheduleSubjectUnresolved, ""
 	}
 	return scheduleSubjectNamed, value
+}
 
+func trimScheduleSubjectContext(value string) string {
+	for _, week := range []string{extractWeekToken(value), "本周", "这周", "下周"} {
+		if week != "" {
+			value = strings.ReplaceAll(value, week, "")
+		}
+	}
+	value = trimScheduleCourseSuffix(value)
+	value = trimScheduleQueryAction(value)
+	for _, filler := range []string{"一下", "下", "一查", "一看"} {
+		value = strings.TrimPrefix(value, filler)
+	}
+	return strings.Trim(value, "，。！？,.!?：: ")
+}
+
+func trimScheduleCourseSuffix(value string) string {
+	cut := len(value)
+	for _, token := range []string{"课程信息", "课程安排", "上什么课", "有哪些课", "课表", "课程"} {
+		if index := strings.Index(value, token); index >= 0 && index < cut {
+			cut = index
+		}
+	}
+	return strings.TrimSuffix(value[:cut], "的")
+}
+
+func trimScheduleQueryAction(value string) string {
+	lastActionEnd := -1
+	for _, action := range []string{"查询", "查看", "看看", "想知道", "知道", "了解", "查", "看"} {
+		if index := strings.LastIndex(value, action); index >= 0 && index+len(action) > lastActionEnd {
+			lastActionEnd = index + len(action)
+		}
+	}
+	if lastActionEnd >= 0 {
+		return value[lastActionEnd:]
+	}
+	return value
+}
+
+func unresolvedScheduleSubject(value string) bool {
+	if containsAny(value, []string{"你", "他", "她", "他们", "她们", "对方", "谁", "某人"}) ||
+		containsAny(value, []string{"查询", "查看", "看看", "课程", "课表", "规则", "什么", "如何", "怎么"}) || len([]rune(value)) > 32 {
+		return true
+	}
+	return false
 }
 
 func extractScheduleUserName(message string) string {
