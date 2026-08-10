@@ -238,6 +238,18 @@ func TestFailureLayerReportSummarizesWhereFailuresCluster(t *testing.T) {
 	}
 }
 
+func TestFailureLayerReportCountsCompilerInvalidOutputStatus(t *testing.T) {
+	t.Parallel()
+
+	report := BuildFailureLayerReport([]model.AgentCallLog{
+		{Status: "failed", FailureLayer: string(FailureIntent), CompilerStatus: "invalid_output"},
+	})
+
+	if report.InvalidJSONCount != 1 {
+		t.Fatalf("InvalidJSONCount = %d, want actual compiler status invalid_output counted", report.InvalidJSONCount)
+	}
+}
+
 func TestReplayRunnerReplaysProtocolLiveCaseAndComparesStableFields(t *testing.T) {
 	t.Parallel()
 
@@ -492,7 +504,7 @@ func TestReplayRunnerReplaysWorkflowContinueFromCallLog(t *testing.T) {
 		WorkflowStateBefore:        string(WorkflowCollectScope),
 		WorkflowIDBefore:           "wf-before",
 		WorkflowSnapshotBeforeJSON: `{"id":"wf-before","type":"subscription.start","state":"collect_scope","tenant_id":42,"actor_user_id":7,"conversation_id":"conv-replay","missing_fields":["scope"]}`,
-		IntentDraftJSON:            `{"Act":"workflow_continue","Domain":"subscription","Operation":"subscription.start","Confidence":0.97}`,
+		IntentDraftJSON:            `{"Act":"workflow_continue","Domain":"subscription","Operation":"subscription.start","Confidence":0.97,"Slots":{"scope":{"Field":"scope","Raw":"全部人员"}}}`,
 	}
 	tc := ReplayCaseFromCallLog(row)
 	runner := NewReplayRunner(ReplayRunnerOptions{GroupSub: groupSub})

@@ -23,6 +23,54 @@ func TestResponseRendererClarifyForUnknownIntent(t *testing.T) {
 	}
 }
 
+func TestResponseRendererDistinguishesIntentInfrastructureFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		reason     string
+		want       string
+		mustNotSay string
+	}{
+		{name: "compiler timeout", reason: "intent_timeout", want: "响应超时", mustNotSay: "请再明确"},
+		{name: "invalid compiler output", reason: "intent_parse_failed", want: "返回异常", mustNotSay: "请再明确"},
+		{name: "compiler unavailable", reason: "intent_compiler_unavailable", want: "暂时不可用", mustNotSay: "请再明确"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			reply := renderProtocolResponse(ResponseModel{
+				Kind:          ResponseClarify,
+				ClarifyReason: tt.reason,
+			})
+			if !strings.Contains(reply, tt.want) {
+				t.Fatalf("reply = %q, want %q", reply, tt.want)
+			}
+			if strings.Contains(reply, tt.mustNotSay) {
+				t.Fatalf("reply = %q, should not present an infrastructure failure as unclear user input", reply)
+			}
+		})
+	}
+}
+
+func TestResponseRendererClarifiesMissingScheduleUser(t *testing.T) {
+	t.Parallel()
+
+	reply := renderProtocolResponse(ResponseModel{
+		Kind:          ResponseClarify,
+		Operation:     "schedule.query_user_schedule",
+		MissingFields: []string{"user_id"},
+	})
+	if !strings.Contains(reply, "哪位用户") || !strings.Contains(reply, "杨思见") {
+		t.Fatalf("reply = %q, want a concrete schedule-user clarification", reply)
+	}
+	if strings.Contains(reply, "请再明确一下你的需求") {
+		t.Fatalf("reply = %q, should not use the generic clarification", reply)
+	}
+}
+
 func TestRenderProtocolResponseClarifiesMissingSubscriptionScope(t *testing.T) {
 	t.Parallel()
 

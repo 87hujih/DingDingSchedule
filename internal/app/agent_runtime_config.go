@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	defaultIntentCompilerTimeout = 5 * time.Second
+	defaultIntentCompilerTimeout = 12 * time.Second
 	minIntentCompilerTimeout     = time.Second
+	minSemanticIntentTimeout     = 8 * time.Second
 	maxIntentCompilerTimeout     = 15 * time.Second
 	agentWorkflowStoreMemory     = "memory"
 	agentWorkflowStoreShadow     = "shadow"
@@ -80,6 +81,12 @@ func ParseAgentRuntimeConfig(cfg config.LLM, env string) (AgentRuntimeConfig, er
 	result.IntentCompilerTimeout = timeout
 
 	if result.ProtocolMode == "protocol_live" {
+		if result.IntentCompilerTimeout < minSemanticIntentTimeout {
+			return AgentRuntimeConfig{}, fmt.Errorf(
+				"protocol_live intent_compiler_timeout must be at least %s for semantic compilation",
+				minSemanticIntentTimeout,
+			)
+		}
 		if err := validateLiveLLMConfig(cfg); err != nil {
 			return AgentRuntimeConfig{}, err
 		}

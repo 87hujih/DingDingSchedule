@@ -8,15 +8,25 @@ import (
 	"schedule_server/config"
 )
 
-func TestParseAgentRuntimeConfigDefaultsCompilerTimeoutToFiveSeconds(t *testing.T) {
+func TestParseAgentRuntimeConfigDefaultsCompilerTimeoutToTwelveSeconds(t *testing.T) {
 	t.Parallel()
 
 	got, err := ParseAgentRuntimeConfig(validRuntimeLLMConfig(), "dev")
 	if err != nil {
 		t.Fatalf("ParseAgentRuntimeConfig() error = %v", err)
 	}
-	if got.IntentCompilerTimeout != 5*time.Second {
-		t.Fatalf("timeout = %s, want 5s", got.IntentCompilerTimeout)
+	if got.IntentCompilerTimeout != 12*time.Second {
+		t.Fatalf("timeout = %s, want 12s", got.IntentCompilerTimeout)
+	}
+}
+
+func TestParseAgentRuntimeConfigRejectsLiveSemanticTimeoutBelowEightSeconds(t *testing.T) {
+	t.Parallel()
+
+	cfg := validRuntimeLLMConfig()
+	cfg.IntentCompilerTimeout = "5s"
+	if _, err := ParseAgentRuntimeConfig(cfg, "dev"); err == nil || !strings.Contains(err.Error(), "at least 8s") {
+		t.Fatalf("error = %v, want semantic timeout floor", err)
 	}
 }
 

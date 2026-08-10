@@ -10,17 +10,18 @@ import (
 )
 
 func (p protocolLivePipeline) attendanceRequest(ctx context.Context, message string, draft ProtocolDraft, tenantID uint) (OperationRequest, ResponseModel, bool) { //nolint:gocyclo // Attendance request assembly keeps slot resolution order explicit.
+	manifest, ok := lookupOperation(draft.Operation)
+	if !ok {
+		return OperationRequest{}, unsupportedOperationResponse(), false
+	}
 	resolveCtx := EntityResolveContext{TenantID: tenantID}
 	trusted := trustedEntities{UserRole: 0, TenantID: tenantID, TrustedParams: map[string]TrustedParam{}}
-	if raw := draftSlotRaw(draft, "query_shape"); raw != "" {
+	if raw := draftRawSlotForTarget(manifest, draft, "query_shape"); raw != "" {
 		trusted.QueryShape = raw
 		trusted.TrustedParams["query_shape"] = trustedParamFromContext(resolveCtx.RawSlot("query_shape", raw), "query_shape", raw, "query_shape_slot")
 	}
 	now := p.now()
-	dateRaw := firstNonEmpty(draftSlotRaw(draft, "date"), extractDateToken(message))
-	if dateRaw == "" && hasDateSignal(message) {
-		dateRaw = messageDateSignal(message)
-	}
+	dateRaw := draftRawSlotForTarget(manifest, draft, "date")
 	dateInput := resolveCtx.RawSlot("date", dateRaw)
 	if dateRaw == "" {
 		dateInput = resolveCtx.Default("date")
@@ -31,7 +32,7 @@ func (p protocolLivePipeline) attendanceRequest(ctx context.Context, message str
 		trusted.TrustedParams["date"] = date.Param
 	}
 
-	sectionRaw := firstNonEmpty(draftSlotRaw(draft, "section"), extractSectionToken(message))
+	sectionRaw := draftRawSlotForTarget(manifest, draft, "section")
 	section := resolveSectionParam(resolveCtx.RawSlot("section", sectionRaw), p.schedulePeriods(ctx), func() time.Time { return now })
 	if section.Status == ResolveResolved {
 		if value, ok := section.Value.(int); ok {
@@ -40,7 +41,7 @@ func (p protocolLivePipeline) attendanceRequest(ctx context.Context, message str
 		}
 	}
 
-	userRaw := firstNonEmpty(draftSlotRaw(draft, "user"), draftSlotRaw(draft, "user_name"))
+	userRaw := draftRawSlotForTarget(manifest, draft, "user_id")
 	if userRaw != "" && p.deps.User != nil {
 		users, err := p.deps.User.SearchByName(ctx, userRaw)
 		if err == nil {
@@ -95,7 +96,7 @@ func (p protocolLivePipeline) scheduleRequest(ctx context.Context, message strin
 	}
 	resolveCtx := EntityResolveContext{TenantID: tenantID}
 	trusted := trustedEntities{UserRole: 0, TenantID: tenantID, TrustedParams: map[string]TrustedParam{}}
-	weekRaw := firstNonEmpty(draftSlotRaw(draft, "week"), extractWeekToken(message))
+	weekRaw := draftRawSlotForTarget(manifest, draft, "week")
 	weekInput := resolveCtx.RawSlot("week", weekRaw)
 	if weekRaw == "" {
 		weekInput = resolveCtx.Default("week")
@@ -109,7 +110,7 @@ func (p protocolLivePipeline) scheduleRequest(ctx context.Context, message strin
 	}
 
 	if operationRequiresTrustedParam(manifest, "user_id") {
-		userRaw := firstNonEmpty(draftSlotRaw(draft, "user"), draftSlotRaw(draft, "user_name"), extractScheduleUserName(message))
+		userRaw := draftRawSlotForTarget(manifest, draft, "user_id")
 		if userRaw == "" || p.deps.User == nil {
 			return OperationRequest{}, missingOperationParamsResponse(draft.Operation, []string{"user_id"}), false
 		}
@@ -183,8 +184,10 @@ func missingRequiredTrustedParams(manifest OperationManifest, trusted trustedEnt
 }
 
 func protocolRuleTopic(message string, draft ProtocolDraft) string {
-	if raw := draftSlotRaw(draft, "rule_topic"); raw != "" {
-		return raw
+	if manifest, ok := lookupOperation(draft.Operation); ok {
+		if raw := draftRawSlotForTarget(manifest, draft, "rule_topic"); raw != "" {
+			return raw
+		}
 	}
 	return strings.TrimSpace(message)
 }
@@ -198,6 +201,18 @@ func draftSlotRaw(draft ProtocolDraft, field string) string {
 		return ""
 	}
 	return strings.TrimSpace(slot.Raw)
+}
+
+func draftRawSlotForTarget(manifest OperationManifest, draft ProtocolDraft, targetParam string) string {
+	for _, spec := range manifest.Recognition.RawSlots {
+		if spec.TargetParam != targetParam {
+			continue
+		}
+		if raw := draftSlotRaw(draft, spec.RawName); raw != "" {
+			return raw
+		}
+	}
+	return ""
 }
 
 func messageDateSignal(message string) string {
@@ -232,26 +247,96 @@ func extractWeekToken(message string) string {
 			return token
 		}
 	}
-	if strings.Contains(normalized, "本周") {
-		return "本周"
+	for _, token := range []string{"本周", "这周", "下周"} {
+		if strings.Contains(normalized, token) {
+			return token
+		}
 	}
 	return ""
 }
 
-func extractScheduleUserName(message string) string {
-	value := strings.TrimSpace(message)
-	value = strings.TrimPrefix(value, "查询")
-	value = strings.TrimPrefix(value, "查")
-	if idx := strings.Index(value, "第"); idx > 0 {
-		value = value[:idx]
+type scheduleSubjectKind uint8
+
+const (
+	scheduleSubjectUnspecified scheduleSubjectKind = iota
+	scheduleSubjectSelf
+	scheduleSubjectNamed
+	scheduleSubjectUnresolved
+)
+
+func parseScheduleSubject(message string) (scheduleSubjectKind, string) {
+	value := normalizeQuery(message)
+	if value == "" {
+		return scheduleSubjectUnspecified, ""
 	}
-	value = strings.ReplaceAll(value, "课表", "")
-	value = strings.ReplaceAll(value, "的", "")
-	value = strings.TrimSpace(value)
-	if value == "" || strings.Contains(value, "我") {
-		return ""
+	explicitSelf := containsAny(value, []string{"我的", "我这周", "我本周", "给我查", "帮我查下自己"})
+	value = trimScheduleSubjectContext(value)
+	if value == "" {
+		if explicitSelf {
+			return scheduleSubjectSelf, ""
+		}
+		return scheduleSubjectUnspecified, ""
+	}
+	if value == "我" || value == "本人" || value == "自己" {
+		return scheduleSubjectSelf, ""
+	}
+	if unresolvedScheduleSubject(value) {
+		return scheduleSubjectUnresolved, ""
+	}
+	return scheduleSubjectNamed, value
+}
+
+func trimScheduleSubjectContext(value string) string {
+	for _, week := range []string{extractWeekToken(value), "本周", "这周", "下周"} {
+		if week != "" {
+			value = strings.ReplaceAll(value, week, "")
+		}
+	}
+	value = trimScheduleCourseSuffix(value)
+	value = trimScheduleQueryAction(value)
+	for _, filler := range []string{"一下", "下", "一查", "一看"} {
+		value = strings.TrimPrefix(value, filler)
+	}
+	return strings.Trim(value, "，。！？,.!?：: ")
+}
+
+func trimScheduleCourseSuffix(value string) string {
+	cut := len(value)
+	for _, token := range []string{"课程信息", "课程安排", "上什么课", "有哪些课", "课表", "课程"} {
+		if index := strings.Index(value, token); index >= 0 && index < cut {
+			cut = index
+		}
+	}
+	return strings.TrimSuffix(value[:cut], "的")
+}
+
+func trimScheduleQueryAction(value string) string {
+	lastActionEnd := -1
+	for _, action := range []string{"查询", "查看", "看看", "想知道", "知道", "了解", "查", "看"} {
+		if index := strings.LastIndex(value, action); index >= 0 && index+len(action) > lastActionEnd {
+			lastActionEnd = index + len(action)
+		}
+	}
+	if lastActionEnd >= 0 {
+		return value[lastActionEnd:]
 	}
 	return value
+}
+
+func unresolvedScheduleSubject(value string) bool {
+	if containsAny(value, []string{"你", "他", "她", "他们", "她们", "对方", "谁", "某人"}) ||
+		containsAny(value, []string{"查询", "查看", "看看", "课程", "课表", "规则", "什么", "如何", "怎么"}) || len([]rune(value)) > 32 {
+		return true
+	}
+	return false
+}
+
+func extractScheduleUserName(message string) string {
+	kind, name := parseScheduleSubject(message)
+	if kind != scheduleSubjectNamed {
+		return ""
+	}
+	return name
 }
 
 func responseOptionsFromEntityCandidates(candidates []EntityCandidate) []ResponseOption {

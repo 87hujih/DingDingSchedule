@@ -1,18 +1,23 @@
 package agent
 
-import "strings"
-
 type RecognitionSpec struct {
+	Description      string
 	Aliases          []string
 	Examples         []string
 	NegativeExamples []string
-	SlotHints        []SlotHint
+	RawSlots         []RawSlotSpec
 	ContinueShapes   []ContinueShape
 }
 
-type SlotHint struct {
-	Field string
-	Shape string
+// RawSlotSpec defines the untrusted language-level input accepted for a
+// trusted operation parameter. The resolver remains responsible for turning
+// RawName into TargetParam; the compiler must never manufacture trusted IDs.
+type RawSlotSpec struct {
+	RawName     string
+	TargetParam string
+	Resolver    string
+	Shape       string
+	Required    bool
 }
 
 type ContinueShape struct {
@@ -20,6 +25,29 @@ type ContinueShape struct {
 	States       []WorkflowState
 	Fields       []string
 	Source       string
+}
+
+func rawSlotMapsTo(specs []RawSlotSpec, rawName, targetParam, resolver string) bool {
+	for _, spec := range specs {
+		if spec.RawName == rawName && spec.TargetParam == targetParam && spec.Resolver == resolver {
+			return true
+		}
+	}
+	return false
+}
+
+func rawSlotDeclared(specs []RawSlotSpec, rawName string) bool {
+	_, ok := lookupRawSlotSpec(specs, rawName)
+	return ok
+}
+
+func lookupRawSlotSpec(specs []RawSlotSpec, rawName string) (RawSlotSpec, bool) {
+	for _, spec := range specs {
+		if spec.RawName == rawName {
+			return spec, true
+		}
+	}
+	return RawSlotSpec{}, false
 }
 
 func recognitionContainsAlias(recognition RecognitionSpec, alias string) bool {
@@ -30,29 +58,4 @@ func recognitionContainsAlias(recognition RecognitionSpec, alias string) bool {
 		}
 	}
 	return false
-}
-
-func recognitionAliasMatches(message string, alias string) bool {
-	normalizedMessage := normalizeQuery(message)
-	normalizedAlias := normalizeQuery(alias)
-	if normalizedMessage == "" || normalizedAlias == "" {
-		return false
-	}
-	if normalizedMessage == normalizedAlias {
-		return true
-	}
-	return strings.Contains(normalizedMessage, normalizedAlias)
-}
-
-func recognitionAliasConfidence(message string, alias string) float64 {
-	normalizedMessage := normalizeQuery(message)
-	normalizedAlias := normalizeQuery(alias)
-	if normalizedMessage == normalizedAlias {
-		return 1
-	}
-	score := 0.8 + float64(len([]rune(normalizedAlias)))/100
-	if score > 0.99 {
-		return 0.99
-	}
-	return score
 }

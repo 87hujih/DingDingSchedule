@@ -400,30 +400,43 @@ func compileRuleQuestion(message string) (ProtocolDraft, bool) {
 // compileScheduleReadQuery classifies schedule read questions covered by the operation catalog.
 func compileScheduleReadQuery(message string) (ProtocolDraft, bool) {
 	normalized := normalizeQuery(message)
-	if !containsAny(normalized, []string{"课表", "课程"}) {
+	if !containsAny(normalized, []string{"课表", "课程", "上什么课", "有哪些课"}) {
 		return ProtocolDraft{}, false
 	}
-	if !containsAny(normalized, []string{"查", "查询", "看", "看看", "本周", "这周", "下周", "第"}) {
+	if !containsAny(normalized, []string{"查", "查询", "看", "看看", "想知道", "了解", "上什么课", "有哪些课", "本周", "这周", "下周", "第"}) {
+		return ProtocolDraft{}, false
+	}
+	if containsAny(normalized, []string{"规则", "怎么生效", "如何生效", "能做什么", "支持什么"}) {
+		return ProtocolDraft{}, false
+	}
+	if containsAny(normalized, []string{"不要查", "不要查询", "不用查", "不用查询", "别查", "别查询", "不想查", "不想查询", "不是查", "不是查询"}) {
 		return ProtocolDraft{}, false
 	}
 
-	userName := extractScheduleUserName(message)
-	if userName != "" {
+	slots := map[string]SlotDraft{}
+	if week := extractWeekToken(message); week != "" {
+		slots["week"] = SlotDraft{Field: "week", Raw: week}
+	}
+	subjectKind, userName := parseScheduleSubject(message)
+	if subjectKind == scheduleSubjectNamed {
+		slots["user_name"] = SlotDraft{Field: "user_name", Raw: userName}
 		return ProtocolDraft{
 			Act:        ActReadQuery,
 			Domain:     DomainSchedule,
 			Operation:  "schedule.query_user_schedule",
 			Confidence: 1,
-			Slots: map[string]SlotDraft{
-				"user_name": {Field: "user_name", Raw: userName},
-			},
+			Slots:      slots,
 		}, true
+	}
+	if subjectKind == scheduleSubjectUnresolved {
+		return ProtocolDraft{}, false
 	}
 	return ProtocolDraft{
 		Act:        ActReadQuery,
 		Domain:     DomainSchedule,
 		Operation:  "schedule.query_my_schedule",
 		Confidence: 1,
+		Slots:      slots,
 	}, true
 }
 

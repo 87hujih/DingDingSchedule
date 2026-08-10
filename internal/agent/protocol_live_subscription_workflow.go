@@ -44,7 +44,7 @@ func (p protocolLivePipeline) handleSubscription(ctx context.Context, input prot
 			setProtocolOutcomeResponse(&outcome, response, mode)
 			return outcome
 		}
-		if trusted, ok := p.resolveInitialSubscriptionTrustedEntities(ctx, input.Message, draft, userTenantID(input.User)); ok {
+		if trusted, ok := p.resolveInitialSubscriptionTrustedEntities(ctx, draft, userTenantID(input.User)); ok {
 			continueDraft := draft
 			continueDraft.Act = ActWorkflowContinue
 			return p.continueSubscription(ctx, input, continueDraft, &workflow, trusted, outcome)
@@ -68,7 +68,7 @@ func (p protocolLivePipeline) handleSubscription(ctx context.Context, input prot
 		return outcome
 	}
 
-	trusted, resolved, ok := p.resolveSubscriptionTrustedEntities(ctx, input.Message, activeWorkflow, userTenantID(input.User))
+	trusted, resolved, ok := p.resolveSubscriptionTrustedEntities(ctx, input.Message, draft, activeWorkflow, userTenantID(input.User))
 	if !ok {
 		outcome.WorkflowAfter = cloneWorkflowSnapshot(activeWorkflow)
 		if resolved.Status == ResolveAmbiguous {
@@ -161,31 +161,37 @@ func subscriptionStartTrustedParams(uctx *tools.UserContext, trusted trustedEnti
 	return params
 }
 
-func (p protocolLivePipeline) resolveSubscriptionTrustedEntities(ctx context.Context, message string, workflow *WorkflowSnapshot, tenantID uint) (trustedEntities, ResolveResult, bool) {
+func (p protocolLivePipeline) resolveSubscriptionTrustedEntities(ctx context.Context, message string, draft ProtocolDraft, workflow *WorkflowSnapshot, tenantID uint) (trustedEntities, ResolveResult, bool) {
 	if workflow == nil {
 		return trustedEntities{}, ResolveResult{}, false
 	}
+	manifest, ok := lookupOperation(string(workflow.Type))
+	if !ok {
+		return trustedEntities{}, ResolveResult{}, false
+	}
+	scopeRaw := draftRawSlotForTarget(manifest, draft, "scope")
+	departmentRaw := draftRawSlotForTarget(manifest, draft, "dept_ids")
 	switch workflow.State {
 	case WorkflowCollectScope:
-		normalized := normalizeQuery(message)
-		switch {
-		case containsAny(normalized, []string{"全部人员", "全部"}):
-			return trustedEntities{TenantID: tenantID, Scope: "all"}, ResolveResult{}, true
-		case containsAny(normalized, []string{"指定部门", "部分部门"}):
-			return trustedEntities{TenantID: tenantID, Scope: "department"}, ResolveResult{}, true
-		default:
-			return p.resolveSubscriptionDepartmentSelection(ctx, message, tenantID)
+		if scope := normalizeSubscriptionScope(scopeRaw); scope != "" {
+			return trustedEntities{TenantID: tenantID, Scope: scope}, ResolveResult{}, true
 		}
+		if departmentRaw != "" {
+			return p.resolveSubscriptionDepartmentSelection(ctx, departmentRaw, tenantID)
+		}
+		return trustedEntities{}, ResolveResult{}, false
 	case WorkflowCollectDepartments:
-		normalized := normalizeQuery(message)
-		if normalized == "全部人员" || normalized == "全部" {
+		if normalizeSubscriptionScope(scopeRaw) == "all" {
 			return trustedEntities{TenantID: tenantID, Scope: "all"}, ResolveResult{}, true
 		}
 		if trusted, handled, ok := workflowDepartmentCandidateSelection(workflow, message, tenantID); handled {
 			trusted.TenantID = tenantID
 			return trusted, ResolveResult{}, ok
 		}
-		return p.resolveSubscriptionDepartmentSelection(ctx, message, tenantID)
+		if departmentRaw != "" {
+			return p.resolveSubscriptionDepartmentSelection(ctx, departmentRaw, tenantID)
+		}
+		return trustedEntities{}, ResolveResult{}, false
 	default:
 		return trustedEntities{}, ResolveResult{}, false
 	}
@@ -359,8 +365,12 @@ func (p protocolLivePipeline) resolveSubscriptionDepartmentSelection(ctx context
 	}, resolved, true
 }
 
-func (p protocolLivePipeline) resolveInitialSubscriptionTrustedEntities(ctx context.Context, message string, draft ProtocolDraft, tenantID uint) (trustedEntities, bool) {
-	scope := normalizeSubscriptionScope(firstNonEmpty(draftSlotRaw(draft, "scope"), message))
+func (p protocolLivePipeline) resolveInitialSubscriptionTrustedEntities(ctx context.Context, draft ProtocolDraft, tenantID uint) (trustedEntities, bool) {
+	manifest, ok := lookupOperation(draft.Operation)
+	if !ok {
+		return trustedEntities{}, false
+	}
+	scope := normalizeSubscriptionScope(draftRawSlotForTarget(manifest, draft, "scope"))
 	if scope == "" {
 		return trustedEntities{}, false
 	}
@@ -369,12 +379,7 @@ func (p protocolLivePipeline) resolveInitialSubscriptionTrustedEntities(ctx cont
 		return trusted, true
 	}
 
-	deptName := firstNonEmpty(
-		draftSlotRaw(draft, "dept_names"),
-		draftSlotRaw(draft, "dept_name"),
-		draftSlotRaw(draft, "department"),
-		draftSlotRaw(draft, "department_name"),
-	)
+	deptName := draftRawSlotForTarget(manifest, draft, "dept_ids")
 	if deptName == "" || p.deps.Dept == nil {
 		return trusted, true
 	}

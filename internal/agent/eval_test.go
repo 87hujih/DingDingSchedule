@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -346,9 +347,13 @@ func TestEvaluateCasesDoesNotRequireLegacyRouteForProtocolOnlyCases(t *testing.T
 
 	cases := []EvalCase{
 		{
-			Name:                      "protocol-rule",
-			Category:                  "protocol",
-			Question:                  "迟到规则是什么",
+			Name:     "protocol-rule",
+			Category: "protocol",
+			Question: "迟到规则是什么",
+			IntentTransportResponse: &EvalIntentTransportResponse{
+				Act: ActRuleQuestion, Domain: DomainAttendance,
+				Operation: "attendance.rule_explain", Confidence: 1,
+			},
 			ExpectedProtocolAct:       "rule_question",
 			ExpectedProtocolDomain:    "attendance",
 			ExpectedProtocolOperation: "attendance.rule_explain",
@@ -384,9 +389,13 @@ func TestEvaluateCasesAggregatesProtocolMatches(t *testing.T) {
 
 	cases := []EvalCase{
 		{
-			Name:                      "protocol-help-overview",
-			Category:                  "protocol",
-			Question:                  "你有什么功能",
+			Name:     "protocol-help-overview",
+			Category: "protocol",
+			Question: "你有什么功能",
+			IntentTransportResponse: &EvalIntentTransportResponse{
+				Act: ActHelp, Domain: DomainSystem,
+				Operation: "system.describe_capability", Confidence: 1,
+			},
 			ExpectedProtocolAct:       "help",
 			ExpectedProtocolDomain:    "system",
 			ExpectedProtocolOperation: "system.describe_capability",
@@ -394,9 +403,13 @@ func TestEvaluateCasesAggregatesProtocolMatches(t *testing.T) {
 			ExpectedTools:             []string{},
 		},
 		{
-			Name:                      "protocol-subscription-missing-scope",
-			Category:                  "protocol",
-			Question:                  "开启本群考勤订阅",
+			Name:     "protocol-subscription-missing-scope",
+			Category: "protocol",
+			Question: "开启本群考勤订阅",
+			IntentTransportResponse: &EvalIntentTransportResponse{
+				Act: ActWriteRequest, Domain: DomainSubscription,
+				Operation: "subscription.start", Confidence: 1,
+			},
 			ExpectedProtocolAct:       "write_request",
 			ExpectedProtocolDomain:    "subscription",
 			ExpectedProtocolOperation: "subscription.start",
@@ -569,9 +582,13 @@ func TestEvaluateCasesProtocolUsesTargetTenantForKnowledge(t *testing.T) {
 		hits: []agenttools.KnowledgeHit{{Heading: "迟到规则", Body: "迟到规则说明", SourceRef: "attendance#late"}},
 	}
 	cases := []EvalCase{{
-		Name:                      "protocol-rule-tenant",
-		Category:                  "protocol",
-		Question:                  "迟到规则是什么",
+		Name:     "protocol-rule-tenant",
+		Category: "protocol",
+		Question: "迟到规则是什么",
+		IntentTransportResponse: &EvalIntentTransportResponse{
+			Act: ActRuleQuestion, Domain: DomainAttendance,
+			Operation: "attendance.rule_explain", Confidence: 1,
+		},
 		ExpectedProtocolAct:       "rule_question",
 		ExpectedProtocolDomain:    "attendance",
 		ExpectedProtocolOperation: "attendance.rule_explain",
@@ -754,6 +771,135 @@ func TestEvaluateCasesProtocolFixturePasses(t *testing.T) {
 		t.Fatalf("EvaluateCases() error = %v", err)
 	}
 	if summary.ProtocolCases != len(protocolCases) || summary.ProtocolPassed != summary.ProtocolCases {
-		t.Fatalf("protocol fixture summary = %+v results = %+v", summary, results)
+		failed := make([]string, 0)
+		for _, result := range results {
+			if result.ProtocolChecked && !result.ProtocolMatched {
+				failed = append(failed, fmt.Sprintf(
+					"%s(actual=%s/%s/%s slots=%v response=%s failure=%s)",
+					result.Name,
+					result.ProtocolAct,
+					result.ProtocolDomain,
+					result.ProtocolOperation,
+					result.ProtocolSlots,
+					result.ResponseKind,
+					result.FailureLayer,
+				))
+			}
+		}
+		t.Fatalf("protocol fixture summary = %+v failed = %v", summary, failed)
+	}
+}
+
+func TestEvaluateCasesProtocolUsesIntentTransportFixtureAndChecksSlots(t *testing.T) {
+	t.Parallel()
+
+	cases := []EvalCase{{
+		Name:     "schedule-user-course-info-variant",
+		Category: "protocol",
+		Question: "查询一下杨思见的课程信息",
+		IntentTransportResponse: &EvalIntentTransportResponse{
+			Act:        ActReadQuery,
+			Domain:     DomainSchedule,
+			Operation:  "schedule.query_user_schedule",
+			Confidence: 0.98,
+			Slots: map[string]string{
+				"user_name": "杨思见",
+			},
+		},
+		ExpectedProtocolAct:       "read_query",
+		ExpectedProtocolDomain:    "schedule",
+		ExpectedProtocolOperation: "schedule.query_user_schedule",
+		ExpectedProtocolSlots: map[string]string{
+			"user_name": "杨思见",
+		},
+		ExpectedResponseKind: "result",
+		ExpectedFailureLayer: "",
+	}}
+
+	summary, results, err := EvaluateCases(
+		context.Background(),
+		evalKnowledgePort{hitsByQuery: map[string][]agenttools.KnowledgeHit{}},
+		42,
+		cases,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("EvaluateCases() error = %v", err)
+	}
+	if summary.ProtocolPassed != 1 || len(results) != 1 || !results[0].ProtocolMatched {
+		t.Fatalf("protocol result = %+v summary = %+v", results, summary)
+	}
+	if got := results[0].ProtocolSlots["user_name"]; got != "杨思见" {
+		t.Fatalf("ProtocolSlots[user_name] = %q, want 杨思见", got)
+	}
+}
+
+func TestEvalFixtureCoversNamedScheduleUserVariantsWithSlots(t *testing.T) {
+	t.Parallel()
+
+	cases, err := LoadEvalCases(filepath.Join("testdata", "eval_cases.json"))
+	if err != nil {
+		t.Fatalf("LoadEvalCases() error = %v", err)
+	}
+	wanted := map[string]string{
+		"intel-schedule-user-course-info": "查询一下杨思见的课程信息",
+		"intel-schedule-user-week-plan":   "帮我查下杨思见这周的课程安排",
+	}
+	for name, question := range wanted {
+		var matched *EvalCase
+		for index := range cases {
+			if cases[index].Name == name {
+				matched = &cases[index]
+				break
+			}
+		}
+		if matched == nil {
+			t.Fatalf("eval fixture missing %q", name)
+		}
+		if matched.Question != question {
+			t.Fatalf("%s question = %q, want %q", name, matched.Question, question)
+		}
+		if matched.IntentTransportResponse == nil {
+			t.Fatalf("%s missing intent_transport_response", name)
+		}
+		if got := matched.IntentTransportResponse.Slots["user_name"]; got != "杨思见" {
+			t.Fatalf("%s transport user_name = %q, want 杨思见", name, got)
+		}
+		if got := matched.ExpectedProtocolSlots["user_name"]; got != "杨思见" {
+			t.Fatalf("%s expected user_name = %q, want 杨思见", name, got)
+		}
+	}
+}
+
+func TestEvaluateCasesDoesNotDeriveIntentTransportFromExpectations(t *testing.T) {
+	t.Parallel()
+
+	cases := []EvalCase{{
+		Name:                      "expectation-must-not-become-actual",
+		Category:                  "protocol",
+		Question:                  "一段没有业务语义的文本",
+		ExpectedProtocolAct:       "help",
+		ExpectedProtocolDomain:    "system",
+		ExpectedProtocolOperation: "system.describe_capability",
+	}}
+
+	summary, results, err := EvaluateCases(
+		context.Background(),
+		evalKnowledgePort{hitsByQuery: map[string][]agenttools.KnowledgeHit{}},
+		42,
+		cases,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("EvaluateCases() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	if results[0].ProtocolAct != string(ActUnknown) || results[0].ProtocolMatched {
+		t.Fatalf("protocol result leaked expectations into actual: %+v", results[0])
+	}
+	if summary.ProtocolPassed != 0 {
+		t.Fatalf("ProtocolPassed = %d, want 0", summary.ProtocolPassed)
 	}
 }

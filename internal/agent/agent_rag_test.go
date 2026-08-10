@@ -53,10 +53,31 @@ func (deterministicProtocolLiveTestCompiler) Compile(_ context.Context, req Inte
 			MissingFields: append([]string(nil), req.ActiveWorkflow.MissingFields...),
 		}
 	}
-	return staticIntentCompileResult(compileProtocol(protocolInput{
+	draft := compileProtocol(protocolInput{
 		Message:        req.Message,
 		ActiveWorkflow: workflow,
-	})), nil
+	})
+	if draft.Slots == nil {
+		draft.Slots = map[string]SlotDraft{}
+	}
+	switch draft.Operation {
+	case "attendance.query_status":
+		if raw := extractDateToken(req.Message); raw != "" {
+			draft.Slots["date"] = SlotDraft{Field: "date", Raw: raw}
+		}
+		if raw := extractSectionToken(req.Message); raw != "" {
+			draft.Slots["section"] = SlotDraft{Field: "section", Raw: raw}
+		}
+	case "subscription.start":
+		if scope := normalizeSubscriptionScope(req.Message); scope != "" {
+			raw := "指定部门"
+			if scope == "all" {
+				raw = "全部人员"
+			}
+			draft.Slots["scope"] = SlotDraft{Field: "scope", Raw: raw}
+		}
+	}
+	return staticIntentCompileResult(draft), nil
 }
 
 type testCallLogPort struct {

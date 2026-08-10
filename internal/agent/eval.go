@@ -13,35 +13,49 @@ import (
 
 // EvalCase 表示一条离线评测样本。
 type EvalCase struct {
-	Name                      string   `json:"name"`
-	Category                  string   `json:"category"`
-	Question                  string   `json:"question"`
-	ExpectedDomain            string   `json:"expected_domain,omitempty"`
-	ExpectedPlanKind          string   `json:"expected_plan_kind,omitempty"`
-	ExpectedIntent            string   `json:"expected_intent,omitempty"`
-	ExpectedExecutor          string   `json:"expected_executor,omitempty"`
-	ExpectedMode              string   `json:"expected_mode,omitempty"`
-	ExpectedRoute             string   `json:"expected_route,omitempty"`
-	ExpectedProtocolAct       string   `json:"expected_protocol_act,omitempty"`
-	ExpectedProtocolDomain    string   `json:"expected_protocol_domain,omitempty"`
-	ExpectedProtocolOperation string   `json:"expected_protocol_operation,omitempty"`
-	ExpectedResponseKind      string   `json:"expected_response_kind,omitempty"`
-	ExpectedBlockedReason     string   `json:"expected_blocked_reason,omitempty"`
-	ExpectedFailureLayer      string   `json:"expected_failure_layer,omitempty"`
-	ExpectedLegacyCalled      *bool    `json:"expected_legacy_called,omitempty"`
-	ExpectedWorkflowDecision  string   `json:"expected_workflow_decision,omitempty"`
-	ExpectedWorkflowReason    string   `json:"expected_workflow_interrupt_reason,omitempty"`
-	ConversationType          string   `json:"conversation_type,omitempty"`
-	ActiveWorkflowType        string   `json:"active_workflow_type,omitempty"`
-	ActiveWorkflowState       string   `json:"active_workflow_state,omitempty"`
-	ActiveWorkflowScope       string   `json:"active_workflow_scope,omitempty"`
-	ActiveWorkflowMissing     []string `json:"active_workflow_missing,omitempty"`
-	ActiveWorkflowExpired     bool     `json:"active_workflow_expired,omitempty"`
-	ExpectedTools             []string `json:"expected_tools,omitempty"`
-	ExpectedSources           []string `json:"expected_sources,omitempty"`
-	ExpectedKeywords          []string `json:"expected_keywords,omitempty"`
+	Name                      string                       `json:"name"`
+	Category                  string                       `json:"category"`
+	Question                  string                       `json:"question"`
+	ExpectedDomain            string                       `json:"expected_domain,omitempty"`
+	ExpectedPlanKind          string                       `json:"expected_plan_kind,omitempty"`
+	ExpectedIntent            string                       `json:"expected_intent,omitempty"`
+	ExpectedExecutor          string                       `json:"expected_executor,omitempty"`
+	ExpectedMode              string                       `json:"expected_mode,omitempty"`
+	ExpectedRoute             string                       `json:"expected_route,omitempty"`
+	ExpectedProtocolAct       string                       `json:"expected_protocol_act,omitempty"`
+	ExpectedProtocolDomain    string                       `json:"expected_protocol_domain,omitempty"`
+	ExpectedProtocolOperation string                       `json:"expected_protocol_operation,omitempty"`
+	ExpectedProtocolSlots     map[string]string            `json:"expected_protocol_slots,omitempty"`
+	ExpectedResponseKind      string                       `json:"expected_response_kind,omitempty"`
+	ExpectedBlockedReason     string                       `json:"expected_blocked_reason,omitempty"`
+	ExpectedFailureLayer      string                       `json:"expected_failure_layer,omitempty"`
+	ExpectedLegacyCalled      *bool                        `json:"expected_legacy_called,omitempty"`
+	ExpectedWorkflowDecision  string                       `json:"expected_workflow_decision,omitempty"`
+	ExpectedWorkflowReason    string                       `json:"expected_workflow_interrupt_reason,omitempty"`
+	ConversationType          string                       `json:"conversation_type,omitempty"`
+	ActiveWorkflowType        string                       `json:"active_workflow_type,omitempty"`
+	ActiveWorkflowState       string                       `json:"active_workflow_state,omitempty"`
+	ActiveWorkflowScope       string                       `json:"active_workflow_scope,omitempty"`
+	ActiveWorkflowMissing     []string                     `json:"active_workflow_missing,omitempty"`
+	ActiveWorkflowExpired     bool                         `json:"active_workflow_expired,omitempty"`
+	ExpectedTools             []string                     `json:"expected_tools,omitempty"`
+	ExpectedSources           []string                     `json:"expected_sources,omitempty"`
+	ExpectedKeywords          []string                     `json:"expected_keywords,omitempty"`
+	IntentTransportResponse   *EvalIntentTransportResponse `json:"intent_transport_response,omitempty"`
 
 	ExpectedFailureLayerSet bool `json:"-"`
+}
+
+// EvalIntentTransportResponse is the deterministic completion returned by the
+// offline LLM transport. The production intent compiler still owns prompting,
+// JSON parsing, catalog validation, candidate generation, and arbitration.
+type EvalIntentTransportResponse struct {
+	Act        UserAct           `json:"act"`
+	Domain     BusinessDomain    `json:"domain"`
+	Operation  string            `json:"operation"`
+	Confidence float64           `json:"confidence"`
+	Slots      map[string]string `json:"slots,omitempty"`
+	Reason     string            `json:"reason,omitempty"`
 }
 
 // EvalObservation 表示一次端到端问答观测结果。
@@ -51,6 +65,7 @@ type EvalObservation struct {
 	ProtocolAct           string
 	ProtocolDomain        string
 	ProtocolOperation     string
+	ProtocolSlots         map[string]string
 	ResponseKind          string
 	ProtocolBlockedReason string
 	FailureLayer          string
@@ -84,6 +99,7 @@ type EvalCaseResult struct {
 	ProtocolAct           string
 	ProtocolDomain        string
 	ProtocolOperation     string
+	ProtocolSlots         map[string]string
 	ResponseKind          string
 	ProtocolBlockedReason string
 	FailureLayer          string
@@ -256,6 +272,7 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 			result.ProtocolAct = protocolEval.Act
 			result.ProtocolDomain = protocolEval.Domain
 			result.ProtocolOperation = protocolEval.Operation
+			result.ProtocolSlots = protocolEval.Slots
 			result.ResponseKind = protocolEval.ResponseKind
 			result.ProtocolBlockedReason = protocolEval.BlockedReason
 			result.FailureLayer = protocolEval.FailureLayer
@@ -318,6 +335,9 @@ func EvaluateCases(ctx context.Context, knowledge KnowledgePort, tenantID uint, 
 				}
 				if observation.ProtocolOperation != "" {
 					result.ProtocolOperation = observation.ProtocolOperation
+				}
+				if observation.ProtocolSlots != nil {
+					result.ProtocolSlots = observation.ProtocolSlots
 				}
 				if observation.ResponseKind != "" {
 					result.ResponseKind = observation.ResponseKind
@@ -418,6 +438,7 @@ type evalProtocolResult struct {
 	Act              string
 	Domain           string
 	Operation        string
+	Slots            map[string]string
 	ResponseKind     string
 	BlockedReason    string
 	FailureLayer     string
@@ -426,36 +447,55 @@ type evalProtocolResult struct {
 	WorkflowReason   string
 }
 
-type evalProtocolCompiler struct{}
+type evalIntentTransport struct {
+	response EvalIntentTransportResponse
+}
 
-func (evalProtocolCompiler) Compile(_ context.Context, req IntentCompileRequest) (IntentCompileResult, error) {
-	normalized := normalizeQuery(req.Message)
-	if draft, ok := compileCapabilityQuestion(req.Message); ok {
-		return staticIntentCompileResult(draft), nil
+func (t evalIntentTransport) ChatStructured(
+	_ context.Context,
+	_ []tools.Message,
+	_ StructuredOutputSpec,
+) (StructuredChatResponse, error) {
+	slots := make([]intentSlot, 0, len(t.response.Slots))
+	for field, raw := range t.response.Slots {
+		slots = append(slots, intentSlot{Field: field, Raw: raw})
 	}
-	if hasHelpIntent(normalized) {
-		operation, ok := operationNameForActDomain(ActHelp, DomainSystem)
-		if !ok {
-			return staticIntentCompileResult(unknownIntentDraft("operation_not_allowed")), nil
+	response := intentCompilerResponse{
+		Act:        t.response.Act,
+		Domain:     t.response.Domain,
+		Operation:  t.response.Operation,
+		Confidence: t.response.Confidence,
+		Slots:      slots,
+		Reason:     strings.TrimSpace(t.response.Reason),
+	}
+	if response.Reason == "" {
+		response.Reason = "eval_transport_fixture"
+	}
+	content, err := json.Marshal(response)
+	if err != nil {
+		return StructuredChatResponse{}, fmt.Errorf("marshal eval intent response: %w", err)
+	}
+	return StructuredChatResponse{
+		Message:  tools.Message{Role: "assistant", Content: string(content)},
+		Attempts: 1,
+	}, nil
+}
+
+func evalIntentCompilerForCase(tc EvalCase) IntentCompiler {
+	response := tc.IntentTransportResponse
+	if response == nil {
+		// A missing fixture deliberately behaves like an LLM that could not map the
+		// message. ExpectedProtocol* must never be fed back into the actual result.
+		// Deterministic catalog/workflow candidates can still succeed through the
+		// production OperationCompiler without invoking a meaningful LLM response.
+		response = &EvalIntentTransportResponse{
+			Act:        ActUnknown,
+			Domain:     DomainUnknown,
+			Confidence: 0,
+			Reason:     "eval_transport_fixture_missing",
 		}
-		return staticIntentCompileResult(IntentDraft{
-			Act:        ActHelp,
-			Domain:     DomainSystem,
-			Operation:  operation,
-			Confidence: 1,
-		}), nil
 	}
-	var workflow *protocolWorkflowContext
-	if req.ActiveWorkflow != nil {
-		workflow = &protocolWorkflowContext{
-			Type:          req.ActiveWorkflow.Type,
-			MissingFields: append([]string(nil), req.ActiveWorkflow.MissingFields...),
-		}
-	}
-	return staticIntentCompileResult(compileProtocol(protocolInput{
-		Message:        req.Message,
-		ActiveWorkflow: workflow,
-	})), nil
+	return newLLMIntentCompiler(evalIntentTransport{response: *response}, intentCompilerOptions{})
 }
 
 func evaluateProtocolCase(ctx context.Context, tc EvalCase, knowledge KnowledgePort, tenantID uint) evalProtocolResult {
@@ -490,7 +530,7 @@ func evaluateProtocolCase(ctx context.Context, tc EvalCase, knowledge KnowledgeP
 		}
 	}
 	pipeline := newProtocolLivePipeline(protocolLivePipelineDeps{
-		Compiler:       evalProtocolCompiler{},
+		Compiler:       evalIntentCompilerForCase(tc),
 		User:           evalUserPort{tenantID: tenantID},
 		Dept:           evalDeptPort{tenantID: tenantID},
 		Semester:       evalSemesterPort{},
@@ -513,6 +553,7 @@ func evaluateProtocolCase(ctx context.Context, tc EvalCase, knowledge KnowledgeP
 		Act:              string(outcome.Draft.Act),
 		Domain:           string(outcome.Draft.Domain),
 		Operation:        outcome.Draft.Operation,
+		Slots:            evalProtocolSlots(outcome.Draft.Slots),
 		ResponseKind:     string(outcome.Response.Kind),
 		BlockedReason:    outcome.BlockedReason,
 		FailureLayer:     string(outcome.FailureLayer),
@@ -520,6 +561,17 @@ func evaluateProtocolCase(ctx context.Context, tc EvalCase, knowledge KnowledgeP
 		WorkflowDecision: string(outcome.WorkflowDecision),
 		WorkflowReason:   outcome.WorkflowInterruptReason,
 	}
+}
+
+func evalProtocolSlots(slots map[string]SlotDraft) map[string]string {
+	if len(slots) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(slots))
+	for field, slot := range slots {
+		result[field] = slot.Raw
+	}
+	return result
 }
 
 type evalDeptPort struct {
@@ -556,6 +608,9 @@ func (p evalUserPort) SearchByName(_ context.Context, name string) ([]tools.User
 	}
 	if strings.TrimSpace(name) == "张三" {
 		return []tools.UserInfo{{ID: 7, Name: "张三", DingUserID: "ding-zhangsan", Role: 0, TenantID: tenantID}}, nil
+	}
+	if strings.TrimSpace(name) == "杨思见" {
+		return []tools.UserInfo{{ID: 8, Name: "杨思见", DingUserID: "ding-yangsijian", Role: 0, TenantID: tenantID}}, nil
 	}
 	return nil, nil
 }
@@ -647,6 +702,7 @@ func protocolExpectationPresent(tc EvalCase) bool {
 	return strings.TrimSpace(tc.ExpectedProtocolAct) != "" ||
 		strings.TrimSpace(tc.ExpectedProtocolDomain) != "" ||
 		strings.TrimSpace(tc.ExpectedProtocolOperation) != "" ||
+		len(tc.ExpectedProtocolSlots) > 0 ||
 		strings.TrimSpace(tc.ExpectedResponseKind) != "" ||
 		strings.TrimSpace(tc.ExpectedBlockedReason) != "" ||
 		expectedFailureLayerPresent(tc) ||
@@ -684,6 +740,11 @@ func protocolExpectationMatched(tc EvalCase, result EvalCaseResult) bool {
 	}
 	if tc.ExpectedLegacyCalled != nil && result.LegacyCalled != *tc.ExpectedLegacyCalled {
 		return false
+	}
+	for field, expected := range tc.ExpectedProtocolSlots {
+		if strings.TrimSpace(result.ProtocolSlots[field]) != strings.TrimSpace(expected) {
+			return false
+		}
 	}
 	return true
 }

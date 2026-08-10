@@ -147,6 +147,9 @@ func TestOperationCatalogEveryManifestHasRendererAndEvalBinding(t *testing.T) {
 	t.Parallel()
 
 	for _, manifest := range operationManifests() {
+		if manifest.Recognition.Description == "" {
+			t.Fatalf("%s Recognition.Description is empty", manifest.Name)
+		}
 		if manifest.Renderer.Name == "" {
 			t.Fatalf("%s Renderer.Name is empty", manifest.Name)
 		}
@@ -232,6 +235,28 @@ func TestOperationCatalogSubscriptionOperationsDeclareRecognition(t *testing.T) 
 				}
 			}
 		})
+	}
+}
+
+func TestOperationCatalogScheduleOperationsDeclareLanguageContract(t *testing.T) {
+	t.Parallel()
+
+	for _, operation := range []string{"schedule.query_my_schedule", "schedule.query_user_schedule"} {
+		manifest, ok := lookupOperation(operation)
+		if !ok {
+			t.Fatalf("%s missing", operation)
+		}
+		if manifest.Recognition.Description == "" {
+			t.Fatalf("%s recognition description is empty", operation)
+		}
+		if len(manifest.Recognition.Examples) == 0 || len(manifest.Recognition.NegativeExamples) == 0 {
+			t.Fatalf("%s examples=%v negative=%v, want both", operation, manifest.Recognition.Examples, manifest.Recognition.NegativeExamples)
+		}
+	}
+
+	userSchedule, _ := lookupOperation("schedule.query_user_schedule")
+	if !rawSlotMapsTo(userSchedule.Recognition.RawSlots, "user_name", "user_id", "user_resolver") {
+		t.Fatalf("user schedule raw slots = %+v, want user_name -> user_id via user_resolver", userSchedule.Recognition.RawSlots)
 	}
 }
 

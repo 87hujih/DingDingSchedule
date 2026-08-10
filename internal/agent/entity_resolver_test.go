@@ -333,12 +333,32 @@ func TestResolveWeekSlotDefaultsToCurrentTeachingWeek(t *testing.T) {
 func TestResolveWeekSlotParsesCurrentWeekPhrase(t *testing.T) {
 	t.Parallel()
 
-	result := resolveWeekSlot(context.Background(), "本周", SlotDefaultNone, fakeResolverSemester{week: 10})
-	if result.Status != ResolveResolved {
-		t.Fatalf("Status = %q, want %q: %+v", result.Status, ResolveResolved, result)
+	for _, phrase := range []string{"本周", "这周"} {
+		result := resolveWeekSlot(context.Background(), phrase, SlotDefaultNone, fakeResolverSemester{week: 10})
+		if result.Status != ResolveResolved {
+			t.Fatalf("resolveWeekSlot(%q) Status = %q, want %q: %+v", phrase, result.Status, ResolveResolved, result)
+		}
+		if result.Value != 10 {
+			t.Fatalf("resolveWeekSlot(%q) Value = %v, want 10", phrase, result.Value)
+		}
 	}
-	if result.Value != 10 {
-		t.Fatalf("Value = %v, want 10", result.Value)
+}
+
+func TestResolveWeekSlotParsesNextWeekPhrase(t *testing.T) {
+	t.Parallel()
+
+	result := resolveWeekSlot(context.Background(), "下周", SlotDefaultNone, fakeResolverSemester{week: 10})
+	if result.Status != ResolveResolved || result.Value != 11 {
+		t.Fatalf("resolveWeekSlot(下周) = %+v, want week 11", result)
+	}
+}
+
+func TestResolveWeekSlotRejectsNextWeekAfterSemesterEnd(t *testing.T) {
+	t.Parallel()
+
+	result := resolveWeekSlot(context.Background(), "下周", SlotDefaultNone, fakeResolverSemester{week: 16, totalWeeks: 16})
+	if result.Status != ResolveNotFound || result.Reason != "next_week_unavailable" {
+		t.Fatalf("resolveWeekSlot(下周) = %+v, want next_week_unavailable", result)
 	}
 }
 
@@ -499,11 +519,16 @@ func TestResolveDepartmentSlotReturnsAmbiguousForDuplicateExactNames(t *testing.
 }
 
 type fakeResolverSemester struct {
-	week int
+	week       int
+	totalWeeks int
 }
 
 func (f fakeResolverSemester) GetCurrentWeek(context.Context) (int, int, error) {
-	return f.week, 16, nil
+	totalWeeks := f.totalWeeks
+	if totalWeeks == 0 {
+		totalWeeks = 16
+	}
+	return f.week, totalWeeks, nil
 }
 
 func fixedResolverClock(value string) func() time.Time {
